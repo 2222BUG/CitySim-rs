@@ -1,0 +1,5 @@
+docs(step1): 2.10 参数基线定案（CS2 参考）
+
+- Stage 0 第零优先完成：七项参数由项目负责人确认定案（参照 Cities: Skylines 2 同类数值 + Spike A / tick-rate 漂移分析）
+- tick 30 Hz / 地图 16 km / 分辨率 1 mm / 50 m/s / 10 m/s^2 / 经济 i64 10^12 / 参考场景 100k Agent / 最大持续 10^9 ticks
+- 主文档 2.10（MD+docx）、ADR-NEW-18（参数表+定案记录）同步；decision-log 记录定案并建立 Stage 0 工程步骤执行日志

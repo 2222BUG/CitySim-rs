@@ -10,7 +10,7 @@
 | ADR-NEW-15 | 确定性边界定义 | Proposed | 待评审 | clippy disallowed-types/methods 分层配置可行性验证；跨平台一致性（R4）；Rapier ADR 豁免机制（若承担权威物理） |
 | ADR-NEW-16 | 存档最小集合扩充 | Proposed | 待评审 | 在途任务恢复策略已定案为"保存并恢复"（2026-11-18 评审修订）；永久兼容边界；存档序列化格式（见债务登记 #11） |
 | ADR-NEW-17 | 路网事务的过期结果策略 | Proposed | 待评审 | 相交判断粒度、重算上限数值、重算超限兜底行为比选（局部可行路径/沿用旧路径有效段/标记受阻）、行走中道路被删除的行为（停止/回退/就近重算）；影响区域表示法（见债务登记 #9） |
-| ADR-NEW-18 | 仿真参数基线与数值契约补充 | Proposed | 待评审 | 参数基线表全部数值（含"最大持续运行 tick 数"行）待项目负责人确定（Stage 0 前）；舍入规则 Rust 实测已有初值（spikes/simscalar-spike 黄金测试 7/7），正式定案待裁决；analysis.py 及输出已入仓 docs/benchmarks/（2026-11-18 复核重建版），tick 频率漂移数据已入仓（tick-rate-drift） |
+| ADR-NEW-18 | 仿真参数基线与数值契约补充 | Proposed | 待评审 | 参数基线七项已于 2026-11-18 由项目负责人定案（Cities: Skylines 2 参考值，见 ADR-NEW-18 定案记录）；舍入规则 Rust 实测已有初值（spikes/simscalar-spike 黄金测试 7/7），正式定案待裁决；分析证据已入仓 docs/benchmarks/；待办=用定案参数重跑 Spike A（Step 2） |
 
 裁决口径（见主文档第 7 章）：采纳 / 有条件采纳 / 拒绝 / 延后，每项裁决须记录理由和验证条件。
 
@@ -88,6 +88,22 @@
 | P8 | 加 #![forbid(unsafe_code)] | 采纳 | spikes/simscalar-spike/src/lib.rs |
 | 二轮随手修 | 2.7 线程分层漏改、EC-03"已列入 R2"、过期策略状态用语（默认候选策略，状态 Proposed）、预算滚动状态注、Stage 1/原始路线图悬空注、Rapier 评估归属排期、主文档新增 6.5 节（ADR-NEW-19/20 索引） | 采纳 | 主文档 V1.9.3（MD + docx 同步，grep 验证 10 处命中） |
 
+## Stage 0 工程步骤执行日志
+
+按主文档第 5 章 Stage 0 重点、第 8 章优先级顺序逐步执行；每步一个 git 提交（提交主题见"提交"列）。
+
+| 步骤 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| Step 1 | 补齐 2.10 参数基线（第零优先，负责人定案） | 已完成（2026-11-18） | docs(step1): 2.10 参数基线定案（CS2 参考） |
+| Step 2 | Spike A：SimScalar（定案参数重跑 + Rust 范围/漂移验证 + 性能数据 + 数值设计决策 ADR） | 进行中 | - |
+| Step 3 | Spike B：系统级 RNG（原型 + 确定性测试 + 算法比较 + ADR） | 待开始 | - |
+| Step 4 | Spike C：路网事务原子发布（原型 + 并发测试 + 过期结果统计 + 行走删路比选 + ADR） | 待开始 | - |
+| Step 5 | 存档兼容验证（EC-03 扩充字段 + 读档等价测试） | 待开始 | - |
+| Step 6 | 测试基础设施（EC-07 sim-test-support + 确定性注入） | 待开始 | - |
+| Step 7 | 基础 CI（R0/R1 门禁骨架 + clippy 分层实测） | 待开始 | - |
+| Step 8 | 依赖与工具链验证（rust-toolchain 锁定 + 五件套编译验证） | 待开始 | - |
+| Step 9 | 核心工程 workspace 稳定编译 + Stage 0 退出条件核对 | 待开始 | - |
+
 ## 变更历史
 
 | 日期 | 事件 |
@@ -95,6 +111,7 @@
 | 2026-11-18 | 五项修订提案并入技术方案 V1.9.3；建立 ADR-NEW-14 至 ADR-NEW-18 独立文件；全部标记 Proposed |
 | 2026-11-18 | 首轮评审 13 项建议裁决并落实（采纳 11 项、有条件采纳 2 项）；ADR-NEW-14/15/16/17/18 增加修订记录；主文档 V1.9.3 同步修订（草案并入，未裁决条文仍标 Proposed） |
 | 2026-11-18 | 设计审计（25 条发现）与 Spike A 四件套评审完成：Spike A 证据与原型入仓（docs/benchmarks/、spikes/simscalar-spike/，cargo test 7/7 @ rustc 1.100.0）；tick 频率漂移决策数据入仓；新增 ADR-NEW-19/20 草案（状态 Proposed）；未登记决策债务入账 20 项；主文档二轮随手修（含新增 6.5 节）；裁决口径不变，全部待正式评审 |
+| 2026-11-18 | Step 1（Stage 0 第零优先）：2.10 参数基线七项由项目负责人定案（参照 Cities: Skylines 2 同类数值 + Spike A / tick-rate 分析；tick 30 Hz、地图 16 km、分辨率 1 mm、速度 50 m/s、加速度 10 m/s²、经济 i64 10^12、参考场景 100k Agent、最大持续 10^9 ticks）；主文档 2.10（MD+docx）、ADR-NEW-18 定案记录同步；建立 Stage 0 工程步骤执行日志 |
 
 ## 关联
 
