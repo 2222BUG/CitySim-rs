@@ -23,6 +23,7 @@
 | ADR-NEW-19 | GlobalDigest 摘要算法与规范化序列化 | Proposed | 待评审 | 哈希算法定案（BLAKE3-256 推荐 / xxh3-64 备选）；canonical 编码器选型（bincode 固定配置或自定义）；纳入范围模块清单定案；digest_version bump 规则 |
 | ADR-NEW-20 | 请求/事务 ID 分配与在途寻路任务口径 | Proposed | 待评审 | 单 tick 原子搜索的性能上限（Spike C 验证；若超限则切换备选①存档含部分搜索状态并修订 ADR）；请求/事务 ID 高水位随 EC-03 存档最小集入档 |
 | ADR-NEW-21 | SimScalar 数值格式定案（Spike A 数值设计决策） | Proposed | 待评审 | 裁决后 2.4 由"候选"改 Accepted 并同步编号映射；跨平台黄金值复验（R4）；Rust 基线 1.89 vs 实测 1.100.0 差异收敛 |
+| ADR-NEW-22 | 系统级 RNG 协议（Spike B 协议设计决策） | Proposed | 待评审 | 统计质量正式测试（TestU01/PractRand 级）是否补充；namespace 注册表随债务 #15 定案；跨平台黄金值复验（R4） |
 
 ## 未登记决策债务登记（2026-11-18 设计审计入账）
 
@@ -33,7 +34,7 @@
 | 1 | GlobalDigest 哈希/版本/规范化序列化/纳入范围/计算时机 | EC-05、EC-03、EC-11 | 阻塞 | 已立项 ADR-NEW-19，Stage 0 前裁决 |
 | 2 | 在途 A* 中间态 × 预算计量 × 强读档等价三方互锁 | ADR-NEW-16、EC-11 | 阻塞 | 已立项 ADR-NEW-20（单 tick 原子搜索） |
 | 3 | 请求 ID / 事务 ID 确定性分配器 | EC-03、2.8 | 阻塞 | 已立项 ADR-NEW-20 |
-| 4 | RNG 算法 / 派生键编码 / 协议 bump 策略 | EC-02 | 重要 | Spike B → RNG 协议 ADR |
+| 4 | RNG 算法 / 派生键编码 / 协议 bump 策略 | EC-02 | 重要 | 已立项 ADR-NEW-22（Spike B 已完成 2026-11-18，双模式+SplitMix64+版本化），待评审裁决 |
 | 5 | SimError/错误码/诊断事件 schema；SimErrorContext.entity_id 与 2.3 解耦冲突 | EC-08 | 重要 | Stage 0 |
 | 6 | 坐标系 / 单位 / 角度表示 | 2.4、2.10 | 重要 | Stage 0（与 2.10 定案同期） |
 | 7 | Agent 状态机与"受阻状态"定义 | EC-01、ADR-NEW-17 条文 10 | 重要 | Stage 1 前 |
@@ -97,7 +98,7 @@
 | --- | --- | --- | --- |
 | Step 1 | 补齐 2.10 参数基线（第零优先，负责人定案） | 已完成（2026-11-18） | docs(step1): 2.10 参数基线定案（CS2 参考） |
 | Step 2 | Spike A：SimScalar（定案参数重跑 + Rust 范围/漂移验证 + 性能数据 + 数值设计决策 ADR） | 已完成（2026-11-18） | docs(step2): Spike A 收尾——定案核对与 SimScalar 定案建议 |
-| Step 3 | Spike B：系统级 RNG（原型 + 确定性测试 + 算法比较 + ADR） | 待开始 | - |
+| Step 3 | Spike B：系统级 RNG（原型 + 确定性测试 + 算法比较 + ADR） | 已完成（2026-11-18） | docs(step3): Spike B——系统级 RNG 原型、9 测试、ADR-NEW-22 |
 | Step 4 | Spike C：路网事务原子发布（原型 + 并发测试 + 过期结果统计 + 行走删路比选 + ADR） | 待开始 | - |
 | Step 5 | 存档兼容验证（EC-03 扩充字段 + 读档等价测试） | 待开始 | - |
 | Step 6 | 测试基础设施（EC-07 sim-test-support + 确定性注入） | 待开始 | - |
@@ -114,6 +115,7 @@
 | 2026-11-18 | 设计审计（25 条发现）与 Spike A 四件套评审完成：Spike A 证据与原型入仓（docs/benchmarks/、spikes/simscalar-spike/，cargo test 7/7 @ rustc 1.100.0）；tick 频率漂移决策数据入仓；新增 ADR-NEW-19/20 草案（状态 Proposed）；未登记决策债务入账 20 项；主文档二轮随手修（含新增 6.5 节）；裁决口径不变，全部待正式评审 |
 | 2026-11-18 | Step 1（Stage 0 第零优先）：2.10 参数基线七项由项目负责人定案（参照 Cities: Skylines 2 同类数值 + Spike A / tick-rate 分析；tick 30 Hz、地图 16 km、分辨率 1 mm、速度 50 m/s、加速度 10 m/s²、经济 i64 10^12、参考场景 100k Agent、最大持续 10^9 ticks）；主文档 2.10（MD+docx）、ADR-NEW-18 定案记录同步；建立 Stage 0 工程步骤执行日志 |
 | 2026-11-18 | Step 2（Spike A 收尾）：定案参数正式核对（simscalar-formal-check.py，9 项硬约束全 PASS，推荐 Q32.32）；spike crate 增 5 测试共 12 全过（dt 30 Hz 黄金值、漂移黄金、位宽、16 km/1 mm 容纳、性能冒烟 2.5 ns/op）；新增 ADR-NEW-21（SimScalar 格式定案，状态 Proposed）；2.4 加定案建议注；证据入仓 docs/benchmarks/（formal-check、simscalar-perf） |
+| 2026-11-18 | Step 3（Spike B）：系统级 RNG 原型入仓 spikes/rng-spike（零依赖，9 测试全过：系统/Agent 隔离、调度无关、黄金复现、协议版本钉死、存档差异 0 vs 16 B）；算法比较（SplitMix64 0.59 ns 推荐 / xoshiro256** 0.73 / PCG64 1.14）；新增 ADR-NEW-22（RNG 协议，状态 Proposed）；EC-02 加 Spike 完成注；证据入仓 docs/benchmarks/（Spike-B-RNG-REPORT、rng-algo-comparison） |
 
 ## 关联
 

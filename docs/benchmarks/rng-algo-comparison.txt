@@ -1,0 +1,14 @@
+   Compiling rng-spike v0.0.1 (D:\AIWORK\CITYSIM\spikes\rng-spike)
+    Finished `release` profile [optimized] target(s) in 0.37s
+     Running unittests src\lib.rs (spikes\rng-spike\target\release\build\rng-spike/2e7549720edc3900\out\rng_spike-2e7549720edc3900.exe)
+
+running 1 test
+SplitMix64  : 10000000 draws in 5.8954ms = 0.59 ns/draw
+Xoshiro256**: 10000000 draws in 7.2838ms = 0.73 ns/draw
+PcgXslRr128 : 10000000 draws in 11.4188ms = 1.14 ns/draw
+derive_seed : 10000000 draws in 2.0159ms = 0.20 ns/draw
+event_u64   : 10000000 draws in 2.5187ms = 0.25 ns/draw
+test bench::bench_all ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.03s
+
