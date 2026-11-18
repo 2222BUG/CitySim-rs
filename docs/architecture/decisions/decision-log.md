@@ -214,8 +214,8 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | S1-1 | Stage 1 任务清单重建（docs/architecture/Stage-1-Task-List.md，T1~T9、退出条件、执行顺序） | 已完成（2026-11-19） | 本次提交 |
 | S1-2 | T1 workspace/crate 划分骨架（2.2 分层、权威/非权威清单、clippy 分层） | 已完成（2026-11-19） | docs(stage1): T1——7 分层 crate 骨架、权威清单、依赖方向门禁 |
 | S1-3 | T2 SimScalar 正式 crate（ADR-NEW-21） | 已完成（2026-11-19） | docs(stage1): T2——SimScalar 正式 crate（12 测试，Spike 黄金一致） |
-| S1-4 | T3 时间与命令日志（2.9 条 7/8） | 待开始 | - |
-| S1-5 | T4 Agent 身份（2.3 高水位） | 待开始 | - |
+| S1-4 | T3 时间与命令日志（2.9 条 7/8） | 已完成（2026-11-19） | feat(stage1): T3——sim-core 权威时间与命令日志（7 测试） |
+| S1-5 | T4 Agent 身份（2.3 高水位） | 已完成（2026-11-19） | feat(stage1): T4——sim-agent AgentId 高水位（5 测试） |
 | S1-6 | T5 RNG 协议实装（ADR-NEW-22 + namespace 注册表） | 已完成（2026-11-19） | docs(stage1): T5——RNG 协议 crate（12 测试含碰撞校验，债务 #25 落实） |
 | S1-7 | T6 canonical 编码器 + GlobalDigest（ADR-NEW-19，最优先上游） | 已完成（2026-11-19） | docs(stage1): T6——sim-codec/sim-digest（13 测试，BLAKE3 黄金向量入仓） |
 | S1-8 | T7 存档/读档 EC-03 实装（保存并恢复 + 强读档等价入 R2） | 待开始 | - |
