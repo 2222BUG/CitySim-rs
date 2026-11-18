@@ -50,3 +50,11 @@ GlobalDigest 是确定性验证体系的 oracle：R2 门禁（EC-11）、读档�
 ## 当前状态
 
 Proposed。待决：哈希定案（Spike 验证）、canonical 编码器选型（自定义 vs bincode 固定配置）、模块清单定稿、每 tick 滚动摘要去留。2026-11-18 建档。
+
+
+## 正式裁决（2026-11-19）
+
+- 裁决人与依据：项目负责人委托五家独立 AI 评审（报告 A/B/C/D/E）汇总，维护者代录；五家共识详见 decision-log《2026-11-19 正式裁决记录》。第 5 家（E）裁决方向与共识一致，但其证据引用不实（虚构 GlobalDigest-test、ADR-12 等），证据断言已驳回，不作验证依据。
+- 裁决：**有条件采纳 → Accepted（附条件）**。
+- 理由：BLAKE3+canonical 顶层 Schema 独立+domain separation 方向 5/5 成立；注意 GlobalDigest 至今为 FNV 占位实现，尚无正式测试（驳回第 5 家'已验证'说法）。
+- 验证条件：①编码器实施时补黄金测试向量（固定输入→固定字节序列/摘要）；②digest_version bump 规则随编码器一并实施；③纳入模块清单须含预算队列/让步状态（组级验收 G3）；④每 tick 滚动摘要保留与否以实测为准（1~5 ms/tick 为估计值，实测记录入 docs/benchmarks/）；⑤实施后以 R2 oracle（读档等价+黄金测试）验证，为最优先定案项（债务 #11/#20/#23 上游）。
