@@ -53,6 +53,19 @@ jobs:
       - name: cargo clippy (-D warnings)
         run: cargo clippy --manifest-path ${{ matrix.crate }}/Cargo.toml --all-targets -- -D warnings
 
+  msrv-check:
+    name: "MSRV: cargo check @ 1.89（2.1 基线）"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89"
+      # Rust 1.89 = Bevy 0.18.1 MSRV（Step 8 实测）；依赖闭包须保持 1.89 可编译
+      # （ordered-float 由 Cargo.lock 钉 ≤5.4.0，见 decision-log 债务 #22）。
+      - name: cargo check (MSRV)
+        run: cargo check --workspace --all-targets
+
   r2-deterministic:
     name: "R2: 确定性场景门禁（占位）"
     if: false # 启用条件：模拟核心 + GlobalDigest（ADR-NEW-19）+ R2 场景 fixture 就绪

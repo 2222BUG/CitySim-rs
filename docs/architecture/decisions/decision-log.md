@@ -54,6 +54,7 @@
 | 20 | 预算滚动状态生命周期（若每 tick 重置则 tick 边界存档无意义） | EC-03、2.7 | 一般 | ADR-NEW-14 修订定案 |
 | 21 | 安全债：ruzstd 0.8.3 高危 RUSTSEC-2026-0344（解压炸弹）基线内不可修复（bevy_image 0.18.1 钉 ^0.8）；paste 1.0.15 / ttf-parser 0.25.1 unmaintained 无修复 | 2.1（安全检查） | 重要 | 随 Bevy 升级 ADR 消化（ruzstd ≥0.9.1 列为升级动机之一）；评估=纹理/资产解码路径属非权威侧（2.9），Stage 0 不加载不可信资产；Step 8 实测见 docs/benchmarks/dep-verify-REPORT.md |
 | 22 | Rust 基线 1.89（须 Cargo.lock 锁 ordered-float ≤5.4.0）vs workspace 实测 1.100.0 收敛取舍 | 2.1、rust-toolchain.toml | 一般 | 项目负责人定案；CI 与 rust-toolchain.toml 现用 1.100.0，1.89 为 MSRV 验证口径（Step 8） |
+| 23 | **外部评审 P0-01：单 tick 原子 A* 前向进展/饥饿**——单次搜索规模长期大于每 tick 预算时"中止-从头重试"可能永久完不成；双计数器（budget_yield_count / stale_recompute_count）分离与预算让步机制（A 跨 tick 续算 / B 确定性预算递增 / C 规模上限受控失败）待定案 | ADR-NEW-20、2.7、EC-01、Spike C | 重要 | ADR-NEW-20"预算让步与前向进展"节已给候选比选（默认 B）与验收 6 条；随 ADR-NEW-17/20/23 联动决策组一并裁决；Stage 1 寻路实现前必须定案 |
 
 ## 2026-11-18 首轮评审裁决记录（13 项建议）
 
@@ -93,6 +94,28 @@
 | P8 | 加 #![forbid(unsafe_code)] | 采纳 | spikes/simscalar-spike/src/lib.rs |
 | 二轮随手修 | 2.7 线程分层漏改、EC-03"已列入 R2"、过期策略状态用语（默认候选策略，状态 Proposed）、预算滚动状态注、Stage 1/原始路线图悬空注、Rapier 评估归属排期、主文档新增 6.5 节（ADR-NEW-19/20 索引） | 采纳 | 主文档 V1.9.3（MD + docx 同步，grep 验证 10 处命中） |
 
+## 2026-11-18 外部评审裁决记录（V1.9.3 公开架构评审报告）
+
+来源：用户转发第三方 AI 架构评审报告（2026-11-18）。裁决口径沿用第 7 章：采纳 / 有条件采纳 / 拒绝 / 延后，每项记录理由与验证条件落实位置。
+
+| # | 评审发现 | 裁决 | 理由 | 验证条件 / 落实位置 |
+| --- | --- | --- | --- | --- |
+| P0-01 | 单 tick 原子 A* 前向进展：预算不足"中止-从头重试"可能永久饥饿 | 采纳 | 我方 25 条审计未登记之新漏洞；前向进展不变量只覆盖路网修改轴 | 债务 #23；ADR-NEW-20 新增"预算让步与前向进展"节（双计数器、A/B/C 比选默认 B、验收 6 条） |
+| P0-02 | 预算状态生命周期（累积/公平性/入存档/入摘要/最大等待） | 有条件采纳 | 与债务 #20 同题，扩展为队列权威性与公平性 | ADR-NEW-20 决策补充第 3 条；预算队列入 EC-03 存档 + ADR-NEW-19 摘要纳入范围 |
+| P0-03 | 强读档等价未覆盖任务队列/优先级/让步计数 | 有条件采纳 | 强读档等价已实装通过（save-restore-spike N=40→M=100，评审未读到）；增量=队列/优先级/让步状态覆盖 | ADR-NEW-20 验收 4；EC-11 R2 强等价场景扩展 |
+| P0-04 | 摘要顶层 Schema 应独立于存档 Schema + domain separation | 采纳 | 我方"共用编码器"口径过宽 | ADR-NEW-19 决策条 2 已收紧（共用编码规则、分顶层 Schema、domain separation） |
+| P0-05 | Spike A 证据链（7/7→12/12 记录不一致、1/30 浮点表示、aarch64 缺失） | 有条件采纳 | 7/7→12/12 为分阶段记录非矛盾；1/30 不可精确表示已有结论（dt_raw=143,165,577 黄金值+固定偏差） | 后续报告统一指向同一提交哈希；aarch64 列入 R4 跨平台验证 |
+| P0-06 | AABB 宽筛过度重算，建议两阶段 | 采纳 | 即 ADR-NEW-17 备选"逐边校验"的两阶段组合 | ADR-NEW-23 新增"两阶段相交判定"节（窄判按边 ID、指标清单、6 场景矩阵） |
+| P1-01 | clippy 禁 HashMap 收窄为"禁依赖迭代顺序结果" | 有条件采纳 | 与我方设计审计 #14 同向 | ADR-NEW-15 条 4 落地口径（#[allow] 豁免+审查；类型级禁用保留第一道护栏） |
+| P1-02 | 稳定提交全序键与系统执行顺序分离 | 采纳 | 全序键缺定义为真缺口 | ADR-NEW-15 条 5（候选复合键 (phase_id, system_id, request_id, agent_id, local_sequence)） |
+| P1-03 | RNG namespace 注册表与统计质量测试 | 采纳 | 已登记（ADR-NEW-22 遗留项） | 随债务 #15 与 ADR-NEW-22 裁决推进 |
+| P1-04 | 代价更新使路径失效与"只保证合法性"语义张力 | 采纳 | 条文 8/9 张力属实 | ADR-NEW-23 两阶段节第 2 条（代价更新默认不触发重算，策略旋钮默认关闭） |
+| Q11 | Stage 1 任务清单要素建议 | 采纳 | 即债务 #19 | 要素清单并入重建；Stage 1 开工前完成 |
+| Q12 / 6.x | MSRV 三区分语义、依赖安全 | 采纳 | 即债务 #22 / #21 | CI 本轮加 MSRV 1.89 check job；安全项已入债务 #21 |
+| 裁决建议整体 | 10 ADR 9 有条件采纳 + NEW-20 暂缓；17/20/23 联动决策组 | 有条件采纳 | 联动组提示采纳；NEW-20 不整体暂缓——方案③保持推荐、附 P0-01 前置验证条件 | ADR-NEW-23 修订记录联动组提示；三项语义一致性验证完成前不单独定案 |
+
+评审总体结论（继续推进、暂不冻结）与我方 Stage 0 Exit Checklist 一致：推进不冻结；ADR 正式裁决前不关闭 Stage 0。
+
 ## Stage 0 工程步骤执行日志
 
 按主文档第 5 章 Stage 0 重点、第 8 章优先级顺序逐步执行；每步一个 git 提交（提交主题见"提交"列）。
@@ -124,6 +147,7 @@
 | 2026-11-18 | Step 6（测试基础设施）：sim-test-support 入仓 crates/sim-test-support（零依赖，11 测试全过）——EC-07 五模块落地（fixtures 三档确定性场景/deterministic 读档等价模板 SimHarness/property 五不变量/benchmark 记录模板/assertions 状态断言）+ chaos 确定性注入钩子（忙等延迟+种子化乱序，R3 线程无关性测试口径）；crate 文档与 Cargo.toml 声明仅限 dev-dependency；EC-07 加 Step 6 验证注 |
 | 2026-11-18 | Step 7（基础 CI）：.github/workflows/ci.yml 建立（R0/R1 cargo test 矩阵、EC-12 clippy -D warnings 门禁矩阵、R2 确定性场景占位）；clippy 分层实测通过（docs/benchmarks/clippy-layering-REPORT.md：HashMap/HashSet、f32/f64 含 std::primitive::f32 全路径、Instant/SystemTime 全部有效抓取，#[allow] 与按 crate 分层豁免有效；四权威 crate 全 CLEAN，49 测试回归全过）；2.9/EC-12/ADR-NEW-15 三处"可行性待验证"改为已实测 |
 | 2026-11-18 | Step 8（依赖与工具链验证）：crates/dep-verify 建立（bevy "=0.18.1"/bevy_egui 0.39/rapier2d+3d 0.33）；五件套完成——依赖解析零冲突、Rust 1.89 全闭包 check（ordered-float 锁 5.4.0）、Win x86_64 build、关键 API 验证 2/2、许可证 9 项全兼容；发现 ordered-float 5.5.x 破坏 Rust 1.89 基线（须锁 ≤5.4.0 或升 1.90）；cargo-audit 发现 ruzstd 0.8.3 高危 RUSTSEC-2026-0344（基线内不可修复，安全债 #21）+ paste/ttf-parser unmaintained；rust-toolchain.toml 锁 1.100.0；证据 docs/benchmarks/dep-verify-REPORT.md；2.1 表与 6.1 表口径更新（"待复现验证"→已验证附条件） |
+| 2026-11-18 | 外部评审落盘：ADR-NEW-20 新增预算让步与前向进展节（P0-01 采纳、P0-02 有条件采纳，债务 #23 立案）；ADR-NEW-19 顶层 Schema 解耦+domain separation（P0-04）；ADR-NEW-15 条 4/5 口径修订（P1-01/P1-02）；ADR-NEW-23 两阶段相交+代价更新语义（P0-06/P1-04）；外部评审裁决表 13 行入账；CI 增 MSRV 1.89 check job；issues #1-#11 回贴裁决 |
 | 2026-11-18 | Step 9（workspace 稳定编译 + Stage 0 退出核对）：根 Cargo.toml workspace 建立（6 成员，统一 Cargo.lock、ordered-float 钉 5.4.0）；cargo test --workspace 51/51、cargo build、cargo +1.89 check --workspace 全闭包 exit 0；Stage 0 退出条件核对 5/6（条件 6"关键 ADR 已完成评审"为唯一硬性缺口，ADR-NEW-14~23 全部 Proposed 待裁决），记录 docs/benchmarks/Stage-0-Exit-CHECKLIST.md；Stage 0 在条件 6 完成前不宣告关闭 |
 
 ## 关联
