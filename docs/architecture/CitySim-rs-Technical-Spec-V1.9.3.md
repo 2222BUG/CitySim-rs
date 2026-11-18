@@ -51,6 +51,8 @@
 
 本文档中的设计要求默认属于 Proposed 或 Accepted，除非存在实际代码、测试报告或可复现基准证据。不得将设计目标、规划指标或 Spike 预期结果表述为已经实现的事实。
 
+注记规范（2026-11-19 决策投票通过）："Accepted（附条件）"是 Accepted 的正式注记写法，不是第六种状态——括号内必须引用条件核销清单条目或债务编号；全部条件核销后去除注记；条件未清前不得开工对应模块；转 Verified 必须附实测证据。
+
 本版并入的五项修订条文均标记为 **Proposed**，其中涉及的具体阈值和数值均待验证，没有实测数据；目前唯一的实验证据来自 Spike A 的 analysis.py（已运行），相关引用处会明确标注证据范围。2026-11-18 评审修订要求：Spike A 的 analysis.py 及其运行输出入仓 docs/benchmarks/，否则该证据不可复现（已于 2026-11-18 入仓 docs/benchmarks/：analysis.py 复核重建版 + analysis-output.txt，Stage 0 Step 2）。
 
 ### 0.3 架构演进原则
@@ -151,7 +153,7 @@ CitySim-rs 是一个基于 Rust + Bevy 的高性能城市模拟核心引擎。�
 | A* | 路径搜索基础算法 | Accepted |
 | MFD | 交通流量模拟候选模型 | Accepted / 待验证 |
 
-原 V1.9 技术基线提出 Bevy 0.18.1、Rust 1.89、bevy_egui 0.39.x、rapier 0.33.x。这些版本已于 2026-11-18（Stage 0 Step 8）完成正式锁定前五件套验证（依赖版本兼容、最小工程编译、目标平台构建、关键 API、许可证及安全检查），证据见 docs/benchmarks/dep-verify-REPORT.md。条件与例外：Rust 1.89 基线需 Cargo.lock 锁定 ordered-float 5.4.0（5.5.x 系列要求 rustc 1.90）；安全检查存在 ruzstd 0.8.3 高危告警（RUSTSEC-2026-0344，bevy_image 0.18.1 钉 ^0.8，基线内不可修复，随 Bevy 升级 ADR 消化）与 paste/ttf-parser 两条 unmaintained 警告；Rust 基线 1.89 与 workspace 实测 1.100.0 的收敛取舍待项目负责人定案。
+原 V1.9 技术基线提出 Bevy 0.18.1、Rust 1.89、bevy_egui 0.39.x、rapier 0.33.x。这些版本已于 2026-11-18（Stage 0 Step 8）完成正式锁定前五件套验证（依赖版本兼容、最小工程编译、目标平台构建、关键 API、许可证及安全检查），证据见 docs/benchmarks/dep-verify-REPORT.md。条件与例外：Rust 1.89 基线需 Cargo.lock 锁定 ordered-float 5.4.0（5.5.x 系列要求 rustc 1.90）；安全检查存在 ruzstd 0.8.3 高危告警（RUSTSEC-2026-0344，bevy_image 0.18.1 钉 ^0.8，基线内不可修复，随 Bevy 升级 ADR 消化）与 paste/ttf-parser 两条 unmaintained 警告；Rust 基线 1.89 与 workspace 实测 1.100.0 的收敛取舍已于 2026-11-19 决策投票定案（6:1）：**文档基线 = 开发工具链 = CI 主工具链 = Rust 1.100.0**；Rust 1.89 为 Bevy 0.18.1 MSRV 兼容性参考，CI msrv-check job 保留 1.89 check 作门禁，ordered-float 5.4.0 钉版维持至 MSRV 调整时复核；MSRV 保证目前为 check 级，test 级验证随首个发布版本补。
 
 正式锁定前必须完成：
 
