@@ -1,0 +1,44 @@
+== 1. Range / resolution ==
+Q48.16: range ±140,737,488,355,328  ulp=1.526e-05  as-seconds overflow after 4,459,701.9 years
+Q32.32: range ±2,147,483,648  ulp=2.328e-10  as-seconds overflow after 68.0 years
+Q24.40: range ±8,388,608  ulp=9.095e-13  as-seconds overflow after 0.3 years
+Q16.48: range ±32,768  ulp=3.553e-15  as-seconds overflow after 0.0 years
+
+== 2. Which formats hold a map coordinate (needs ±half-extent)? ==
+   8 km map (±4,000 m): fits -> ['Q48.16', 'Q32.32', 'Q24.40', 'Q16.48']
+  32 km map (±16,000 m): fits -> ['Q48.16', 'Q32.32', 'Q24.40', 'Q16.48']
+ 128 km map (±64,000 m): fits -> ['Q48.16', 'Q32.32', 'Q24.40']
+
+== 3. dt representability and drift (v=15 m/s, pos += v*dt, 1e6 ticks) ==
+20 TPS Q48.16 floor: error after 1,000,000 ticks = -183.105469 m
+20 TPS Q48.16 round: error after 1,000,000 ticks = +45.776367 m
+20 TPS Q32.32 floor: error after 1,000,000 ticks = -0.002794 m
+20 TPS Q32.32 round: error after 1,000,000 ticks = +0.000698 m
+20 TPS Q24.40 floor: error after 1,000,000 ticks = -0.000011 m
+20 TPS Q24.40 round: error after 1,000,000 ticks = +0.000003 m
+20 TPS Q16.48 floor: error after 1,000,000 ticks = -0.000000 m
+20 TPS Q16.48 round: error after 1,000,000 ticks = +0.000000 m
+60 TPS Q48.16 floor: error after 1,000,000 ticks = -61.035156 m
+60 TPS Q48.16 round: error after 1,000,000 ticks = -61.035156 m
+60 TPS Q32.32 floor: error after 1,000,000 ticks = -0.000931 m
+60 TPS Q32.32 round: error after 1,000,000 ticks = -0.000931 m
+60 TPS Q24.40 floor: error after 1,000,000 ticks = -0.000004 m
+60 TPS Q24.40 round: error after 1,000,000 ticks = -0.000004 m
+60 TPS Q16.48 floor: error after 1,000,000 ticks = -0.000000 m
+60 TPS Q16.48 round: error after 1,000,000 ticks = -0.000000 m
+
+== 4. Rounding bias: acc += x*c, c=0.3, x=1.0001, 1e6 steps ==
+Q48.16 floor: err = -2.695e+01
+Q48.16 round: err = +3.569e+00
+Q32.32 floor: err = -4.235e-04
+Q32.32 round: err = +4.217e-05
+Q24.40 floor: err = -1.485e-06
+Q24.40 round: err = +3.335e-07
+Q16.48 floor: err = -3.958e-09
+Q16.48 round: err = -4.075e-10
+
+== 5. Intermediate width for mul / div ==
+Q48.16: i64*i64 needs up to 128 bits; div pre-shift (a<<16) needs 80 bits -> i128
+Q32.32: i64*i64 needs up to 128 bits; div pre-shift (a<<32) needs 96 bits -> i128
+Q24.40: i64*i64 needs up to 128 bits; div pre-shift (a<<40) needs 104 bits -> i128
+Q16.48: i64*i64 needs up to 128 bits; div pre-shift (a<<48) needs 112 bits -> i128

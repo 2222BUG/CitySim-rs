@@ -1,0 +1,9 @@
+[package]
+name = "simscalar-spike"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CitySim-rs Spike A: SimScalar (Q32.32) candidate. Status: Proposed."
+
+[dependencies]
+# Intentionally empty: the spike must be reproducible without network access.
