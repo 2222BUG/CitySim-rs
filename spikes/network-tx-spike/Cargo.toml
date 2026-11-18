@@ -1,0 +1,8 @@
+[package]
+name = "network-tx-spike"
+version = "0.0.1"
+edition = "2021"
+description = "CitySim-rs Spike C: 路网事务原子发布 —— 事务边界/原子发布/查询一致性/过期结果策略/行走删路比选"
+license = "MIT OR Apache-2.0"
+
+[dependencies]

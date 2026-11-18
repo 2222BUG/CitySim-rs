@@ -9,7 +9,7 @@
 | ADR-NEW-14 | 预算与降级必须确定性 | Proposed | 待评审 | 各系统工作量计量单位与每 tick 上限阈值；R2/R3 分层后门禁实测耗时记录于 docs/benchmarks/；预算滚动状态生命周期（见债务登记 #20） |
 | ADR-NEW-15 | 确定性边界定义 | Proposed | 待评审 | clippy disallowed-types/methods 分层配置可行性验证；跨平台一致性（R4）；Rapier ADR 豁免机制（若承担权威物理） |
 | ADR-NEW-16 | 存档最小集合扩充 | Proposed | 待评审 | 在途任务恢复策略已定案为"保存并恢复"（2026-11-18 评审修订）；永久兼容边界；存档序列化格式（见债务登记 #11） |
-| ADR-NEW-17 | 路网事务的过期结果策略 | Proposed | 待评审 | 相交判断粒度、重算上限数值、重算超限兜底行为比选（局部可行路径/沿用旧路径有效段/标记受阻）、行走中道路被删除的行为（停止/回退/就近重算）；影响区域表示法（见债务登记 #9） |
+| ADR-NEW-17 | 路网事务的过期结果策略 | Proposed | 待评审 | 全部待决事项（相交粒度/重算上限/兜底比选/行走删路/影响区域表示）已有实测定案建议，见 ADR-NEW-23（Spike C，2026-11-18） |
 | ADR-NEW-18 | 仿真参数基线与数值契约补充 | Proposed | 待评审 | 参数基线七项已于 2026-11-18 由项目负责人定案（Cities: Skylines 2 参考值，见 ADR-NEW-18 定案记录）；舍入规则 Rust 实测已有初值（spikes/simscalar-spike 黄金测试 7/7），正式定案待裁决；分析证据已入仓 docs/benchmarks/；待办=用定案参数重跑 Spike A（Step 2） |
 
 裁决口径（见主文档第 7 章）：采纳 / 有条件采纳 / 拒绝 / 延后，每项裁决须记录理由和验证条件。
@@ -24,6 +24,7 @@
 | ADR-NEW-20 | 请求/事务 ID 分配与在途寻路任务口径 | Proposed | 待评审 | 单 tick 原子搜索的性能上限（Spike C 验证；若超限则切换备选①存档含部分搜索状态并修订 ADR）；请求/事务 ID 高水位随 EC-03 存档最小集入档 |
 | ADR-NEW-21 | SimScalar 数值格式定案（Spike A 数值设计决策） | Proposed | 待评审 | 裁决后 2.4 由"候选"改 Accepted 并同步编号映射；跨平台黄金值复验（R4）；Rust 基线 1.89 vs 实测 1.100.0 差异收敛 |
 | ADR-NEW-22 | 系统级 RNG 协议（Spike B 协议设计决策） | Proposed | 待评审 | 统计质量正式测试（TestU01/PractRand 级）是否补充；namespace 注册表随债务 #15 定案；跨平台黄金值复验（R4） |
+| ADR-NEW-23 | 路网事务过期结果细则与行走删路行为（Spike C 实测定案建议） | Proposed | 待评审 | 兜底候选 PartialPath/UseValidPrefix 启用前须定义"部分路径可接受性"（债务 #18）；大规模吞吐归 Stage 2A 基准；并发撤销与事务日志回滚点随 ADR-NEW-19 编码器定 |
 
 ## 未登记决策债务登记（2026-11-18 设计审计入账）
 
@@ -39,7 +40,7 @@
 | 6 | 坐标系 / 单位 / 角度表示 | 2.4、2.10 | 重要 | Stage 0（与 2.10 定案同期） |
 | 7 | Agent 状态机与"受阻状态"定义 | EC-01、ADR-NEW-17 条文 10 | 重要 | Stage 1 前 |
 | 8 | 路网数据字典；CSR 定案表述矛盾（Accepted vs 待性能测试） | 2.1、2.5 | 重要 | Stage 2A 前 |
-| 9 | 影响区域表示法（矩形 / 边集 / 瓦片）与请求/结果字段 | EC-01 | 重要 | Spike C |
+| 9 | 影响区域表示法（矩形 / 边集 / 瓦片）与请求/结果字段 | EC-01 | 重要 | 已立项 ADR-NEW-23（Spike C 已完成 2026-11-18：轴对齐包围盒 1 mm 网格 + 并集聚合粒度），待评审裁决 |
 | 10 | 回放输入 / 模拟配置 schema | 2.7、2.9 条 8、EC-11 | 重要 | Stage 1 前 |
 | 11 | 存档序列化格式（与摘要 canonical 编码共用编码器） | EC-03 | 重要 | Stage 1 前，随 ADR-NEW-19 编码器定案 |
 | 12 | Schema / 确定性协议 / RNG 协议版本号规则与 bump 策略 | EC-03 | 一般 | Stage 1 前 |
@@ -99,7 +100,7 @@
 | Step 1 | 补齐 2.10 参数基线（第零优先，负责人定案） | 已完成（2026-11-18） | docs(step1): 2.10 参数基线定案（CS2 参考） |
 | Step 2 | Spike A：SimScalar（定案参数重跑 + Rust 范围/漂移验证 + 性能数据 + 数值设计决策 ADR） | 已完成（2026-11-18） | docs(step2): Spike A 收尾——定案核对与 SimScalar 定案建议 |
 | Step 3 | Spike B：系统级 RNG（原型 + 确定性测试 + 算法比较 + ADR） | 已完成（2026-11-18） | docs(step3): Spike B——系统级 RNG 原型、9 测试、ADR-NEW-22 |
-| Step 4 | Spike C：路网事务原子发布（原型 + 并发测试 + 过期结果统计 + 行走删路比选 + ADR） | 待开始 | - |
+| Step 4 | Spike C：路网事务原子发布（原型 + 并发测试 + 过期结果统计 + 行走删路比选 + ADR） | 已完成（2026-11-18） | docs(step4): Spike C——路网事务原子发布原型、8 测试、ADR-NEW-23 |
 | Step 5 | 存档兼容验证（EC-03 扩充字段 + 读档等价测试） | 待开始 | - |
 | Step 6 | 测试基础设施（EC-07 sim-test-support + 确定性注入） | 待开始 | - |
 | Step 7 | 基础 CI（R0/R1 门禁骨架 + clippy 分层实测） | 待开始 | - |
@@ -116,6 +117,7 @@
 | 2026-11-18 | Step 1（Stage 0 第零优先）：2.10 参数基线七项由项目负责人定案（参照 Cities: Skylines 2 同类数值 + Spike A / tick-rate 分析；tick 30 Hz、地图 16 km、分辨率 1 mm、速度 50 m/s、加速度 10 m/s²、经济 i64 10^12、参考场景 100k Agent、最大持续 10^9 ticks）；主文档 2.10（MD+docx）、ADR-NEW-18 定案记录同步；建立 Stage 0 工程步骤执行日志 |
 | 2026-11-18 | Step 2（Spike A 收尾）：定案参数正式核对（simscalar-formal-check.py，9 项硬约束全 PASS，推荐 Q32.32）；spike crate 增 5 测试共 12 全过（dt 30 Hz 黄金值、漂移黄金、位宽、16 km/1 mm 容纳、性能冒烟 2.5 ns/op）；新增 ADR-NEW-21（SimScalar 格式定案，状态 Proposed）；2.4 加定案建议注；证据入仓 docs/benchmarks/（formal-check、simscalar-perf） |
 | 2026-11-18 | Step 3（Spike B）：系统级 RNG 原型入仓 spikes/rng-spike（零依赖，9 测试全过：系统/Agent 隔离、调度无关、黄金复现、协议版本钉死、存档差异 0 vs 16 B）；算法比较（SplitMix64 0.59 ns 推荐 / xoshiro256** 0.73 / PCG64 1.14）；新增 ADR-NEW-22（RNG 协议，状态 Proposed）；EC-02 加 Spike 完成注；证据入仓 docs/benchmarks/（Spike-B-RNG-REPORT、rng-algo-comparison） |
+| 2026-11-18 | Step 4（Spike C）：路网事务原子发布原型入仓 spikes/network-tx-spike（零依赖，8 测试全过：原子发布/查询版本一致/聚合规则/合法性解耦/前向进展/行走删路三方案/并发交错/性能冒烟）；新增 ADR-NEW-23（过期结果细则与行走删路定案建议，状态 Proposed）；ADR-NEW-17 待决事项全部取数；EC-01 加 Spike 完成注；证据入仓 docs/benchmarks/（Spike-C-NetworkTx-REPORT、network-tx-perf） |
 
 ## 关联
 

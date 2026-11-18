@@ -1,0 +1,22 @@
+Spike C（路网事务原子发布）性能冒烟 — network-tx-spike
+日期：2026-11-18　工具链：rustc 1.100.0 (0ef1bc386 2026-11-09) / cargo 1.100.0
+平台：Windows 11 x86_64（单机参考值，非正式基准；R3/R4 场景另行实测）
+
+perf_smoke（release，cargo test --release -- --nocapture）：
+  perf_smoke: 2000 publishes + 200 queries/stale-checks in 10.7907ms = 5395.4 ns/publish
+
+口径说明：
+- 5395 ns/publish 是"每 10 笔发布夹一次完整查询"的混合平均值；
+  查询 = 200 边链式路网上的 BFS route()（O(V+E)）+ 过期判定 check_stale()（区间 tx 影响区域并集求交）。
+- 纯 publish（Tx::apply 原子复制+提交）成本远低于该均值，BFS 查询主导。
+- 原型 Network 用 BTreeMap + clone() 提交（正确性优先）；正式实现应换双缓冲/影子索引，
+  发布成本可降一个数量级以上（属 Stage 2A/2C 工程优化，不在本 spike 结论内）。
+
+测试总览：8/8 全过（debug 与 release），零警告。
+  atomic_publish_and_versioning / query_consistency_and_accept / stale_aggregation_rule /
+  stale_legality_check / forward_progress_under_churn / walk_policy_comparison /
+  interleaved_publish_query_threads / perf_smoke
+
+并发交叉（interleaved_publish_query_threads，debug）：
+  1 发布线程（20 笔事务）+ 2 查询线程（各 50 查询）→ 最终 version==20 恰好、queries==100；
+  跨线程交错下原子性与计数不变量成立（线程数无关性的系统级验证属 EC-11 R3）。
