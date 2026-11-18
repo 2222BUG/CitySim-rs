@@ -707,6 +707,8 @@ Stage 0 退出条件不是"完成所有功能"，而是高风险假设有足够�
 
 测试支持模块本身不应成为核心运行时依赖。
 
+**Step 6 验证记录（2026-11-18，Stage 0）**：统一测试基础设施原型 `crates/sim-test-support/`（9/9 测试通过）已按上文组织落地五模块：fixtures（reference-100k / r2-gate-10k / smoke-1k 三档确定性场景 + 稳定序网格路网生成器）、deterministic（读档等价测试模板：strong_readback_digests 强形式 / weak_form_digests 弱形式 / repeat_run_digests 黄金复现，通用 SimHarness 接口，来源 docs/benchmarks/SaveRestore-Validation-REPORT.md）、property（五项不变量判定函数）、benchmark（基准记录模板）、assertions（模拟状态断言）。crate 文档与 Cargo.toml 均注明"仅允许 dev-dependency 引入，不得进入权威模拟 crate"。
+
 ### 4.3 EC-08：统一错误分层
 
 状态：Proposed

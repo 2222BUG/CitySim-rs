@@ -1,0 +1,10 @@
+[package]
+name = "sim-test-support"
+version = "0.0.1"
+edition = "2021"
+description = "CitySim-rs EC-07 统一测试基础设施（fixtures / deterministic / property / benchmark / assertions）"
+license = "MIT OR Apache-2.0"
+
+# 约束（EC-07）：测试支持模块本身不应成为核心运行时依赖。
+# 本 crate 仅允许以 dev-dependency 形式引入，不得进入权威模拟 crate 的 [dependencies]。
+[dependencies]
