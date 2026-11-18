@@ -1,0 +1,9 @@
+# 本机 ACL 恢复材料（含 Windows 用户 SID，不入库）
+acl-recovery/
+
+# 系统与编辑器杂项
+Thumbs.db
+desktop.ini
+.DS_Store
+__pycache__/
+*.pyc
