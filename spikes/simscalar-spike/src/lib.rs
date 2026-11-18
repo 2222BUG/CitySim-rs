@@ -281,6 +281,8 @@ mod step2_tests {
     /// 性能冒烟（非正式基准，无阈值断言）：1e7 次 saturating_mul 计时并打印，
     /// 运行方式 cargo test --release perf_smoke_mul -- --nocapture。
     #[test]
+    // 遥测侧豁免（2.9 口径）：墙钟与 f64 仅用于测量输出，不进入权威模拟结果。
+    #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     fn perf_smoke_mul() {
         let m = SimScalar::from_ratio(3, 2).unwrap();
         let mut acc = SimScalar::from_int(1);

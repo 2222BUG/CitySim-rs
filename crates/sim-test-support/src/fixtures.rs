@@ -20,7 +20,7 @@ impl Fixture {
     pub fn reference() -> Fixture {
         Fixture {
             name: "reference-100k",
-            seed: 0xC5_17_5EED,
+            seed: 0xC517_5EED,
             agent_count: 100_000,
             tick_count: 1_000,
             grid_nodes_x: 200,
@@ -46,7 +46,7 @@ impl Fixture {
     pub fn smoke() -> Fixture {
         Fixture {
             name: "smoke-1k",
-            seed: 0x5A17_E,
+            seed: 0x0005_A17E,
             agent_count: 1_000,
             tick_count: 200,
             grid_nodes_x: 32,

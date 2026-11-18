@@ -1,0 +1,63 @@
+name: CI
+
+# Stage 0 Step 7：基础 CI 骨架（EC-11 R0/R1 门禁 + EC-12 契约即代码）。
+# R2 确定性场景门禁为占位（if: false）——模拟核心与 GlobalDigest（ADR-NEW-19）就绪后启用。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  r0-unit:
+    name: "R0/R1: cargo test (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - crates/sim-test-support
+          - spikes/simscalar-spike
+          - spikes/rng-spike
+          - spikes/network-tx-spike
+          - spikes/save-restore-spike
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+      - name: cargo test
+        run: cargo test --manifest-path ${{ matrix.crate }}/Cargo.toml
+
+  ec12-lint:
+    name: "EC-12: clippy 分层门禁 (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - spikes/simscalar-spike
+          - spikes/rng-spike
+          - spikes/network-tx-spike
+          - spikes/save-restore-spike
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: clippy
+      # 各权威 crate 包根自带 clippy.toml（disallowed-types/methods，见
+      # docs/benchmarks/clippy-layering-REPORT.md）；sim-test-support 为非权威侧不参与。
+      - name: cargo clippy (-D warnings)
+        run: cargo clippy --manifest-path ${{ matrix.crate }}/Cargo.toml --all-targets -- -D warnings
+
+  r2-deterministic:
+    name: "R2: 确定性场景门禁（占位）"
+    if: false # 启用条件：模拟核心 + GlobalDigest（ADR-NEW-19）+ R2 场景 fixture 就绪
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: placeholder
+        run: echo "R2: 固定场景（10,000 Agent x 1,000 Tick）+ 读档等价 + 摘要比对，见 EC-11"

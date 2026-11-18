@@ -37,6 +37,8 @@ pub struct Stream64 {
 }
 
 impl Stream64 {
+    // 名称即"流的下一值"，非迭代器协议；实现 Iterator 反而误导（存档语义见 save/restore）。
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> u64 {
         self.counter = self.counter.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.seed.wrapping_add(self.counter);
@@ -218,7 +220,7 @@ impl SimState {
             let aid = 1 + ((self.tick + k) % hw);
             self.enqueue_request(aid, ((self.tick + k) as i64).wrapping_mul(7));
         }
-        if self.tick % 2 == 0 {
+        if self.tick.is_multiple_of(2) {
             self.enqueue_tx(self.tick % 3, (self.tick as i64).wrapping_mul(3));
         }
 

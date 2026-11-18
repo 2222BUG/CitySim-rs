@@ -109,9 +109,9 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 pub fn derive_seed(global_seed: u64, namespace: &str, event_key: u64) -> u64 {
     let ns = fnv1a64(namespace.as_bytes());
     let m1 = SplitMix64::from_seed(global_seed ^ ns).next_u64();
-    let m2 = SplitMix64::from_seed(m1 ^ event_key.wrapping_mul(0x9E37_79B9_7F4A_7C15)).next_u64();
-    m2
+    SplitMix64::from_seed(m1 ^ event_key.wrapping_mul(0x9E37_79B9_7F4A_7C15)).next_u64()
 }
+
 
 /// 纯派生模式：第 draw_index 次抽取 = f(派生种子, draw_index)，无流状态。
 /// 存档需求：零（只需全局种子 + RNG 协议版本，见 EC-03）。
@@ -295,7 +295,9 @@ mod tests {
 }
 
 /// 性能冒烟（非正式基准）：cargo test --release bench_all -- --nocapture
+/// 遥测侧豁免（2.9 口径：墙钟与平台浮点只用于测量，不进入权威模拟结果）。
 #[cfg(test)]
+#[allow(clippy::disallowed_types, clippy::disallowed_methods)]
 mod bench {
     use super::*;
 

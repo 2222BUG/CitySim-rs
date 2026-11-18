@@ -387,7 +387,7 @@ Bevy ECS 的系统参数、资源访问和 Query 应继续发挥其访问冲突�
 
 8. **外部输入**：玩家命令必须带有生效 tick 编号，并记录下来以便回放。
 
-上述契约应按 EC-12（契约即代码）尽量转为自动检查。候选自动检查包括 clippy.toml 中的 disallowed-types / disallowed-methods 配置（用来禁止 HashMap 和系统时钟，具体可行性待验证），以及线程数无关测试。
+上述契约应按 EC-12（契约即代码）尽量转为自动检查。候选自动检查包括 clippy.toml 中的 disallowed-types / disallowed-methods 配置（用来禁止 HashMap 和系统时钟，已于 2026-11-18 实测可行，见 docs/benchmarks/clippy-layering-REPORT.md），以及线程数无关测试。
 
 ### 2.10 仿真参数基线（V1.9.3 新增，状态：Proposed，对应 ADR-NEW-18）
 
@@ -843,6 +843,8 @@ R2 初始建议场景：
 
 - 经过人工审核后更新基准。
 
+**Step 7 验证记录（2026-11-18，Stage 0）**：基础 CI 骨架 `.github/workflows/ci.yml` 已建立——R0/R1 门禁=cargo test 矩阵（五 crate）、EC-12 门禁=clippy -D warnings 矩阵（四个权威侧 crate）、R2 确定性场景为占位 job（启用条件：模拟核心 + GlobalDigest（ADR-NEW-19）+ R2 场景 fixture 就绪）。门禁耗时实测数据待模拟核心就绪后按 R2/R3 分层记录于 docs/benchmarks/。
+
 ### 4.7 EC-12：契约即代码
 
 状态：Proposed
@@ -853,7 +855,9 @@ R2 初始建议场景：
 
 - Rust 类型系统约束。
 
-- Clippy（含 clippy.toml 的 disallowed-types / disallowed-methods 配置，用于落实 2.9 中对 HashMap/HashSet 迭代顺序和系统时钟的禁用，具体可行性待验证）。配置按 crate 分层：权威模拟 crate 禁用，渲染、UI、遥测 crate 不受限（2026-11-18 评审修订）。
+- Clippy（含 clippy.toml 的 disallowed-types / disallowed-methods 配置，用于落实 2.9 中对 HashMap/HashSet 迭代顺序和系统时钟的禁用，已于 2026-11-18 实测可行，见 docs/benchmarks/clippy-layering-REPORT.md）。配置按 crate 分层：权威模拟 crate 禁用，渲染、UI、遥测 crate 不受限（2026-11-18 评审修订）。
+
+**Step 7 验证记录（2026-11-18，Stage 0）**：clippy 分层实测通过——disallowed-types（HashMap/HashSet、f32/f64 含 std::primitive::f32 全路径写法）与 disallowed-methods（Instant::now、SystemTime::now）全部有效抓取；函数级 #[allow] 与按 crate 放置 clippy.toml 的分层豁免有效。四个 spike crate（权威侧）带严格 clippy.toml 全部 CLEAN（含 --all-targets），sim-test-support（非权威侧）不受限。剩余覆盖缺口：第三方 crate 内部与宏展开（护栏定位：语法面，语义级迭代顺序依赖仍靠评审 + property 测试）。基础 CI 骨架 `.github/workflows/ci.yml` 建立（R0/R1 cargo test 矩阵 + EC-12 clippy -D warnings 门禁 + R2 确定性场景占位）。
 
 - 依赖层级检查。
 
@@ -1113,7 +1117,7 @@ ADR 用于记录重要技术决策，不取代具体实现文档。每项 ADR �
 
 - 影响：权威代码对集合类型和迭代方式有约束；需要为排序提交预留开销。
 
-- 验证方法：clippy.toml 的 disallowed-types / disallowed-methods 配置（禁止 HashMap 和系统时钟，可行性待验证），以及线程数无关测试。配置按 crate 分层：权威模拟 crate 禁用，渲染、UI、遥测 crate 不受限（2026-11-18 评审修订）。
+- 验证方法：clippy.toml 的 disallowed-types / disallowed-methods 配置（禁止 HashMap 和系统时钟，已于 2026-11-18 实测可行，见 docs/benchmarks/clippy-layering-REPORT.md），以及线程数无关测试。配置按 crate 分层：权威模拟 crate 禁用，渲染、UI、遥测 crate 不受限（2026-11-18 评审修订）。
 
 ****ADR-NEW-16：存档最小集合扩充****
 

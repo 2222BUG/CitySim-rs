@@ -7,7 +7,7 @@
 | ADR | 主题 | 当前状态 | 裁决 | 待决事项 |
 | --- | --- | --- | --- | --- |
 | ADR-NEW-14 | 预算与降级必须确定性 | Proposed | 待评审 | 各系统工作量计量单位与每 tick 上限阈值；R2/R3 分层后门禁实测耗时记录于 docs/benchmarks/；预算滚动状态生命周期（见债务登记 #20） |
-| ADR-NEW-15 | 确定性边界定义 | Proposed | 待评审 | clippy disallowed-types/methods 分层配置可行性验证；跨平台一致性（R4）；Rapier ADR 豁免机制（若承担权威物理） |
+| ADR-NEW-15 | 确定性边界定义 | Proposed | 待评审 | clippy disallowed-types/methods 分层配置可行性已于 2026-11-18 实测通过（docs/benchmarks/clippy-layering-REPORT.md；分层=按 crate 放置 clippy.toml + 函数级 allow）；跨平台一致性（R4）；Rapier ADR 豁免机制（若承担权威物理） |
 | ADR-NEW-16 | 存档最小集合扩充 | Proposed | 待评审 | 在途任务恢复策略已定案为"保存并恢复"（2026-11-18 评审修订）；永久兼容边界；存档序列化格式（见债务登记 #11） |
 | ADR-NEW-17 | 路网事务的过期结果策略 | Proposed | 待评审 | 全部待决事项（相交粒度/重算上限/兜底比选/行走删路/影响区域表示）已有实测定案建议，见 ADR-NEW-23（Spike C，2026-11-18） |
 | ADR-NEW-18 | 仿真参数基线与数值契约补充 | Proposed | 待评审 | 参数基线七项已于 2026-11-18 由项目负责人定案（Cities: Skylines 2 参考值，见 ADR-NEW-18 定案记录）；舍入规则 Rust 实测已有初值（spikes/simscalar-spike 黄金测试 7/7），正式定案待裁决；分析证据已入仓 docs/benchmarks/；待办=用定案参数重跑 Spike A（Step 2） |
@@ -46,7 +46,7 @@
 | 12 | Schema / 确定性协议 / RNG 协议版本号规则与 bump 策略 | EC-03 | 一般 | Stage 1 前 |
 | 13 | 2.8"需要明确"五项（快照机制/结果排序/冲突处理/失败任务/Tick 边界） | 2.8 | 重要 | Stage 1 前 |
 | 14 | LOD 三级命名/切换条件/更新频率；LOD 无 Stage 归属 | 2.7、ADR-NEW-14 | 重要 | 排入第五章阶段计划，Stage 2C 前 |
-| 15 | crate 权威/非权威分类清单 | 2.2、EC-12 | 重要 | 与 clippy 分层实测同期 |
+| 15 | crate 权威/非权威分类清单 | 2.2、EC-12 | 重要 | clippy 分层实测已完成（2026-11-18）；清单落点=各权威 crate 包根 clippy.toml + CI ec12-lint 矩阵成员列表（.github/workflows/ci.yml），待正式权威 crate 建库时随 2.2 目录结构定案 |
 | 16 | 预算声明载体与 L1/L2/L3 按系统映射 | 2.7、EC-04 | 一般 | Stage 2C 前 |
 | 17 | A* 确定性细则（平局打破/邻居展开序/启发式舍入）；Stage 2A 退出判据 | 2.4、第 5 章 | 重要 | Stage 2A 前 |
 | 18 | EC-01 取消语义 / 冲突合并 / 验证判据 | EC-01 | 一般 | Spike C |
@@ -103,7 +103,7 @@
 | Step 4 | Spike C：路网事务原子发布（原型 + 并发测试 + 过期结果统计 + 行走删路比选 + ADR） | 已完成（2026-11-18） | docs(step4): Spike C——路网事务原子发布原型、8 测试、ADR-NEW-23 |
 | Step 5 | 存档兼容验证（EC-03 扩充字段 + 读档等价测试） | 已完成（2026-11-18） | docs(step5): 存档兼容验证——EC-03 最小集原型、9 测试、读档等价模板 |
 | Step 6 | 测试基础设施（EC-07 sim-test-support + 确定性注入） | 已完成（2026-11-18） | docs(step6): 测试基础设施——sim-test-support 六模块、11 测试、读档等价模板 |
-| Step 7 | 基础 CI（R0/R1 门禁骨架 + clippy 分层实测） | 待开始 | - |
+| Step 7 | 基础 CI（R0/R1 门禁骨架 + clippy 分层实测） | 已完成（2026-11-18） | docs(step7): 基础 CI 骨架 + clippy 分层实测通过 |
 | Step 8 | 依赖与工具链验证（rust-toolchain 锁定 + 五件套编译验证） | 待开始 | - |
 | Step 9 | 核心工程 workspace 稳定编译 + Stage 0 退出条件核对 | 待开始 | - |
 
@@ -120,6 +120,7 @@
 | 2026-11-18 | Step 4（Spike C）：路网事务原子发布原型入仓 spikes/network-tx-spike（零依赖，8 测试全过：原子发布/查询版本一致/聚合规则/合法性解耦/前向进展/行走删路三方案/并发交错/性能冒烟）；新增 ADR-NEW-23（过期结果细则与行走删路定案建议，状态 Proposed）；ADR-NEW-17 待决事项全部取数；EC-01 加 Spike 完成注；证据入仓 docs/benchmarks/（Spike-C-NetworkTx-REPORT、network-tx-perf） |
 | 2026-11-18 | Step 5（存档兼容验证）：save-restore-spike 入仓 spikes/save-restore-spike（零依赖，9 测试全过：EC-03 七类字段完备、tick 边界、强读档等价 N=40→M=100、弱形式、ID 高水位防复用、有状态流回读、篡改拒绝、未知 Schema 可诊断、尾字节拒绝）；读档等价测试模板入 docs/benchmarks/SaveRestore-Validation-REPORT.md；EC-03 加 Step 5 验证注；状态摘要为 FNV 占位（GlobalDigest 随 ADR-NEW-19 替换） |
 | 2026-11-18 | Step 6（测试基础设施）：sim-test-support 入仓 crates/sim-test-support（零依赖，11 测试全过）——EC-07 五模块落地（fixtures 三档确定性场景/deterministic 读档等价模板 SimHarness/property 五不变量/benchmark 记录模板/assertions 状态断言）+ chaos 确定性注入钩子（忙等延迟+种子化乱序，R3 线程无关性测试口径）；crate 文档与 Cargo.toml 声明仅限 dev-dependency；EC-07 加 Step 6 验证注 |
+| 2026-11-18 | Step 7（基础 CI）：.github/workflows/ci.yml 建立（R0/R1 cargo test 矩阵、EC-12 clippy -D warnings 门禁矩阵、R2 确定性场景占位）；clippy 分层实测通过（docs/benchmarks/clippy-layering-REPORT.md：HashMap/HashSet、f32/f64 含 std::primitive::f32 全路径、Instant/SystemTime 全部有效抓取，#[allow] 与按 crate 分层豁免有效；四权威 crate 全 CLEAN，49 测试回归全过）；2.9/EC-12/ADR-NEW-15 三处"可行性待验证"改为已实测 |
 
 ## 关联
 

@@ -126,7 +126,7 @@ impl Network {
     pub fn path_region(&self, path: &[u64]) -> Option<Region> {
         let mut iter = path.iter().map(|id| self.edges.get(id).map(|e| e.geom));
         let first = iter.next()??;
-        Some(iter.try_fold(first, |acc, g| Some(acc.union(&g?)))?)
+        iter.try_fold(first, |acc, g| Some(acc.union(&g?)))
     }
 
     pub fn digest(&self) -> u64 {
@@ -424,10 +424,9 @@ mod tests {
     fn grid(w: u64) -> Network {
         // 0--1--2--...--w 一条链 + 一条绕行边（w..2w 为另一条链）
         let mut net = Network::default();
-        let mut id = 1u64;
         for i in 0..w {
+            let id = i + 1;
             net.edges.insert(id, Edge::new(id, i, i + 1, 1));
-            id += 1;
         }
         net
     }
@@ -626,6 +625,8 @@ mod tests {
 
     /// 性能冒烟（非正式基准）：发布 + 过期判定吞吐。
     #[test]
+    // 遥测侧豁免（2.9 口径）：墙钟与 f64 仅用于测量输出，不进入权威模拟结果。
+    #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     fn perf_smoke() {
         let mut p = Publisher::new(grid(200));
         let n = 2_000u64;
