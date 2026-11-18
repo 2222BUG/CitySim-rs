@@ -19,6 +19,7 @@ members = [
     "crates/sim-economy",
     "crates/sim-view",
     "crates/simscalar",
+    "crates/sim-rng",
 ]
 
 [workspace.package]

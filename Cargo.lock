@@ -5020,6 +5020,10 @@ name = "sim-pathfinding"
 version = "0.1.0"
 
 [[package]]
+name = "sim-rng"
+version = "0.1.0"
+
+[[package]]
 name = "sim-test-support"
 version = "0.0.1"
 
