@@ -40,3 +40,14 @@ Max map extent, minimum spatial resolution, max speed, tick rate，**最大持�
 - P4/P5：新增 `tick-rate-drift.py`（10/20/30 Hz 决策辅助 + 最大持续运行 tick 数漂移预算），输出入仓。
 - P6：findings 1 补 Q24.40 秒累积 0.3 年溢出。
 - P7：补记 Rust 实测结果与工具链版本差异。
+
+## Step 2 收尾（2026-11-18，2.10 定案后）
+
+2.10 参数基线已由项目负责人定案（tick 30 Hz、地图 16 km × 16 km、分辨率 1 mm、50 m/s、10 m/s²、经济 10^12、参考场景 100k Agent、最大持续 10^9 ticks）。据此完成：
+
+1. **定案参数正式核对**：`simscalar-formal-check.py`（输出 `simscalar-formal-check-output.txt`）——9 项硬约束全 PASS，推荐 Q32.32；Q24.40 因 10^9 ticks 最坏里程 1.667e9 m 超出其整数位（±1.678e7 m）相对劣势；经济 10^12 两种格式均不容纳，按 ADR-NEW-18 用独立 i64。
+2. **Rust 正式测试**：`spikes/simscalar-spike` 12 测试全过，含黄金值 `dt_30hz_from_ratio_golden`（dt_raw = 143,165,577）、`drift_golden_30tps`（step_raw = 2,147,483,655，1e6 ticks 漂移 +7e6 raw ≈ +1.629 mm）、`intermediate_width_fits_i128`、`map_16km_and_1mm_fit`。
+3. **性能冒烟**：release 2.5 ns/op（1e7 次 saturating_mul，`simscalar-perf.txt`，非正式基准）。
+4. **数值设计决策 ADR**：ADR-NEW-21（SimScalar 格式定案，状态 Proposed）。
+
+结论升级：Q32.32 从"preliminary leading candidate"升级为**定案建议（Proposed，待评审裁决）**。

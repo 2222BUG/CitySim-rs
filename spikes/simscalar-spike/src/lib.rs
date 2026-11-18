@@ -231,3 +231,71 @@ mod tests {
         assert_eq!(fnv1a64(&[1, -1, i64::MAX]), 0x99fc_c379_ecfc_4214);
     }
 }
+
+/// Step 2（2026-11-18）：2.10 定案参数（tick = 30 Hz）下的正式核对测试。
+/// 输入：项目负责人定案参数（Cities: Skylines 2 参考值）。
+/// 配套：docs/benchmarks/simscalar-formal-check.py（Python 侧全量核对）。
+#[cfg(test)]
+mod step2_tests {
+    use super::*;
+
+    /// dt = 1/30 s 一次派生（from_ratio），黄金值 round(2^32 / 30) = 143_165_577，
+    /// 舍入误差 +1.087e-10 s 固定，写入黄金测试（ADR-NEW-18 数值契约 2）。
+    #[test]
+    fn dt_30hz_from_ratio_golden() {
+        let dt = SimScalar::from_ratio(1, 30).unwrap();
+        assert_eq!(dt.to_raw(), 143_165_577);
+    }
+
+    /// v = 15 m/s 的每 tick 步长黄金值：step_raw = round_shift(v_raw * dt_raw, 32) = 2_147_483_655
+    /// （0.5 m + 7 raw，步长误差固定 +1.63e-9 m）。1e6 ticks 常速积分漂移 +7e6 raw ≈ +1.629 mm。
+    #[test]
+    fn drift_golden_30tps() {
+        let dt = SimScalar::from_ratio(1, 30).unwrap();
+        let v = SimScalar::from_int(15);
+        let step = v.checked_mul(dt).unwrap();
+        assert_eq!(step.to_raw(), 2_147_483_655);
+        let total = 1_000_000i64 * step.to_raw();
+        let ideal = 500_000i64 * (1i64 << 32); // 1e6 ticks × 0.5 m = 500 km = 500_000 m，精确表示
+        assert_eq!(total - ideal, 7_000_000, "drift must be exactly +7 raw per tick");
+    }
+
+    /// 中间乘法位宽：50 m/s × dt 需 66 bit，i128 中间值足够（formal-check [4]）。
+    #[test]
+    fn intermediate_width_fits_i128() {
+        let v_raw: i128 = 50 * (1i128 << 32);
+        let dt_raw: i128 = 143_165_577;
+        let prod = v_raw * dt_raw;
+        assert!(prod > 0 && prod < (1i128 << 126), "50 m/s * dt must fit i128 with margin");
+    }
+
+    /// 16 km 地图：半幅 8000 m 远小于 ±2^31 m；1 mm 分辨率可表示（LSB = 2^-32 m）。
+    #[test]
+    fn map_16km_and_1mm_fit() {
+        let half_map = SimScalar::from_int(8000);
+        assert_eq!(half_map.to_raw(), 8000i64 * (1i64 << 32));
+        let mm = SimScalar::from_ratio(1, 1000).unwrap();
+        assert_eq!(mm.to_raw(), 4_294_967); // round(2^32 / 1000)，1 mm 远大于 LSB
+    }
+
+    /// 性能冒烟（非正式基准，无阈值断言）：1e7 次 saturating_mul 计时并打印，
+    /// 运行方式 cargo test --release perf_smoke_mul -- --nocapture。
+    #[test]
+    fn perf_smoke_mul() {
+        let m = SimScalar::from_ratio(3, 2).unwrap();
+        let mut acc = SimScalar::from_int(1);
+        let n = 10_000_000u64;
+        let t0 = std::time::Instant::now();
+        for _ in 0..n {
+            acc = acc.saturating_mul(m);
+            std::hint::black_box(acc);
+        }
+        let el = t0.elapsed();
+        println!(
+            "perf_smoke_mul: {} ops in {:?} = {:.1} ns/op (非正式基准，机器相关)",
+            n,
+            el,
+            el.as_nanos() as f64 / n as f64
+        );
+    }
+}

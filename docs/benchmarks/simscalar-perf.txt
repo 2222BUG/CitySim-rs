@@ -1,0 +1,10 @@
+   Compiling simscalar-spike v0.0.1 (D:\AIWORK\CITYSIM\spikes\simscalar-spike)
+    Finished `release` profile [optimized] target(s) in 0.21s
+     Running unittests src\lib.rs (spikes\simscalar-spike\target\release\build\simscalar-spike/29ff0bfce0ca9b26\out\simscalar_spike-29ff0bfce0ca9b26.exe)
+
+running 1 test
+perf_smoke_mul: 10000000 ops in 24.9031ms = 2.5 ns/op (非正式基准，机器相关)
+test step2_tests::perf_smoke_mul ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.03s
+

@@ -22,6 +22,7 @@
 | --- | --- | --- | --- | --- |
 | ADR-NEW-19 | GlobalDigest 摘要算法与规范化序列化 | Proposed | 待评审 | 哈希算法定案（BLAKE3-256 推荐 / xxh3-64 备选）；canonical 编码器选型（bincode 固定配置或自定义）；纳入范围模块清单定案；digest_version bump 规则 |
 | ADR-NEW-20 | 请求/事务 ID 分配与在途寻路任务口径 | Proposed | 待评审 | 单 tick 原子搜索的性能上限（Spike C 验证；若超限则切换备选①存档含部分搜索状态并修订 ADR）；请求/事务 ID 高水位随 EC-03 存档最小集入档 |
+| ADR-NEW-21 | SimScalar 数值格式定案（Spike A 数值设计决策） | Proposed | 待评审 | 裁决后 2.4 由"候选"改 Accepted 并同步编号映射；跨平台黄金值复验（R4）；Rust 基线 1.89 vs 实测 1.100.0 差异收敛 |
 
 ## 未登记决策债务登记（2026-11-18 设计审计入账）
 
@@ -95,7 +96,7 @@
 | 步骤 | 内容 | 状态 | 提交 |
 | --- | --- | --- | --- |
 | Step 1 | 补齐 2.10 参数基线（第零优先，负责人定案） | 已完成（2026-11-18） | docs(step1): 2.10 参数基线定案（CS2 参考） |
-| Step 2 | Spike A：SimScalar（定案参数重跑 + Rust 范围/漂移验证 + 性能数据 + 数值设计决策 ADR） | 进行中 | - |
+| Step 2 | Spike A：SimScalar（定案参数重跑 + Rust 范围/漂移验证 + 性能数据 + 数值设计决策 ADR） | 已完成（2026-11-18） | docs(step2): Spike A 收尾——定案核对与 SimScalar 定案建议 |
 | Step 3 | Spike B：系统级 RNG（原型 + 确定性测试 + 算法比较 + ADR） | 待开始 | - |
 | Step 4 | Spike C：路网事务原子发布（原型 + 并发测试 + 过期结果统计 + 行走删路比选 + ADR） | 待开始 | - |
 | Step 5 | 存档兼容验证（EC-03 扩充字段 + 读档等价测试） | 待开始 | - |
@@ -112,6 +113,7 @@
 | 2026-11-18 | 首轮评审 13 项建议裁决并落实（采纳 11 项、有条件采纳 2 项）；ADR-NEW-14/15/16/17/18 增加修订记录；主文档 V1.9.3 同步修订（草案并入，未裁决条文仍标 Proposed） |
 | 2026-11-18 | 设计审计（25 条发现）与 Spike A 四件套评审完成：Spike A 证据与原型入仓（docs/benchmarks/、spikes/simscalar-spike/，cargo test 7/7 @ rustc 1.100.0）；tick 频率漂移决策数据入仓；新增 ADR-NEW-19/20 草案（状态 Proposed）；未登记决策债务入账 20 项；主文档二轮随手修（含新增 6.5 节）；裁决口径不变，全部待正式评审 |
 | 2026-11-18 | Step 1（Stage 0 第零优先）：2.10 参数基线七项由项目负责人定案（参照 Cities: Skylines 2 同类数值 + Spike A / tick-rate 分析；tick 30 Hz、地图 16 km、分辨率 1 mm、速度 50 m/s、加速度 10 m/s²、经济 i64 10^12、参考场景 100k Agent、最大持续 10^9 ticks）；主文档 2.10（MD+docx）、ADR-NEW-18 定案记录同步；建立 Stage 0 工程步骤执行日志 |
+| 2026-11-18 | Step 2（Spike A 收尾）：定案参数正式核对（simscalar-formal-check.py，9 项硬约束全 PASS，推荐 Q32.32）；spike crate 增 5 测试共 12 全过（dt 30 Hz 黄金值、漂移黄金、位宽、16 km/1 mm 容纳、性能冒烟 2.5 ns/op）；新增 ADR-NEW-21（SimScalar 格式定案，状态 Proposed）；2.4 加定案建议注；证据入仓 docs/benchmarks/（formal-check、simscalar-perf） |
 
 ## 关联
 
