@@ -24,6 +24,7 @@ pub const SCHEMA_VERSION: u16 = 1;
 pub const DETERMINISM_PROTOCOL_VERSION: u16 = 1;
 pub use sim_rng::RNG_PROTOCOL_VERSION;
 pub use sim_digest::DIGEST_VERSION;
+pub use sim_digest::Digest256;
 
 const ENVELOPE_MODULE: &str = "sim-save";
 const ENVELOPE_KIND: &str = "Save";

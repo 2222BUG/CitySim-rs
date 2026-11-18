@@ -10,3 +10,6 @@ sim-codec = { path = "../sim-codec" }
 sim-digest = { path = "../sim-digest" }
 sim-rng = { path = "../sim-rng" }
 sim-error = { path = "../sim-error" }
+
+[dev-dependencies]
+sim-test-support = { path = "../sim-test-support" }

@@ -37,9 +37,10 @@ for name, data in members():
     if name == 'sim-core' and deps:
         errors.append(f'规则1：sim-core 不得有依赖，实际 {sorted(deps)}')
     if name in AUTHORITATIVE:
-        bad = (deps | dev_deps) & NON_AUTHORITATIVE
+        # 运行时依赖禁止指向非权威；sim-test-support 仅允许出现在 dev-dependencies（规则 5）
+        bad = deps & NON_AUTHORITATIVE
         if bad:
-            errors.append(f'规则2：权威 {name} 依赖非权威 {sorted(bad)}')
+            errors.append(f'规则2：权威 {name} 运行时依赖非权威 {sorted(bad)}')
     if name != 'sim-view' and 'sim-view' in deps | dev_deps:
         errors.append(f'规则3：{name} 不得依赖 sim-view')
     if not name.endswith('-spike') and (deps | dev_deps) & SPIKES:
