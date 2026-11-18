@@ -219,7 +219,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | S1-6 | T5 RNG 协议实装（ADR-NEW-22 + namespace 注册表） | 已完成（2026-11-19） | docs(stage1): T5——RNG 协议 crate（12 测试含碰撞校验，债务 #25 落实） |
 | S1-7 | T6 canonical 编码器 + GlobalDigest（ADR-NEW-19，最优先上游） | 已完成（2026-11-19） | docs(stage1): T6——sim-codec/sim-digest（13 测试，BLAKE3 黄金向量入仓） |
 | S1-8 | T7 存档/读档 EC-03 实装（保存并恢复 + 强读档等价入 R2） | 待开始 | - |
-| S1-9 | T8 错误分层骨架（EC-08） | 待开始 | - |
+| S1-9 | T8 错误分层骨架（EC-08） | 已完成（2026-11-19） | docs(stage1): T8——sim-error 错误分层骨架（5 测试 + 错误码规范） |
 | S1-10 | T9 确定性契约测试接入（2.9 八条证据表 + R2 场景骨架） | 待开始 | - |
 
 ## 变更历史

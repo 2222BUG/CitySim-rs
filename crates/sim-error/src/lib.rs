@@ -1,0 +1,209 @@
+//! CitySim-rs sim-error（Stage 1 T8）：错误分层骨架（EC-08）。
+//!
+//! EC-08 分层：Fatal（不可恢复，必须停机/拒绝加载）/ Recoverable（可继续模拟，
+//! 有确定性处置）/ Diagnostic（诊断信息，不改变权威状态）。
+//! SimErrorContext.entity_id 语义 = AgentId（2.3：与 Bevy Entity 解耦的稳定
+//! u64 身份；正式类型随 T4 在 sim-agent 定义，此处以 u64 表达并以文档钉语义）。
+//!
+//! 错误码规范见 docs/architecture/error-code-spec.md（格式 MOD-NNNN）。
+//! 诊断事件通道为确定性 Vec（产生顺序=drain 顺序），无 HashMap/时钟/浮点。
+#![forbid(unsafe_code)]
+
+/// 错误分层（EC-08）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ErrorClass {
+    /// 不可恢复：存档损坏、协议版本不兼容、不变量破坏——必须终止本次运行。
+    Fatal,
+    /// 可恢复：确定性处置后模拟可继续（如过期寻路结果重入队）。
+    Recoverable,
+    /// 诊断：不改变权威状态（如预算逼近上限的提示）。
+    Diagnostic,
+}
+
+/// 错误码：模块前缀 + 4 位编号（规范：docs/architecture/error-code-spec.md）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ErrorCode {
+    pub module: &'static str,
+    pub number: u32,
+}
+
+impl ErrorCode {
+    pub const fn new(module: &'static str, number: u32) -> Self {
+        Self { module, number }
+    }
+}
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{:04}", self.module, self.number)
+    }
+}
+
+/// 错误上下文（确定性：tick 为 u64，无墙钟；entity_id 语义=AgentId）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SimErrorContext {
+    /// 权威时间：u64 tick（2.9 条 7；不读系统时钟）。
+    pub tick: u64,
+    /// 相关实体的稳定身份。语义 = AgentId（2.3，与 Bevy Entity 解耦）。
+    pub entity_id: u64,
+    /// 产生点的系统标识（namespace 口径，如 "sim-pathfinding"）。
+    pub system: &'static str,
+}
+
+/// 分层错误。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimError {
+    pub class: ErrorClass,
+    pub code: ErrorCode,
+    pub message: &'static str,
+    pub context: SimErrorContext,
+}
+
+impl SimError {
+    pub const fn new(
+        class: ErrorClass,
+        code: ErrorCode,
+        message: &'static str,
+        context: SimErrorContext,
+    ) -> Self {
+        Self {
+            class,
+            code,
+            message,
+            context,
+        }
+    }
+}
+
+/// 诊断事件（Diagnostic 层的结构化记录；不改变权威状态）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticEvent {
+    pub code: ErrorCode,
+    pub message: &'static str,
+    pub context: SimErrorContext,
+}
+
+/// 诊断事件通道：确定性 Vec，emit 顺序 = drain 顺序（2.9 条 4 口径：
+/// 不依赖任何无序迭代；事件可作为 GlobalDigest 输入在 T9 接入）。
+#[derive(Default)]
+pub struct DiagnosticSink {
+    events: Vec<DiagnosticEvent>,
+}
+
+impl DiagnosticSink {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn emit(&mut self, code: ErrorCode, message: &'static str, context: SimErrorContext) {
+        self.events.push(DiagnosticEvent {
+            code,
+            message,
+            context,
+        });
+    }
+
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    /// 按产生顺序取出全部事件（清空通道）。
+    pub fn drain(&mut self) -> Vec<DiagnosticEvent> {
+        std::mem::take(&mut self.events)
+    }
+}
+
+/// 常用错误码登记（增量登记规范见 error-code-spec.md；编号不得复用）。
+pub mod codes {
+    use super::ErrorCode;
+
+    /// 存档损坏/一致性检查失败（Fatal）。
+    pub const SAVE_CORRUPT: ErrorCode = ErrorCode::new("SAV", 1);
+    /// 存档 Schema 版本不兼容（Fatal，可诊断拒绝加载）。
+    pub const SAVE_SCHEMA_UNSUPPORTED: ErrorCode = ErrorCode::new("SAV", 2);
+    /// 过期寻路结果重入队（Recoverable）。
+    pub const PATH_STALE_REQUEUE: ErrorCode = ErrorCode::new("PTH", 1);
+    /// 重算超限进入受阻兜底（Recoverable）。
+    pub const PATH_FALLBACK_BLOCKED: ErrorCode = ErrorCode::new("PTH", 2);
+    /// 预算逼近上限提示（Diagnostic）。
+    pub const BUDGET_PRESSURE: ErrorCode = ErrorCode::new("BGT", 1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> SimErrorContext {
+        SimErrorContext {
+            tick: 42,
+            entity_id: 7,
+            system: "sim-pathfinding",
+        }
+    }
+
+    /// 分层可表达三类。
+    #[test]
+    fn three_classes_exist() {
+        let e = SimError::new(ErrorClass::Fatal, codes::SAVE_CORRUPT, "save digest mismatch", ctx());
+        assert_eq!(e.class, ErrorClass::Fatal);
+        assert_eq!(
+            SimError::new(ErrorClass::Recoverable, codes::PATH_STALE_REQUEUE, "stale", ctx()).class,
+            ErrorClass::Recoverable
+        );
+        assert_eq!(
+            SimError::new(ErrorClass::Diagnostic, codes::BUDGET_PRESSURE, "pressure", ctx()).class,
+            ErrorClass::Diagnostic
+        );
+    }
+
+    /// 错误码格式 MOD-NNNN。
+    #[test]
+    fn error_code_format() {
+        assert_eq!(codes::SAVE_CORRUPT.to_string(), "SAV-0001");
+        assert_eq!(codes::PATH_FALLBACK_BLOCKED.to_string(), "PTH-0002");
+        assert_eq!(codes::BUDGET_PRESSURE.to_string(), "BGT-0001");
+    }
+
+    /// 登记码唯一（模块+编号不重复）。
+    #[test]
+    fn registered_codes_are_unique() {
+        let all = [
+            codes::SAVE_CORRUPT,
+            codes::SAVE_SCHEMA_UNSUPPORTED,
+            codes::PATH_STALE_REQUEUE,
+            codes::PATH_FALLBACK_BLOCKED,
+            codes::BUDGET_PRESSURE,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "错误码不得重复登记");
+            }
+        }
+    }
+
+    /// 上下文：tick 为 u64、entity_id 语义=AgentId（文档钉义，此处断言字段可表达）。
+    #[test]
+    fn context_fields() {
+        let c = ctx();
+        let tick: u64 = c.tick;
+        let agent: u64 = c.entity_id;
+        assert_eq!((tick, agent), (42, 7));
+    }
+
+    /// 诊断通道确定性：emit 顺序=drain 顺序，drain 后清空。
+    #[test]
+    fn diagnostic_sink_is_ordered_and_drains() {
+        let mut sink = DiagnosticSink::new();
+        sink.emit(codes::BUDGET_PRESSURE, "p1", ctx());
+        sink.emit(codes::BUDGET_PRESSURE, "p2", ctx());
+        assert_eq!(sink.len(), 2);
+        let events = sink.drain();
+        assert_eq!(events[0].message, "p1");
+        assert_eq!(events[1].message, "p2");
+        assert!(sink.is_empty());
+    }
+}
