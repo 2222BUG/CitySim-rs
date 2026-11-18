@@ -50,7 +50,7 @@
 | 16 | 预算声明载体与 L1/L2/L3 按系统映射 | 2.7、EC-04 | 一般 | Stage 2C 前 |
 | 17 | A* 确定性细则（平局打破/邻居展开序/启发式舍入）；Stage 2A 退出判据 | 2.4、第 5 章 | 重要 | Stage 2A 前 |
 | 18 | EC-01 取消语义 / 冲突合并 / 验证判据 | EC-01 | 一般 | Spike C |
-| 19 | Stage 1 任务清单与原始路线图缺失（须重建入仓） | 第 5/8 章 | 重要 | Stage 1 开工前 |
+| 19 | Stage 1 任务清单与原始路线图缺失（须重建入仓） | 第 5/8 章 | 重要 | **已关闭（2026-11-19）**：任务清单重建入仓 docs/architecture/Stage-1-Task-List.md（T1~T9+退出条件 6 条+执行顺序）；原始路线图仍缺失，后续阶段清单随各阶段开工时按同口径重建 |
 | 20 | 预算滚动状态生命周期（若每 tick 重置则 tick 边界存档无意义） | EC-03、2.7 | 一般 | ADR-NEW-14 修订定案 |
 | 21 | 安全债：ruzstd 0.8.3 高危 RUSTSEC-2026-0344（解压炸弹）基线内不可修复（bevy_image 0.18.1 钉 ^0.8）；paste 1.0.15 / ttf-parser 0.25.1 unmaintained 无修复 | 2.1（安全检查） | 重要 | 随 Bevy 升级 ADR 消化（ruzstd ≥0.9.1 列为升级动机之一）；评估=纹理/资产解码路径属非权威侧（2.9），Stage 0 不加载不可信资产；Step 8 实测见 docs/benchmarks/dep-verify-REPORT.md |
 | 22 | Rust 基线 1.89（须 Cargo.lock 锁 ordered-float ≤5.4.0）vs workspace 实测 1.100.0 收敛取舍 | 2.1、rust-toolchain.toml | 一般 | **已关闭（2026-11-19 决策投票 6:1 定案 B）**：文档基线=开发工具链=CI 主工具链=1.100.0；1.89=Bevy 0.18.1 MSRV 参考，msrv-check 保留为门禁；ordered-float 钉版维持至 MSRV 调整复核 |
@@ -207,6 +207,21 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 - [ ] ADR-NEW-23：6 场景矩阵验收指标实测入 docs/benchmarks/（误判率/重算率/阻塞率/等待 tick）
 - [ ] ADR-NEW-23：PartialPath/UseValidPrefix 启用前清债务 #18
 
+## Stage 1 执行日志
+
+| 步骤 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| S1-1 | Stage 1 任务清单重建（docs/architecture/Stage-1-Task-List.md，T1~T9、退出条件、执行顺序） | 已完成（2026-11-19） | 本次提交 |
+| S1-2 | T1 workspace/crate 划分骨架（2.2 分层、权威/非权威清单、clippy 分层） | 待开始 | - |
+| S1-3 | T2 SimScalar 正式 crate（ADR-NEW-21） | 待开始 | - |
+| S1-4 | T3 时间与命令日志（2.9 条 7/8） | 待开始 | - |
+| S1-5 | T4 Agent 身份（2.3 高水位） | 待开始 | - |
+| S1-6 | T5 RNG 协议实装（ADR-NEW-22 + namespace 注册表） | 待开始 | - |
+| S1-7 | T6 canonical 编码器 + GlobalDigest（ADR-NEW-19，最优先上游） | 待开始 | - |
+| S1-8 | T7 存档/读档 EC-03 实装（保存并恢复 + 强读档等价入 R2） | 待开始 | - |
+| S1-9 | T8 错误分层骨架（EC-08） | 待开始 | - |
+| S1-10 | T9 确定性契约测试接入（2.9 八条证据表 + R2 场景骨架） | 待开始 | - |
+
 ## 变更历史
 
 | 日期 | 事件 |
@@ -227,6 +242,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | 2026-11-19 | **正式裁决**：10 个 ADR（NEW-14~23）按五家独立 AI 评审共识完成裁决（NEW-21 采纳；NEW-14/15/16/18/19/22 有条件采纳；NEW-17/20/23 联动组定案、机制 B 定案实施前置），全部转 Accepted（附条件）；勘误 8 处（NEW-23 矛盾句、NEW-20 决策 2 末句、NEW-18 证据声明、NEW-21 Q24.40 数字、NEW-15 条 5 缺省序、NEW-17 条 8 同步、NEW-22 namespace 注、NEW-16 表增补）；主文档同步 6 处（2.9 条 5、2.8 结果字段、EC-03 表 2 行、6.5 两处、第 7 章裁决注）；机制 B 三硬约束与 ID 分配点条款入 ADR-NEW-20；新增债务 #24/#25/#26、#23 更新；Stage 0 退出条件 6 满足、Stage 0 关闭（核对更新）；issues 回贴正式裁决；第六份报告（F）修正 5 处并入（机制 B 改"默认候选待 G5 锁定"、NEW-17 条文 10 回填 MarkBlocked、NEW-19/22 条件细化、2.4 转 Accepted） |
 | 2026-11-19 | **评审证据归档**：4 份独立评审报告原文（A/B/C/D）归档至 docs/architecture/review/archive/（含归档 README：报告代号映射、E 重复投递判定、F 修正采纳记录）；裁决证据链闭合 |
 | 2026-11-19 | **决策投票**：状态口径=A 全票 7:0（"Accepted（附条件）"注记规范入 0.2）；Rust 基线=B 6:1（1.100.0=文档/开发/CI 主基线，1.89=MSRV 参考，msrv-check 保留）；债务 #22 关闭；条件核销清单建立（28 项）；票面归档 review/archive/决策-投票-2026-11-19.docx；issues #12/#13 关闭 |
+| 2026-11-19 | **Stage 1 开工**：任务清单重建入仓（docs/architecture/Stage-1-Task-List.md，T1~T9）；债务 #19 关闭；新增 Stage 1 执行日志 |
 
 ## 关联
 
