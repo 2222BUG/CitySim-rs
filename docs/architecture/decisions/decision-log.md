@@ -184,24 +184,24 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 - [ ] ADR-NEW-14：各系统计量单位/每 tick 上限阈值实测回填
 - [ ] ADR-NEW-14：R2/R3 分层后门禁实测耗时记录入 docs/benchmarks/
 - [ ] ADR-NEW-14：预算滚动状态生命周期回填（债务 #20）
-- [ ] ADR-NEW-15：crate 分层 disallowed-types 落地验证不误伤非权威 crate
+- [x] ADR-NEW-15：crate 分层 disallowed-types 落地验证不误伤非权威 crate——已核销（2026-11-19，T1：crate-authority-list.md + 6 权威 crate clippy.toml + dep_graph_check CI 门禁；sim-view/sim-test-support 不受限，7 crate clippy CLEAN）
 - [ ] ADR-NEW-15：全序键字段按实际冲突模型定稿回填条文 5
 - [ ] ADR-NEW-16：永久兼容边界定义
-- [ ] ADR-NEW-16：存档序列化格式定案（债务 #11，随 ADR-NEW-19）
+- [x] ADR-NEW-16：存档序列化格式定案（债务 #11，随 ADR-NEW-19）——已核销（2026-11-19，T6/T7：sim-codec canonical 信封（CSIMCOD1|sim-save|Save）+ Schema v1（sim-save SCHEMA_VERSION=1）+ BLAKE3 尾摘要实施）
 - [ ] ADR-NEW-17：细则取值随 NEW-23 回填（兜底已回填；相交粒度/重算上限待 G5 数据复核）
-- [ ] ADR-NEW-17/20/23：联动组一致性验证 G1-G5 + 压测清单（200×200 极端长路径）
-- [ ] ADR-NEW-18：舍入规则 Rust 专项验证（误差不单向累积）
+- [ ] ADR-NEW-17/20/23：联动组一致性验证 G1-G5 + 压测清单（200×200 极端长路径）（G3"让步状态入 EC-03/GlobalDigest"已落实：sim-save budget_yield_count/stale_recompute_count 入档入摘要（2026-11-19 T7）；余 G1/G2/G4/G5 待 Stage 2A）
+- [x] ADR-NEW-18：舍入规则 Rust 专项验证（误差不单向累积）——已核销（2026-11-19，T2：simscalar 12 测试含 ties-away 舍入与 drift_golden_30tps（恒定 +7 raw/tick 固定偏差非加速累积）+ docs/benchmarks/tick-rate-drift 数据）
 - [ ] ADR-NEW-19：BLAKE3 跨平台位级一致性 Spike
-- [ ] ADR-NEW-19：编码器选型定案（含黄金测试向量、digest_version bump 规则）
-- [ ] ADR-NEW-19：纳入模块清单定稿（含预算队列/让步状态）
+- [x] ADR-NEW-19：编码器选型定案（含黄金测试向量、digest_version bump 规则）——已核销（2026-11-19，T6：自定义 canonical 编码器实施（sim-codec，否决 bincode）、黄金向量 3 组入仓 docs/benchmarks/globaldigest-golden-vectors.txt、DIGEST_VERSION=1 及 bump 规则入 ADR-NEW-19 条文）
+- [ ] ADR-NEW-19：纳入模块清单定稿（含预算队列/让步状态）（Stage 1 进展：sim-save 摘要已含预算队列/让步状态（G3）；全模块清单待模拟核心各模块落地定稿）
 - [ ] ADR-NEW-19：滚动摘要去留实测定案（性能 1~5 ms/tick 为估计值）
 - [ ] ADR-NEW-20：验收 6 项实测（含让步路径强读档等价）
 - [ ] ADR-NEW-20：G5 压测后 A/B/C 机制锁定（默认候选 B+三硬约束）
 - [ ] ADR-NEW-20：每 tick 节点上限、最大等待 tick 上限与受阻衔接定值（随 NEW-14 阈值）
-- [ ] ADR-NEW-20：请求/事务 ID 单一分配点定案（债务 #24）
-- [ ] ADR-NEW-21：R4 跨平台黄金值复验（dt_raw、drift_golden）
+- [ ] ADR-NEW-20：请求/事务 ID 单一分配点定案（债务 #24）（Stage 1 进展：T3/T7 已实装集中单一分配点（CommandIdAllocator / Allocators）；tick 内固定相位取号规则随调度器（Stage 2B）钉死）
+- [ ] ADR-NEW-21：R4 跨平台黄金值复验（dt_raw、drift_golden）（跨平台待 R4）
 - [ ] ADR-NEW-21：正式基准替代冒烟值（2.5 ns/op 不得作门禁）
-- [ ] ADR-NEW-22：namespace 注册表+注册期碰撞校验（债务 #25）
+- [x] ADR-NEW-22：namespace 注册表+注册期碰撞校验（债务 #25）——已核销（2026-11-19，T5：sim-rng NamespaceRegistry 注册期 64 位碰撞拒绝 + 构造碰撞测试）
 - [ ] ADR-NEW-22：TestU01/PractRand 统计测试或书面豁免（SplitMix64 统计充分性）
 - [ ] ADR-NEW-22：协议版本不符处理随 EC-03 兼容矩阵（债务 #12）回填
 - [ ] ADR-NEW-23：6 场景矩阵验收指标实测入 docs/benchmarks/（误判率/重算率/阻塞率/等待 tick）
@@ -243,6 +243,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | 2026-11-19 | **评审证据归档**：4 份独立评审报告原文（A/B/C/D）归档至 docs/architecture/review/archive/（含归档 README：报告代号映射、E 重复投递判定、F 修正采纳记录）；裁决证据链闭合 |
 | 2026-11-19 | **决策投票**：状态口径=A 全票 7:0（"Accepted（附条件）"注记规范入 0.2）；Rust 基线=B 6:1（1.100.0=文档/开发/CI 主基线，1.89=MSRV 参考，msrv-check 保留）；债务 #22 关闭；条件核销清单建立（28 项）；票面归档 review/archive/决策-投票-2026-11-19.docx；issues #12/#13 关闭 |
 | 2026-11-19 | **Stage 1 开工**：任务清单重建入仓（docs/architecture/Stage-1-Task-List.md，T1~T9）；债务 #19 关闭；新增 Stage 1 执行日志 |
+| 2026-11-19 | **Stage 1 完成**：T1~T9 全部交付（分层骨架/SimScalar/时间命令日志/AgentId/RNG+注册表/codec+GlobalDigest/sim-save 存档/错误分层/证据表+R2 骨架），退出条件 6/6（docs/benchmarks/Stage-1-Exit-CHECKLIST.md）；条件核销清单 5 项核销（累计 8/28）；提交序列 ef6defa..fed0189 |
 
 ## 关联
 
