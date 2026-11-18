@@ -1,0 +1,15 @@
+[package]
+name = "dep-verify"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "2.1 技术基线版本共存验证（Bevy 0.18.1 / bevy_egui 0.39.x / rapier 0.33.x，含 Rust 1.89 MSRV 断言）"
+publish = false
+
+# 2.1 技术基线（"待复现验证的版本基线"）——本 crate 的编译即复现验证证据。
+# Rapier 维度（2d/3d）未定（ADR-NEW-15 豁免/非权威侧归属待裁决），两个维度都解析验证。
+[dependencies]
+bevy = "=0.18.1"
+bevy_egui = "0.39"
+rapier2d = "0.33"
+rapier3d = "0.33"

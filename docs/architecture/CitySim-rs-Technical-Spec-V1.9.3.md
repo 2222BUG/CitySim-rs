@@ -51,7 +51,7 @@
 
 本文档中的设计要求默认属于 Proposed 或 Accepted，除非存在实际代码、测试报告或可复现基准证据。不得将设计目标、规划指标或 Spike 预期结果表述为已经实现的事实。
 
-本版并入的五项修订条文均标记为 **Proposed**，其中涉及的具体阈值和数值均待验证，没有实测数据；目前唯一的实验证据来自 Spike A 的 analysis.py（已运行），相关引用处会明确标注证据范围。2026-11-18 评审修订要求：Spike A 的 analysis.py 及其运行输出入仓 docs/benchmarks/，否则该证据不可复现（当前未随文档包提供，属待办）。
+本版并入的五项修订条文均标记为 **Proposed**，其中涉及的具体阈值和数值均待验证，没有实测数据；目前唯一的实验证据来自 Spike A 的 analysis.py（已运行），相关引用处会明确标注证据范围。2026-11-18 评审修订要求：Spike A 的 analysis.py 及其运行输出入仓 docs/benchmarks/，否则该证据不可复现（已于 2026-11-18 入仓 docs/benchmarks/：analysis.py 复核重建版 + analysis-output.txt，Stage 0 Step 2）。
 
 ### 0.3 架构演进原则
 
@@ -145,13 +145,13 @@ CitySim-rs 是一个基于 Rust + Bevy 的高性能城市模拟核心引擎。�
 | --- | --- | --- |
 | Rust | 核心开发语言 | Accepted |
 | Bevy | ECS、调度与可视化基础 | Accepted |
-| bevy_egui | 调试及工具界面候选依赖 | Proposed / 待验证 |
+| bevy_egui | 调试及工具界面候选依赖 | Proposed / 版本兼容与关键 API 已验证（Step 8，2026-11-18） |
 | Rapier | 物理能力候选依赖（以 f32 为基础，只能用于非权威侧；承担权威物理须经 ADR 豁免并提供位级确定性证据） | Proposed / 评估排期待定（Spike A/B/C 均无 Rapier 评估项，归属与截止点见 decision-log） |
 | CSR | 路网存储结构的重要基础 | Accepted |
 | A* | 路径搜索基础算法 | Accepted |
 | MFD | 交通流量模拟候选模型 | Accepted / 待验证 |
 
-原 V1.9 技术基线提出 Bevy 0.18.1、Rust 1.89、bevy_egui 0.39.x、rapier 0.33.x。这些版本应视为待复现验证的版本基线，而不是已经完成兼容性验证的事实。
+原 V1.9 技术基线提出 Bevy 0.18.1、Rust 1.89、bevy_egui 0.39.x、rapier 0.33.x。这些版本已于 2026-11-18（Stage 0 Step 8）完成正式锁定前五件套验证（依赖版本兼容、最小工程编译、目标平台构建、关键 API、许可证及安全检查），证据见 docs/benchmarks/dep-verify-REPORT.md。条件与例外：Rust 1.89 基线需 Cargo.lock 锁定 ordered-float 5.4.0（5.5.x 系列要求 rustc 1.90）；安全检查存在 ruzstd 0.8.3 高危告警（RUSTSEC-2026-0344，bevy_image 0.18.1 钉 ^0.8，基线内不可修复，随 Bevy 升级 ADR 消化）与 paste/ttf-parser 两条 unmaintained 警告；Rust 基线 1.89 与 workspace 实测 1.100.0 的收敛取舍待项目负责人定案。
 
 正式锁定前必须完成：
 
@@ -1058,7 +1058,7 @@ ADR 用于记录重要技术决策，不取代具体实现文档。每项 ADR �
 | 原 ADR | MFD 交通模型 | 待验证 |
 | 原 ADR | LOD 与预算控制 | Accepted |
 | 原 ADR | 并行计算、串行提交 | Accepted |
-| 原 ADR | Bevy 版本及依赖基线 | 待复现验证 |
+| 原 ADR | Bevy 版本及依赖基线 | 已验证（2026-11-18 Step 8 五件套；附 ordered-float 5.4.0 锁定条件与 ruzstd 安全债，见 docs/benchmarks/dep-verify-REPORT.md） |
 
 ### 6.2 V1.9.1 新增 ADR
 
