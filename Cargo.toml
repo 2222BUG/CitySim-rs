@@ -23,6 +23,7 @@ members = [
     "crates/sim-codec",
     "crates/sim-digest",
     "crates/sim-error",
+    "crates/sim-save",
 ]
 
 [workspace.package]

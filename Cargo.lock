@@ -5040,6 +5040,16 @@ name = "sim-rng"
 version = "0.1.0"
 
 [[package]]
+name = "sim-save"
+version = "0.1.0"
+dependencies = [
+ "sim-codec",
+ "sim-digest",
+ "sim-error",
+ "sim-rng",
+]
+
+[[package]]
 name = "sim-test-support"
 version = "0.0.1"
 
