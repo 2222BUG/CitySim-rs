@@ -1,0 +1,8 @@
+[package]
+name = "save-restore-spike"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CitySim-rs Stage 0 Step 5: EC-03 save-set minimal core + readback equivalence spike"
+
+[dependencies]
