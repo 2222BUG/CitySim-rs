@@ -1,0 +1,197 @@
+//! CitySim-rs sim-digest（Stage 1 T6）：GlobalDigest 权威状态摘要（ADR-NEW-19）。
+//!
+//! ADR-NEW-19 决策（2026-11-19 正式裁决采纳，附条件）：
+//! - 哈希：BLAKE3-256（备选 xxh3-64；否决 SHA-256/CRC64/serde 默认）。
+//! - 编码：与存档共用底层 canonical 编码规则（sim-codec），顶层 Schema 相互
+//!   独立（本 crate 的信封 Schema 仅用于摘要），domain separation 由
+//!   sim-codec 头（编码规则版本 | 模块标识 | 类型标识）承担。
+//! - digest_version u16：算法/纳入范围/编码变更必须 bump。
+//! - 存档点全量重算为判据；每 tick 滚动摘要仅是优化（保留与否以实测为准，
+//!   条件核销清单未决项）。
+//! - 纳入范围=全部权威状态（含预算队列/让步状态，NEW-19 条件③）——由调用方
+//!   按 `record(module, kind, payload)` 逐模块喂入；模块清单随 T7/T9 接入补全。
+//!
+//! 证据纪律：BLAKE3 跨平台位级一致性（x86_64/aarch64）为条件核销清单未决项
+//! （ADR-NEW-19 条件①，挂 R4）；黄金向量见 docs/benchmarks/globaldigest-golden-vectors.txt。
+#![forbid(unsafe_code)]
+
+use std::collections::BTreeMap;
+
+use sim_codec::CanonicalWriter;
+
+/// 摘要协议版本（EC-03 存档字段口径）。算法/纳入范围/编码变更必须 bump。
+pub const DIGEST_VERSION: u16 = 1;
+
+/// 256 位摘要（BLAKE3-256 输出）。
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Digest256(pub [u8; 32]);
+
+impl Digest256 {
+    pub fn hex(&self) -> String {
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+impl std::fmt::Debug for Digest256 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Digest256({})", self.hex())
+    }
+}
+
+/// 单条状态摘要：envelope = codec 头(编码规则版本|module|kind)
+///   | digest_version u16 | payload(u64 长度前缀) → BLAKE3-256。
+pub fn digest(module: &str, kind: &str, payload: &[u8]) -> Digest256 {
+    let mut w = CanonicalWriter::new(module, kind);
+    w.u16(DIGEST_VERSION);
+    w.bytes(payload);
+    Digest256(*blake3::hash(w.as_bytes()).as_bytes())
+}
+
+/// GlobalDigest：权威状态总摘要。
+/// 记录以 (module, kind) 为键的模块级摘要，finalize 时按键序（BTreeMap 稳定序）
+/// 合成总摘要——**记录顺序无关**（2.9 条 4 口径）。
+#[derive(Default)]
+pub struct GlobalDigest {
+    entries: BTreeMap<(String, String), [u8; 32]>,
+}
+
+impl GlobalDigest {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 记录一个模块的一类权威状态（重复记录同键=覆盖，取最后一次）。
+    pub fn record(&mut self, module: &str, kind: &str, payload: &[u8]) {
+        self.entries
+            .insert((module.to_string(), kind.to_string()), digest(module, kind, payload).0);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// 合成总摘要：envelope | 条目数 | (键, 摘要)* 按键序 → BLAKE3-256。
+    pub fn finalize(&self) -> Digest256 {
+        let mut w = CanonicalWriter::new("sim-digest", "GlobalDigest");
+        w.u16(DIGEST_VERSION);
+        w.seq_len(self.entries.len());
+        for ((module, kind), hash) in &self.entries {
+            w.str(module);
+            w.str(kind);
+            w.bytes(hash);
+        }
+        Digest256(*blake3::hash(w.as_bytes()).as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digest_version_pinned() {
+        assert_eq!(DIGEST_VERSION, 1, "摘要协议变更必须 bump 并修订 ADR-NEW-19");
+    }
+
+    /// domain separation：模块/类型标识参与信封，同负载不同域摘要不同。
+    #[test]
+    fn domain_separation() {
+        let a = digest("sim-agent", "AgentState", b"payload");
+        let b = digest("sim-network", "AgentState", b"payload");
+        let c = digest("sim-agent", "EdgeState", b"payload");
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+    }
+
+    /// 负载敏感性：单字节变化必须改变摘要。
+    #[test]
+    fn payload_sensitivity() {
+        let a = digest("m", "k", b"payload-x");
+        let b = digest("m", "k", b"payload-y");
+        assert_ne!(a, b);
+    }
+
+    /// 同输入稳定（同进程两次调用一致；跨构建稳定性由黄金向量测试保证）。
+    #[test]
+    fn same_input_same_digest() {
+        assert_eq!(digest("m", "k", b"x"), digest("m", "k", b"x"));
+    }
+
+    /// 记录顺序无关：BTreeMap 键序合成。
+    #[test]
+    fn global_digest_order_independent() {
+        let mut g1 = GlobalDigest::new();
+        g1.record("sim-agent", "Agents", b"a1");
+        g1.record("sim-network", "Network", b"n1");
+        g1.record("sim-economy", "Economy", b"e1");
+        let mut g2 = GlobalDigest::new();
+        g2.record("sim-economy", "Economy", b"e1");
+        g2.record("sim-agent", "Agents", b"a1");
+        g2.record("sim-network", "Network", b"n1");
+        assert_eq!(g1.finalize(), g2.finalize());
+    }
+
+    /// 模块敏感性：任一模块状态变化必须改变总摘要。
+    #[test]
+    fn global_digest_module_sensitivity() {
+        let mut g1 = GlobalDigest::new();
+        g1.record("sim-agent", "Agents", b"a1");
+        g1.record("sim-network", "Network", b"n1");
+        let mut g2 = GlobalDigest::new();
+        g2.record("sim-agent", "Agents", b"a2");
+        g2.record("sim-network", "Network", b"n1");
+        assert_ne!(g1.finalize(), g2.finalize());
+    }
+
+    /// 空集合确定性：无记录时总摘要稳定。
+    #[test]
+    fn empty_global_digest_is_stable() {
+        assert_eq!(GlobalDigest::new().finalize(), GlobalDigest::new().finalize());
+    }
+
+    /// 黄金向量打印（生成后固化进 golden_vectors 测试与
+    /// docs/benchmarks/globaldigest-golden-vectors.txt）：
+    /// cargo test -p sim-digest print_goldens -- --nocapture
+    #[test]
+    fn print_goldens() {
+        println!("DIGEST_VERSION = {DIGEST_VERSION}");
+        println!(
+            r#"digest("sim-agent","Agents",b"golden-1") = {}"#,
+            digest("sim-agent", "Agents", b"golden-1").hex()
+        );
+        println!(
+            r#"digest("sim-digest","GlobalDigest",b"") = {}"#,
+            digest("sim-digest", "GlobalDigest", b"").hex()
+        );
+        let mut g = GlobalDigest::new();
+        g.record("sim-agent", "Agents", b"a1");
+        g.record("sim-network", "Network", b"n1");
+        println!("global(a1,n1) = {}", g.finalize().hex());
+    }
+
+    /// 黄金向量（跨构建稳定性=R2 oracle 基础）：2026-11-19 print_goldens 打印后固化；
+    /// 向量文件 docs/benchmarks/globaldigest-golden-vectors.txt。
+    /// 本测试失败=摘要协议/编码规则变更未 bump digest_version。
+    #[test]
+    fn golden_vectors() {
+        assert_eq!(
+            digest("sim-agent", "Agents", b"golden-1").hex(),
+            "64ec5fc5c6062bc58af4df5050df8920e8f79201bfbe15d61ac1ef2287d15b2f"
+        );
+        assert_eq!(
+            digest("sim-digest", "GlobalDigest", b"").hex(),
+            "0f677f5692aaf571f6d440c1f931722ff5de1d99965baaec48472389f5091bb5"
+        );
+        let mut g = GlobalDigest::new();
+        g.record("sim-agent", "Agents", b"a1");
+        g.record("sim-network", "Network", b"n1");
+        assert_eq!(
+            g.finalize().hex(),
+            "11d8b5e30bed8a3b9f1bb17c0d5ebb71f513b0d73a794d0c6e2f970d39f1d1d5"
+        );
+    }
+}

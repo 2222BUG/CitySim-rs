@@ -20,6 +20,8 @@ members = [
     "crates/sim-view",
     "crates/simscalar",
     "crates/sim-rng",
+    "crates/sim-codec",
+    "crates/sim-digest",
 ]
 
 [workspace.package]

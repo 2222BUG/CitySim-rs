@@ -5004,8 +5004,20 @@ name = "sim-agent"
 version = "0.1.0"
 
 [[package]]
+name = "sim-codec"
+version = "0.1.0"
+
+[[package]]
 name = "sim-core"
 version = "0.1.0"
+
+[[package]]
+name = "sim-digest"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "sim-codec",
+]
 
 [[package]]
 name = "sim-economy"

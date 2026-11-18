@@ -1,0 +1,31 @@
+# GlobalDigest 黄金向量（digest_version = 1）
+
+- 日期：2026-11-19（Stage 1 T6）
+- 协议：ADR-NEW-19（BLAKE3-256 + sim-codec canonical 信封 + digest_version u16）
+- 生成：`cargo test -p sim-digest print_goldens -- --nocapture`，固化于
+  `crates/sim-digest/src/lib.rs::tests::golden_vectors`
+- 用途：跨构建/跨平台位级一致性基准（R2 oracle 基础；aarch64 复验挂 R4，
+  条件核销清单未决项）
+
+## 向量
+
+| # | 输入 | 摘要（hex） |
+| --- | --- | --- |
+| 1 | digest("sim-agent", "Agents", b"golden-1") | 64ec5fc5c6062bc58af4df5050df8920e8f79201bfbe15d61ac1ef2287d15b2f |
+| 2 | digest("sim-digest", "GlobalDigest", b"") | 0f677f5692aaf571f6d440c1f931722ff5de1d99965baaec48472389f5091bb5 |
+| 3 | GlobalDigest{("sim-agent","Agents",b"a1"), ("sim-network","Network",b"n1")}.finalize() | 11d8b5e30bed8a3b9f1bb17c0d5ebb71f513b0d73a794d0c6e2f970d39f1d1d5 |
+
+## 信封定义（向量 1/2 口径）
+
+```
+blake3( CSIMCOD1 | module(len-prefixed) | kind(len-prefixed)
+        | digest_version u16 LE | payload(u64 长度前缀 + 原始字节) )
+```
+
+总摘要（向量 3 口径）：条目按 (module, kind) BTreeMap 键序，记录顺序无关。
+
+## 纳入范围（NEW-19 条件③）
+
+全部权威状态由调用方 `record(module, kind, payload)` 喂入，模块清单随
+T7（存档接入）/T9（R2 场景）补全，须含预算队列与让步状态（budget_yield_count、
+stale_recompute_count、等待 tick、优先级）。
