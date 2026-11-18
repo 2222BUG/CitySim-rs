@@ -1,6 +1,7 @@
-# CitySim-rs workspace（Stage 0 Step 9 建立）
-# 成员=spikes/*（Spike 验证件）与 crates/*（支撑 crate）；
-# 权威/非权威 crate 分类随 2.2 目录结构定案（decision-log 债务 #15）后另行划分。
+# CitySim-rs workspace（Stage 0 Step 9 建立；Stage 1 T1 扩充分层 crate）
+# 成员=spikes/*（Spike 验证件）与 crates/*（正式 crate）；
+# 权威/非权威分类见 docs/architecture/crate-authority-list.md（债务 #15 已定案），
+# 依赖方向由 .github/scripts/dep_graph_check.py 强制。
 [workspace]
 resolver = "2"
 members = [
@@ -10,6 +11,13 @@ members = [
     "spikes/save-restore-spike",
     "crates/sim-test-support",
     "crates/dep-verify",
+    "crates/sim-core",
+    "crates/sim-agent",
+    "crates/sim-network",
+    "crates/sim-pathfinding",
+    "crates/sim-traffic",
+    "crates/sim-economy",
+    "crates/sim-view",
 ]
 
 [workspace.package]

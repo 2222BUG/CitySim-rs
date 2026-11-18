@@ -23,6 +23,13 @@ jobs:
           - spikes/rng-spike
           - spikes/network-tx-spike
           - spikes/save-restore-spike
+          - crates/sim-core
+          - crates/sim-agent
+          - crates/sim-network
+          - crates/sim-pathfinding
+          - crates/sim-traffic
+          - crates/sim-economy
+          - crates/sim-view
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -42,6 +49,12 @@ jobs:
           - spikes/rng-spike
           - spikes/network-tx-spike
           - spikes/save-restore-spike
+          - crates/sim-core
+          - crates/sim-agent
+          - crates/sim-network
+          - crates/sim-pathfinding
+          - crates/sim-traffic
+          - crates/sim-economy
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -65,6 +78,15 @@ jobs:
       # （ordered-float 由 Cargo.lock 钉 ≤5.4.0，见 decision-log 债务 #22）。
       - name: cargo check (MSRV)
         run: cargo check --workspace --all-targets
+
+  dep-graph:
+    name: "依赖方向检查（2.2 分层 / 债务 #15）"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 约束清单 docs/architecture/crate-authority-list.md（规则 1-5）
+      - name: dep_graph_check
+        run: python3 .github/scripts/dep_graph_check.py
 
   r2-deterministic:
     name: "R2: 确定性场景门禁（占位）"

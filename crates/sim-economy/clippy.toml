@@ -1,0 +1,2 @@
+disallowed-types = ["std::collections::HashMap", "std::collections::HashSet", "f32", "f64"]
+disallowed-methods = ["std::time::Instant::now", "std::time::SystemTime::now"]
