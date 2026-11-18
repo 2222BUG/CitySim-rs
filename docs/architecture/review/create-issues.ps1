@@ -1,5 +1,7 @@
 # CitySim-rs 评审 issue 批量创建（需先安装 gh CLI 并 gh auth login）
-# 用法：pwsh docs/architecture/review/create-issues.ps1
+# 用法：pwsh docs/architecture/review/create-issues.ps1 [-SkipMeta]
+#   -SkipMeta：跳过首条 Meta 邀请（已建时使用）
+param([switch]$SkipMeta)
 $repo = "2222BUG/CitySim-rs"
 $template = "`n## 裁决记录`n- 裁决：采纳 / 有条件采纳 / 拒绝 / 延后`n- 理由：`n- 验证条件："
 
@@ -17,7 +19,9 @@ $issues = @(
     @{ t = "[ADR-NEW-23] 过期结果细则（相交粒度/重算上限/兜底/行走删路）——裁决"; b = "文件：docs/architecture/adr/ADR-NEW-23-路网事务过期结果细则.md`n关联：EC-01 / ADR-NEW-17 / ADR-NEW-20；评审问题 #3 #4`n决策要点：包围盒 1 mm 网格并集聚合；recompute_limit=3；兜底默认 MarkBlocked；行走删路 RerouteNearest 优先。实证：network-tx-spike 8/8（docs/benchmarks/Spike-C-NetworkTx-REPORT.md）。$template" }
 )
 
-foreach ($i in $issues) {
+$list = $issues
+if ($SkipMeta) { $list = $issues | Select-Object -Skip 1 }
+foreach ($i in $list) {
     gh issue create --repo $repo --title $i.t --body $i.b
 }
-Write-Host "done: $($issues.Count) issues"
+Write-Host "done: $($list.Count) issues"
