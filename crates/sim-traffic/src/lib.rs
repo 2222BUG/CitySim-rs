@@ -271,6 +271,99 @@ pub fn evaluate_fit(fit: &TriangleFit, holdout: &[MfdSample]) -> FitErrorReport 
     }
 }
 
+// ===========================================================================
+// 凹形有理饱和族（2026-11-19 决策4 定案默认族；ADR-NEW-25 决策 1）
+// q(k) = q_max · k / (k + k_half)；定点 +−×÷ only（禁 exp/log/powf）。
+// ===========================================================================
+
+/// 有理饱和拟合参数（定点整数）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RationalSaturationFit {
+    /// 渐近流量上界 q_max（‰）
+    pub q_max_permille: u64,
+    /// 半饱和密度 k_half（‰）——q(k_half)=q_max/2；零密度斜率=q_max·1000/k_half。
+    pub k_half_permille: u64,
+}
+
+impl RationalSaturationFit {
+    /// 零密度斜率（‰，q/k 放大 1000 倍）；物理上界=1000‰。
+    pub fn zero_density_slope_permille(&self) -> u64 {
+        if self.k_half_permille == 0 { return u64::MAX; }
+        (self.q_max_permille as u128 * 1000 / self.k_half_permille as u128) as u64
+    }
+}
+
+/// 定点模型流量 q(k)=q_max·k/(k+k_half)（‰），就近舍入（与 SimScalar 契约同口径）。
+pub fn q_rational_permille(fit: &RationalSaturationFit, k_permille: u64) -> u64 {
+    if k_permille == 0 { return 0; }
+    let num = fit.q_max_permille as u128 * k_permille as u128;
+    let den = (k_permille + fit.k_half_permille) as u128;
+    ((num + den / 2) / den) as u64
+}
+
+/// 辨识（确定性定点）：q_max 与 k_half **联合**整数网格最小化残差平方和
+/// （u128 定点；平局取先遇到的最小 (q_max, k_half)）。q_max 候选域=观测最大值
+/// 至其 4 倍+16（渐近值在未饱和数据下不可由观测最大值代表——W1 实测教训：
+/// 200/250 合成数据观测 max q=160，单取观测值必偏）；k_half 候选域=1..4·k_max。
+/// **越界判失败**：零密度斜率超出 1000‰（每车每 tick 至多一条边）直接 panic
+/// ——决策4"自由估计越界判失败"（禁止把物理约束当估计用，豆包意见）。
+pub fn fit_rational_saturation(samples: &[MfdSample]) -> RationalSaturationFit {
+    assert!(!samples.is_empty(), "no samples");
+    let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
+    let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
+    let mut best: Option<(u128, u64, u64)> = None; // (sse, q_max, k_half)
+    for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
+        for k_half in 1..=k_max.saturating_mul(4).max(1) {
+            let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+            let mut sse: u128 = 0;
+            for s in samples {
+                let e = q_rational_permille(&fit, s.k_permille) as i128 - s.q_permille as i128;
+                sse += (e * e) as u128;
+            }
+            if best.is_none_or(|(b, _, _)| sse < b) {
+                best = Some((sse, q_max, k_half));
+            }
+        }
+    }
+    let (_, q_max, k_half) = best.unwrap();
+    let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+    assert!(
+        fit.zero_density_slope_permille() <= 1000,
+        "fitted zero-density slope {}‰ exceeds physical bound 1000‰",
+        fit.zero_density_slope_permille()
+    );
+    fit
+}
+
+/// 用留出样本评估有理饱和拟合（ADR-NEW-25 3a 独立参照；分区=k_turn=k_half）。
+pub fn evaluate_rational_fit(fit: &RationalSaturationFit, holdout: &[MfdSample]) -> FitErrorReport {
+    assert!(!holdout.is_empty(), "no holdout samples");
+    let k_turn = fit.k_half_permille.max(1);
+    let mut free_max = 0u64;
+    let mut trans_max = 0u64;
+    let mut sat_max = 0u64;
+    for s in holdout {
+        let qm = q_rational_permille(fit, s.k_permille);
+        let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
+            / (s.q_permille.max(1) as u128);
+        let err = err as u64;
+        if s.k_permille < k_turn / 2 {
+            free_max = free_max.max(err);
+        } else if s.k_permille < k_turn.saturating_mul(4) {
+            trans_max = trans_max.max(err);
+        } else {
+            sat_max = sat_max.max(err);
+        }
+    }
+    FitErrorReport {
+        free_flow_max_err_permille: free_max,
+        transition_max_err_permille: trans_max,
+        saturated_max_err_permille: sat_max,
+        k_c_err_permille: 0, // 平台/饱和族无峰值拐点，N/A
+        points_evaluated: holdout.len(),
+    }
+}
+
 /// (k, q) 采样点：k=活跃车辆/边（放大 1000 倍定点），q=边遍历/边每 tick（放大 1000 倍）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MfdSample {
@@ -571,5 +664,58 @@ mod tests {
             "free-flow err {}‰",
             r.free_flow_max_err_permille
         );
+    }
+
+    // ---- 凹形有理饱和族（决策4 W1）----
+
+    fn rational_samples(q_max: u64, k_half: u64, ks: &[u64]) -> Vec<MfdSample> {
+        let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+        ks.iter()
+            .map(|&k| MfdSample { k_permille: k, q_permille: q_rational_permille(&fit, k) })
+            .collect()
+    }
+
+    #[test]
+    fn synthetic_rational_is_recovered() {
+        // 人工合成精确有理饱和图（q_max=200‰、k_half=150‰）→辨识恢复。
+        let ks: Vec<u64> = (1..=40).map(|i| i * 25).collect();
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        assert_eq!(fit.q_max_permille, 200);
+        assert_eq!(fit.k_half_permille, 250);
+    }
+
+    #[test]
+    fn rational_identification_is_deterministic() {
+        let ks: Vec<u64> = (1..=30).map(|i| i * 17).collect();
+        let a = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        let b = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn rational_zero_density_slope_is_bounded() {
+        let ks: Vec<u64> = (1..=30).map(|i| i * 33).collect();
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        assert!(fit.zero_density_slope_permille() <= 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds physical bound")]
+    fn rational_bound_violation_panics() {
+        // 越界判失败（决策4：禁止把物理约束当估计）：q_max=500/k_half=50 → 斜率 10000‰。
+        let ks: Vec<u64> = (1..=20).map(|i| i * 10).collect();
+        let _ = fit_rational_saturation(&rational_samples(500, 50, &ks));
+    }
+
+    #[test]
+    fn rational_holdout_meets_criteria_on_synthetic() {
+        // 合成数据留出评估：三区判据应全过（常量单一来源）。
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
+        let r = evaluate_rational_fit(&fit, &rational_samples(200, 250, &holdout));
+        assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
+        assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
+        assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);
     }
 }
