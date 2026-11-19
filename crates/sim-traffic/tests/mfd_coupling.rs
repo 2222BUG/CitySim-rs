@@ -19,7 +19,7 @@ use sim_traffic::GridTraffic;
 const W: u32 = 16;
 const H: u32 = 16;
 const SEED: u64 = 0x00C0_FFEE_1234_5678;
-const K_C_PERMILLE: u64 = 500; // 需求压力分母（确定性参数；来源见 ADR-NEW-26 草案）
+const K_REF_PERMILLE: u64 = 500; // 需求压力分母（特征密度 k_ref，ADR-NEW-26 决策4 修订；占位值，待凹形模型定案回填）
 const TICKS: u64 = 30;
 const CHUNK: usize = 4;
 
@@ -98,8 +98,9 @@ fn run_scenario(threads: usize, chaos_seed: u64, parallel: bool) -> [u8; 32] {
             }).sum::<u64>()
         };
         // 需求压力通道（确定性定点：计数→密度→压力）
-        let _ = count; // 计数经并行/串行两路必须一致（下方断言）
-        let pressure = gt.demand_pressure_bp(K_C_PERMILLE);
+        // 决策4 整改：并行聚合结果必须参与被测信号（原 let _ = count 被指未参与）。
+        assert_eq!(count, gt.active_count(), "parallel aggregation must match authoritative state");
+        let pressure = gt.demand_pressure_bp(K_REF_PERMILLE);
         reg.note_demand_pressure(pressure);
         reg.spend(1, t % 50); // 混合工作量通道
         reg.end_tick();

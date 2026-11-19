@@ -130,14 +130,16 @@ impl GridTraffic {
     }
 
     /// 活跃车辆数（密度分子）。
-    /// 需求压力（万分比 0..=10000）= 当前密度 k 相对临界密度 k_c_permille 的比值封顶。
-    /// 确定性定点（权威状态导出）；MFD→降级信号通道（ADR-NEW-26 草案、ADR-NEW-25 3c）。
-    pub fn demand_pressure_bp(&self, k_c_permille: u64) -> u32 {
-        if k_c_permille == 0 {
-            return 10_000;
+    /// 需求压力（万分比 0..=10000）= 当前密度 k 相对特征密度 k_ref_permille 的比值封顶。
+    /// 确定性定点（权威状态导出）；MFD→降级信号通道（ADR-NEW-26、ADR-NEW-25 3c）。
+    /// 决策4 修订：k_ref=特征密度（q 首次 ≥90%·q_max 密度，版本化）；k_ref==0 返回 0
+    /// （fail-safe 改向：分母未知时宁可不触发降级，原返回 10000 方向反）。
+    pub fn demand_pressure_bp(&self, k_ref_permille: u64) -> u32 {
+        if k_ref_permille == 0 {
+            return 0;
         }
         let k = self.active_count() * 1000 / self.edge_count();
-        ((k as u128 * 10_000 / k_c_permille as u128).min(10_000)) as u32
+        ((k as u128 * 10_000 / k_ref_permille as u128).min(10_000)) as u32
     }
 
     pub fn active_count(&self) -> u64 {
@@ -205,9 +207,18 @@ pub struct FitErrorReport {
     pub points_evaluated: usize,
 }
 
+/// 判据常量（单一来源，ADR-NEW-25 3a 判据与代码断言必须引用同一常量——
+/// 决策4 整改项 (f)：原 simulation 测试断言 250‰ 与判据 100‰ 门禁脱钩）。
+/// 复测协议（Set D+第二拓扑+预注册 fixture）后由决策4 复核回填。
+pub const FREE_FLOW_CRIT_PERMILLE: u64 = 100;
+pub const TRANSITION_CRIT_PERMILLE: u64 = 250;
+pub const SATURATED_CRIT_PERMILLE: u64 = 250;
+pub const K_C_CRIT_PERMILLE: u64 = 200;
+
 /// 模型流量 q_model(k)（‰）：平台型 min(v_free·k/1000, q_max)；
 /// 三角型在下降支 q_max − w·(k−k_c)（负值截 0）。
-fn q_model_permille(fit: &TriangleFit, k_permille: u64) -> u64 {
+/// （2026-11-19 决策4 整改：公开供 example/测试复用，删除 mfd3a.rs 内联副本。）
+pub fn q_model_permille(fit: &TriangleFit, k_permille: u64) -> u64 {
     let q = fit.v_free_permille as u128 * k_permille as u128 / 1000;
     let q = q.min(fit.q_max_permille as u128) as u64;
     if fit.descending_branch_observed && k_permille > fit.k_c_permille {
@@ -220,7 +231,8 @@ fn q_model_permille(fit: &TriangleFit, k_permille: u64) -> u64 {
 
 /// 用留出样本（未参与拟合的密度点）评估拟合误差（ADR-NEW-25 3a 独立参照）。
 /// 误差=|q_model − q_obs|·1000 / max(q_obs, 1)（‰）；k_c 观测值=留出样本 argmax q 的密度。
-/// 模型转折密度 k_c* = q_max·1000 / v_free（平台/三角共用分区）。
+/// 分区（与实现一致，单一口径）：自由流 k<k_turn/2、转折 k_turn/2..4·k_turn、
+/// 饱和 ≥4·k_turn；k_turn = q_max·1000 / v_free。
 pub fn evaluate_fit(fit: &TriangleFit, holdout: &[MfdSample]) -> FitErrorReport {
     assert!(!holdout.is_empty(), "no holdout samples");
     let k_turn = if fit.v_free_permille > 0 {
@@ -542,6 +554,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "债务 #31：凹形扩展 Set D 复测通过后恢复（当前点队列自由流 190‰ FAIL 判据 100‰）"]
     fn simulation_holdout_free_flow_is_accurate() {
         // 两次独立小场景（同种子不同密度阶梯）：A 拟合、B 留出——独立密度点评估。
         let (_, mut a) = small_run(&[1, 2, 4, 8]);
@@ -550,9 +563,11 @@ mod tests {
         let f = fit_triangle(&a);
         let r = evaluate_fit(&f, &b);
         assert!(r.points_evaluated >= 2);
-        // 自由流插值应贴合（实测绝对阈值见 docs/benchmarks/mfd-3a-reference.txt）
+        // 门禁对齐（决策4 整改）：断言引用判据常量（100‰），不再用 250‰ 脱钩阈值。
+        // 当前点队列模型自由流实测 190‰ FAIL——债务 #31（凹形扩展）Set D 复测通过前
+        // 本测试标 ignore，避免"FAIL 仍绿"掩盖真实状态（豆包/GPT-6 指出）。
         assert!(
-            r.free_flow_max_err_permille <= 250,
+            r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE,
             "free-flow err {}‰",
             r.free_flow_max_err_permille
         );

@@ -2,7 +2,8 @@
 //! 拟合集 A（密度 2→256 倍增）；试点集 B（3→384）用于发现判据/边界问题并导出
 //! 三区边界；确认集 C（5→640，与 A/B 均不同的密度点）用于**确认**判据与边界——
 //! 判据结论以 C 为准（B 为 pilot，披露口径：区域边界系见 B 数据后定义）。
-//! 判据：自由流区 ≤100‰、饱和区 ≤100‰、k_c ≤200‰（仅三角型）；转折区只记录。
+//! 判据：自由流区 ≤100‰、转折区 ≤250‰、饱和区 ≤250‰、k_c ≤200‰（仅三角型）——
+//! 判据常量单一来源=sim-traffic lib.rs（决策4 整改 (f)：原头注释与实现不一致）。
 //!
 //! 运行：cargo run --release --example mfd3a -p sim-traffic
 //! 输出：docs/benchmarks/mfd-3a-reference.txt
@@ -98,16 +99,7 @@ fn main() {
     let report = |label: &str, holdout: &[MfdSample], emit: &mut dyn FnMut(String)| -> FitErrorReport {
         emit(format!("per-point error {label} |q_model - q_obs| / q_obs (‰):"));
         for s in holdout {
-            let q_model = {
-                let q = fit.v_free_permille as u128 * s.k_permille as u128 / 1000;
-                let q = q.min(fit.q_max_permille as u128) as u64;
-                if fit.descending_branch_observed && s.k_permille > fit.k_c_permille {
-                    let drop = fit.w_permille as u128 * (s.k_permille - fit.k_c_permille) as u128 / 1000;
-                    q.saturating_sub(drop as u64)
-                } else {
-                    q
-                }
-            };
+            let q_model = sim_traffic::q_model_permille(&fit, s.k_permille);
             let err = (q_model as u128).abs_diff(s.q_permille as u128) * 1000
                 / (s.q_permille.max(1) as u128);
             emit(format!(
@@ -130,22 +122,23 @@ fn main() {
     emit(format!(
         "  free-flow max err   = {:>4}‰  (k < k_turn/2; criterion <= 100‰)     {}",
         r.free_flow_max_err_permille,
-        if r.free_flow_max_err_permille <= 100 { "PASS" } else { "FAIL" }
+        if r.free_flow_max_err_permille <= sim_traffic::FREE_FLOW_CRIT_PERMILLE { "PASS" } else { "FAIL" }
     ));
     emit(format!(
-        "  transition max err  = {:>4}‰  (k_turn/2 .. 4*k_turn; record only)",
-        r.transition_max_err_permille
+        "  transition max err  = {:>4}‰  (k_turn/2 .. 4*k_turn; criterion <= 250‰)  {}",
+        r.transition_max_err_permille,
+        if r.transition_max_err_permille <= sim_traffic::TRANSITION_CRIT_PERMILLE { "PASS" } else { "FAIL" }
     ));
     emit(format!(
         "  saturated max err   = {:>4}‰  (k >= 4*k_turn; criterion <= 250‰)   {}",
         r.saturated_max_err_permille,
-        if r.saturated_max_err_permille <= 250 { "PASS" } else { "FAIL" }
+        if r.saturated_max_err_permille <= sim_traffic::SATURATED_CRIT_PERMILLE { "PASS" } else { "FAIL" }
     ));
     if fit.descending_branch_observed {
         emit(format!(
             "  k_c position err    = {:>4}‰  (triangle only; criterion <= 200‰) {}",
             r.k_c_err_permille,
-            if r.k_c_err_permille <= 200 { "PASS" } else { "FAIL" }
+            if r.k_c_err_permille <= sim_traffic::K_C_CRIT_PERMILLE { "PASS" } else { "FAIL" }
         ));
     } else {
         emit(format!(

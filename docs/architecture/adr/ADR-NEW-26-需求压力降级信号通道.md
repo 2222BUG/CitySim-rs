@@ -23,8 +23,13 @@ MFD（非权威派生统计）如何安全地接入权威降级状态机（Budge
 ## 决策
 
 1. **需求压力通道**：sim-traffic 新增确定性定点输出
-   `demand_pressure_bp(k_c_permille) -> u32`（0..=10000）：
-   `pressure = min(10000, (active/edge_count × 1000) × 10000 / k_c)`，k_c==0 返回 10000。
+   `demand_pressure_bp(k_ref_permille) -> u32`（0..=10000）：
+   `pressure = min(10000, (active/edge_count × 1000) × 10000 / k_ref)`，
+   **k_ref==0 返回 0**（2026-11-19 决策4 修订：fail-safe 改向——分母未知时宁可不触发
+   降级，不得默认最大压力；原返回 10000 方向反了，MiniMax 指出）。
+   k_ref（特征密度）=q 首次 ≥90%·q_max 的密度（版本化定义；由辨识模型导出并随
+   拟合参数入档入回放配置，旧口径 k_c=argmax q=采样上沿随密度阶梯漂移 2.5 倍，
+   8 家评审一致弃用）。特征密度语义变更时强读档等价边界=同版本内（MiMo）。
    输出进入 `BudgetRegistry::note_demand_pressure(pressure_bp)`。
 2. **有效压力 = max(工作量, 需求)**：`effective_bp = max(used_bp, demand_bp)`
    驱动降级触发/恢复门（连续 trigger_ticks / recover_ticks、闭开区间语义沿用
@@ -55,8 +60,8 @@ MFD（非权威派生统计）如何安全地接入权威降级状态机（Budge
 
 - ADR-NEW-25 3c 条件达成一半（生产代码路径 + 专用耦合测试已实装）；
   余"MFD 信号触发降级的实际收益验证"随债务 #31 模型形式裁决后补。
-- 债务 #31 裁决后：k_c 来源（平台型/凹形模型）须复核 demand_pressure_bp 的
-  分母口径，本 ADR 相应修订。
+- 2026-11-19 决策4 已裁决（债务 #31=凹形扩展启动）：分母口径已修订为 k_ref
+  特征密度（见决策 2 修订注），新 k_ref 定案前需求通道维持 L1 封顶（千问Go!）。
 - ADR-NEW-14 C2 节 L1/L2/L3 映射补"需求通道封顶 L1"约束（已随 S2/V2 落盘）。
 
 ## 验证方法
