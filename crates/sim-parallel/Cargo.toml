@@ -8,3 +8,6 @@ publish = false
 
 [dev-dependencies]
 sim-test-support = { path = "../sim-test-support" }
+sim-digest = { path = "../sim-digest" }
+sim-rng = { path = "../sim-rng" }
+sim-codec = { path = "../sim-codec" }

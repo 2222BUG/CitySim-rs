@@ -1,0 +1,17 @@
+   Compiling sim-parallel v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-parallel)
+   Compiling sim-rng v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-rng)
+   Compiling sim-test-support v0.0.1 (D:\AIWORK\CITYSIM\crates\sim-test-support)
+   Compiling sim-pathfinding v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-pathfinding)
+    Finished `release` profile [optimized] target(s) in 1.07s
+     Running `target\release\examples\concurrent_stress.exe`
+== Stage 2B 并发队列压测（200x200, 500 请求, churn 每 8 tick 删 4 边, Q=65536/tick）==
+口径：budget_yield_count=累计让步事件；stale_recomputes=路网轴重算（两轴分离）；recompute 分母=stale 查询总数
+threads=1 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=341.5ms
+  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
+threads=2 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=283.5ms
+  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
+threads=8 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=236.3ms
+  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
+threads=4 chaos=42: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=243.4ms
+  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
+线程无关（1/2/8）+混沌无关（4）摘要一致：PASS

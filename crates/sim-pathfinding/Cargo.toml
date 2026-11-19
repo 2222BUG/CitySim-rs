@@ -7,3 +7,10 @@ publish = false
 
 [dependencies]
 sim-network = { path = "../sim-network" }
+
+[dev-dependencies]
+sim-parallel = { path = "../sim-parallel" }
+sim-digest = { path = "../sim-digest" }
+sim-codec = { path = "../sim-codec" }
+sim-rng = { path = "../sim-rng" }
+sim-test-support = { path = "../sim-test-support" }

@@ -5039,6 +5039,9 @@ dependencies = [
 name = "sim-parallel"
 version = "0.1.0"
 dependencies = [
+ "sim-codec",
+ "sim-digest",
+ "sim-rng",
  "sim-test-support",
 ]
 
@@ -5046,7 +5049,12 @@ dependencies = [
 name = "sim-pathfinding"
 version = "0.1.0"
 dependencies = [
+ "sim-codec",
+ "sim-digest",
  "sim-network",
+ "sim-parallel",
+ "sim-rng",
+ "sim-test-support",
 ]
 
 [[package]]
