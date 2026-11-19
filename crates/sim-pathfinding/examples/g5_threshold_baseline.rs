@@ -150,14 +150,14 @@ fn main() {
     run_scenario("open", &open, &coords, n_nodes, "thr.open");
 
     // 场景 2：障碍 20%（确定性：event_u64 % 5 == 0 剔除）
-    let obs = Network::from_edges(grid_edges(W, H, &|eid| event_u64(SEED, "thr.obs", eid, 0) % 5 != 0));
+    let obs = Network::from_edges(grid_edges(W, H, &|eid| !event_u64(SEED, "thr.obs", eid, 0).is_multiple_of(5)));
     run_scenario("obstacle-20pct", &obs, &coords, n_nodes, "thr.obs");
 
     // 场景 3：迷宫（奇数行全墙，每 10 列留口——走廊迫使长绕行）
     let maze = Network::from_edges(grid_edges(W, H, &|eid| {
         // eid 顺序：行内每格先 (n→n+1, n+1→n) 再 (n→n+w, n+w→n)；
         // 近似判据：按 eid%4 与行号奇偶过滤竖边（简化为确定性 3/4 保留奇数行竖边删除）
-        let row = (eid / (W * 2)) as u64;
+        let row = eid / (W * 2);
         if row % 2 == 1 {
             // 奇数行：竖边全删（留口由横向间隙形成）
             eid % 4 >= 2

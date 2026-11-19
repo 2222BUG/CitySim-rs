@@ -1,16 +1,16 @@
    Compiling sim-pathfinding v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-pathfinding)
-    Finished `release` profile [optimized] target(s) in 0.45s
+    Finished `release` profile [optimized] target(s) in 0.50s
      Running `target\release\examples\g5_threshold_baseline.exe`
 === 债务 #27 阈值基线（机制 B: b=64 g=2 L=40000）===
 requests per scenario=200 seed=0x00C0FFEE12345678
 [open] completed=200 blocked=0
   dup_rate mean=0.404 p95=0.598 max=0.635
-  worst_request_expansions=801 worst_single_attempt=353 worst_yields=3 worst_wall_ms=0.665
+  worst_request_expansions=801 worst_single_attempt=353 worst_yields=3 worst_wall_ms=0.684
 [obstacle-20pct] completed=199 blocked=1
   dup_rate mean=0.523 p95=0.648 max=0.664
-  worst_request_expansions=26548 worst_single_attempt=10228 worst_yields=8 worst_wall_ms=21.845
+  worst_request_expansions=26548 worst_single_attempt=10228 worst_yields=8 worst_wall_ms=21.402
 [maze-corridor] completed=199 blocked=1
   dup_rate mean=0.471 p95=0.641 max=0.662
-  worst_request_expansions=49751 worst_single_attempt=17047 worst_yields=9 worst_wall_ms=35.957
+  worst_request_expansions=49751 worst_single_attempt=17047 worst_yields=9 worst_wall_ms=35.706
 === 判定口径参考：MiMo 候选=worst_tick>1ms 或 dup>0.7；Grok=dup≥1.0；Gemini=P95>0.65 ===
 
