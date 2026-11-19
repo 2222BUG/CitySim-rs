@@ -213,7 +213,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 - [ ] ADR-NEW-23：PartialPath/UseValidPrefix 启用前清债务 #18
 - [ ] ADR-NEW-24：Edge 有向语义入数据字典（方向性/平行边策略/代价下限不变量）（债务 #8 剩余，Stage 2B 前）
 - [ ] ADR-NEW-24：机制 B→A 切换阈值定案（债务 #27，Stage 2B 并发压测后）
-- [ ] ADR-NEW-24：事务重试 tx_id 语义（债务 #28）+全局每 tick 寻路配额（债务 #29）
+- [x] ADR-NEW-24：事务重试 tx_id 语义（债务 #28）+全局每 tick 寻路配额（债务 #29）——**2026-11-19 Stage 2B 前置定案**（#28=沿用原 tx_id 全序重排+重试上限 3 转受阻；#29=TickBudget{remaining=Q}，B_k≤min(b·2^k,L,remaining)，Q 占位 65536 待 NEW-14 阈值回填）；实装与测试随 Stage 2B
 - [ ] ADR-NEW-24：A* 细则补遗（h 一致性不变量/L=|V|×reopen 上界/前驱裁决明文/CSR u32 边界）（债务 #30）
 - [ ] ADR-NEW-24：让步路径强读档等价专项 + 并发队列压测（Stage 2B 硬门禁）+ R3/R4
 

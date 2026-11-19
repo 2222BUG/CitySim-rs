@@ -111,9 +111,67 @@ impl PathFinder {
         out
     }
 
+    /// 全局每 tick 配额下的寻路请求（债务 #29 定案，ADR-NEW-24 决策 3 补充）。
+    ///
+    /// B_k ≤ min(b·2^k, L, budget.remaining)；实耗展开数扣减 `budget.remaining`；
+    /// 配额耗尽即让步（`Yielded { expanded: 0 }`，不消耗预算）。
+    /// 多请求处理顺序（请求 ID 稳定序）与每 tick `TickBudget::reset()` 由调用方负责。
+    pub fn request_with_budget(
+        &mut self,
+        net: &Network,
+        coords: &[(i64, i64)],
+        start: u64,
+        goal: u64,
+        budget: &mut TickBudget,
+    ) -> FindOutcome {
+        if budget.remaining == 0 {
+            self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+            return FindOutcome::Yielded { expanded: 0 };
+        }
+        let b_k = self
+            .policy
+            .budget_for_yield(self.budget_yield_count, net.node_count())
+            .min(budget.remaining);
+        let out = find_once(net, coords, start, goal, b_k);
+        if let FindOutcome::Complete { expanded, .. } | FindOutcome::Yielded { expanded } = &out {
+            budget.remaining = budget.remaining.saturating_sub(*expanded);
+        }
+        match &out {
+            FindOutcome::Complete { .. } | FindOutcome::Unreachable => {
+                self.budget_yield_count = 0;
+            }
+            FindOutcome::Yielded { .. } => {
+                self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+            }
+        }
+        out
+    }
+
     /// 过期重算记账（与让步计数分离；ADR-NEW-20 双计数器）。
     pub fn note_stale_recompute(&mut self) {
         self.stale_recompute_count = self.stale_recompute_count.saturating_add(1);
+    }
+}
+
+/// 全局每 tick 寻路配额（债务 #29 定案）。
+///
+/// `remaining` = 本 tick 尚可消耗的节点展开数（确定性工作量单位，对齐 ADR-NEW-14 条 3）；
+/// 每 tick 由调用方在 tick 边界 `reset()` 归满（每 tick 预算独立）。
+/// 多请求共享：请求实耗扣减，耗尽后其余请求让步——全局每 tick 总展开 ≤ `quota`。
+#[derive(Clone, Debug)]
+pub struct TickBudget {
+    pub quota: u64,
+    pub remaining: u64,
+}
+
+impl TickBudget {
+    pub fn new(quota: u64) -> Self {
+        TickBudget { quota, remaining: quota }
+    }
+
+    /// tick 边界重置。
+    pub fn reset(&mut self) {
+        self.remaining = self.quota;
     }
 }
 
@@ -405,5 +463,60 @@ mod tests {
         let FindOutcome::Complete { cost, path, .. } = a else { panic!("must complete") };
         assert!(cost >= 0, "饱和运算不得环绕为负");
         assert_eq!(path, vec![1]);
+    }
+
+    /// 债务 #29：全局配额截断——多请求共享 TickBudget，总展开 ≤ Q；耗尽后让步；reset 后恢复。
+    #[test]
+    fn global_budget_caps_total_expansions_per_tick() {
+        let (net, coords) = grid(10, 10);
+        let mut finder = PathFinder::new(BudgetPolicy::default());
+        let mut budget = TickBudget::new(64);
+        let mut total: u64 = 0;
+        let mut completes = 0u32;
+        let mut zero_yield = 0u32;
+        for _ in 0..10 {
+            let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+            match &out {
+                FindOutcome::Complete { expanded, .. } => {
+                    total += expanded;
+                    completes += 1;
+                }
+                FindOutcome::Yielded { expanded } => {
+                    total += expanded;
+                    if *expanded == 0 {
+                        zero_yield += 1;
+                    }
+                }
+                FindOutcome::Unreachable => panic!("10x10 网格角到角必须可达"),
+            }
+        }
+        assert!(total <= 64, "全局每 tick 总展开必须 ≤ Q，实测 {total}");
+        assert!(completes >= 1, "配额内应有请求完成");
+        assert!(zero_yield >= 1, "配额耗尽后请求必须以 expanded:0 让步");
+        assert_eq!(budget.remaining, 0, "配额应恰好耗尽");
+        // 下一 tick 重置后可以重新工作
+        budget.reset();
+        let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+        assert!(matches!(out, FindOutcome::Complete { .. }), "reset 后应完成");
+    }
+
+    /// 机制 B 推进：让步后下一 tick 以更大 B_k 重试，有限 tick 内完成（债务 #23/#29 交叉）。
+    #[test]
+    fn yield_then_fresh_budget_completes() {
+        let (net, coords) = grid(10, 10);
+        let mut finder = PathFinder::new(BudgetPolicy { b: 1, g: 2 });
+        let mut budget = TickBudget::new(1024);
+        let mut ticks = 0u64;
+        loop {
+            ticks += 1;
+            budget.reset(); // 每 tick 预算独立
+            let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+            match out {
+                FindOutcome::Complete { .. } => break,
+                FindOutcome::Yielded { .. } => assert!(ticks <= 16, "让步必须在有限 tick 内终止"),
+                FindOutcome::Unreachable => panic!("必须可达"),
+            }
+        }
+        assert_eq!(finder.budget_yield_count, 0, "完成后让步计数清零");
     }
 }
