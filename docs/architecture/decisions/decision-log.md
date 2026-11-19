@@ -268,7 +268,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 1. **溢出契约**（QWEN-1）：h_manhattan 改 i128+饱和收敛、g/f 累加改 saturating_add、参考 Dijkstra 同步；回归 overflow_saturates_deterministically。
 2. **父边精确重建**（QWEN-2）：parent 记录 (父节点, 松弛实际边 ID)、回溯不再取 min edge id；回归 parallel_edge_reconstruction_is_exact（平行边下返回边集代价和==报告 cost）。
 3. **判据口径**：重算率定义=过期重算请求占比（分母=请求总数），实测 3/200=0.015；0.0027（3/1100）保留标注为 stale 检查口径。
-4. **阈值过渡口径**：0.53 记为 g=2 结构性观测基线（不触发/误触发风险），切换触发候选=最坏单 tick 耗时 SLO 或 dup_rate 超阈；数值待 Stage 2B 并发压测定案（债务 #27）。
+4. **阈值过渡口径**：0.53 记为 g=2 结构性观测基线（不触发/误触发风险），切换触发候选=最坏单 tick 耗时 SLO 或 dup_rate 超阈；数值待 Stage 2B 并发压测定案（债务 #27）。**2026-11-19 V4 实测更新**：dup_rate 被证伪为判据（三场景 max 0.664≈解析上界 2/3）；候选判据改确定性工作量单位=单次尝试展开 >4096 或让步 ≥8 次切机制 A（open 353/3 不触发，obstacle 10228/8、maze 17047/9 触发），数据 docs/benchmarks/G5-threshold-baseline.txt。
 
 过时/澄清（不采）：Claude 引 ADR-23"重做展开消耗预算问题不存在"句已于 2026-11-18 勘误修复（属过时信息）；Claude"不可达走满档总展开≈105k"推算前提不成立（open 耗尽即 Unreachable 提前终止，不走满让步档）；budget_yield_count=单请求计数器终值（完成清零语义），累计让步≈405=605−200（MANIFEST 口径）；G5 churn 删边非成对（MANIFEST 口径，成对删边列入 Claude 补测清单）。
 
@@ -332,7 +332,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | --- | --- | --- | --- |
 | V1 | 3a 独立参照验证（拟合 A/试点 B/确认 C 三集+多 seed 平均、三区判据复核回填、mfd-3a-reference.txt） | 已完成（2026-11-19） | docs(stage2c): V1——3a 独立参照验证 || V2 | 3c 生产代码路径（MFD→降级信号接入 BudgetRegistry）+专用耦合线程无关测试 | 已完成（2026-11-19） | docs(stage2c): V2——需求压力降级通道（ADR-NEW-26 草案）+耦合线程无关测试 |
 | V3 | 债务 #30 A* 细则补遗测试（reopen 差分/等代价多路径/乱序注入/CSR u32 边界） | 已完成（2026-11-19） | docs(stage2c): V3——A* 细则四组边界测试（astar_edge_cases 5 测试） |
-| V4 | 债务 #27 机制 B→A 切换阈值基线（障碍/迷宫场景 dup_rate 多场景实测→候选提案） | 待开始 | - |
+| V4 | 债务 #27 机制 B→A 切换阈值基线（障碍/迷宫场景 dup_rate 多场景实测→候选提案） | 已完成（2026-11-19） | docs(stage2c): V4——G5 阈值基线三场景实测（dup_rate 证伪、候选判据=单次展开 4096/让步 8） |
 | V5 | 条件核销清单更新+状态迁移+终验 | 待开始 | - |
 
 V1 实测结论：确认集 C 饱和区 102‰ PASS（判据 250‰）、自由流区 190‰ FAIL（判据 100‰）、
@@ -377,6 +377,7 @@ V1 实测结论：确认集 C 饱和区 102‰ PASS（判据 250‰）、自由�
 | 2026-11-19 | **V1 3a 独立参照验证**：三集协议（A 拟合/B 试点/C 确认）+多 seed 平均、evaluate_fit 三区评估 API、判据复核回填 ADR-NEW-25；确认集饱和 102‰ PASS、自由流 190‰ FAIL→模型形式凹形缺陷立债务 #31（裁决前 MFD 仅统计展示）；docs/benchmarks/mfd-3a-reference.txt |
 | 2026-11-19 | **V2 3c 生产代码路径**：需求压力降级通道（sim-traffic demand_pressure_bp→BudgetRegistry::note_demand_pressure，effective=max、需求单独触发封顶 L1、状态入档入摘要）+ADR-NEW-26 草案；专用耦合线程无关测试 mfd_coupling（1/2/8 线程+混沌注入+串行参考三路摘要一致）；budget+traffic 测试 12+14 全绿 |
 | 2026-11-19 | **V3 债务 #30 A* 细则补遗**：astar_edge_cases 5 测试（reopen 差分=违反代价下限前提场景 13 vs 1010、等代价前驱=先发现保留、乱序注入=代价/摘要稳定、CSR u32=179,400 边 300×300 网格、h 一致性不变式边界书面化） |
+| 2026-11-19 | **V4 债务 #27 阈值基线**：G5 三场景（open/obstacle-20%/maze）各 200 请求实测——dup_rate 证伪为切换判据（max 0.664≈2/3 结构上界）；候选判据=单次尝试展开>4096 或让步≥8 切机制 A（确定性工作量单位，墙钟仅遥测）；数据 docs/benchmarks/G5-threshold-baseline.txt，ADR-NEW-24 阈值段回填 |
 
 ## 关联
 
