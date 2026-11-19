@@ -223,6 +223,15 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | S1-9 | T8 错误分层骨架（EC-08） | 已完成（2026-11-19） | docs(stage1): T8——sim-error 错误分层骨架（5 测试 + 错误码规范） |
 | S1-10 | T9 确定性契约测试接入（2.9 八条证据表 + R2 场景骨架） | 已完成（2026-11-19） | feat(stage1): T9——2.9 八条证据表 + R2 场景骨架（4 测试） |
 
+## Stage 2A 执行日志
+
+| 阶段 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| Phase 1 | 定案前置：ADR-NEW-24（CSR 定案、A* 确定性细则、机制 B 参数、Stage 2A 退出判据、取消/冲突语义） | 已完成（2026-11-19） | docs(stage2a): ADR-NEW-24 草案（f205722） |
+| Phase 2 | 实施：sim-network（CSR+原子事务+ADR-NEW-23 两阶段判定，9 测试）+ sim-pathfinding（确定性 A*+机制 B 预算让步+双计数器，7 测试） | 已完成（2026-11-19） | feat(stage2a): sim-network + sim-pathfinding |
+| Phase 3 | G1-G5 联动组 200×200 压测（机制 A/B/C 对比） | 进行中 | - |
+| Phase 4 | Stage 2A 退出核对 + ADR-NEW-24 走第 7 章裁决 | 待开始 | - |
+
 ## 变更历史
 
 | 日期 | 事件 |
@@ -247,6 +256,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | 2026-11-19 | **Stage 1 完成**：T1~T9 全部交付（分层骨架/SimScalar/时间命令日志/AgentId/RNG+注册表/codec+GlobalDigest/sim-save 存档/错误分层/证据表+R2 骨架），退出条件 6/6（docs/benchmarks/Stage-1-Exit-CHECKLIST.md）；条件核销清单 5 项核销（累计 8/28）；提交序列 ef6defa..fed0189 |
 | 2026-11-19 | **社区门面**（运营，不涉设计决策）：README 重构+英文版 README.en.md+CONTRIBUTING.md；GitHub Topics/About 设置；good first issue 批量开设（源自条件核销清单与决策债务的可认领任务） |
 | 2026-11-19 | **Stage 2A 开工**：ADR-NEW-24 草案落盘（CSR 定案、A* 确定性细则五条、机制 B 参数 g=2/L=|V|、Stage 2A 退出判据、取消/冲突语义）——收口债务 #8/#17/#18/#26 的定案部分；状态 Proposed，随实施验证后走第 7 章裁决 |
+| 2026-11-19 | **Stage 2A Phase 2 实施**：sim-network（CSR 邻接稳定序、事务原子发布、代价原位、ADR-NEW-23 两阶段相交判定+合法性，9 测试）+ sim-pathfinding（ADR-NEW-24 五条确定性 A*、机制 B 预算让步 B_k=min(b·2^k,\|V\|)、解析上界断言、双计数器分离，7 测试，含 Dijkstra 最优性对拍与平局打破黄金断言）；workspace 140 测试全绿 |
 
 ## 关联
 
