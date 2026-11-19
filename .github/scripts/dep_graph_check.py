@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """依赖方向检查（Stage 1 T1，债务 #15 约束执行）。
 规则见 docs/architecture/crate-authority-list.md：
- 1. sim-core 无依赖；
+ 1. sim-core 仅可依赖基础设施 crate（sim-codec、sim-error），不得依赖其他 crate；
  2. 权威 crate 不依赖非权威 crate；
  3. 任何 crate 不依赖 sim-view；
  4. crates/ 不依赖 spikes/；
@@ -34,8 +34,8 @@ for name, data in members():
     deps = set(data.get('dependencies', {}).keys())
     dev_deps = set(data.get('dev-dependencies', {}).keys())
 
-    if name == 'sim-core' and deps:
-        errors.append(f'规则1：sim-core 不得有依赖，实际 {sorted(deps)}')
+    if name == 'sim-core' and deps - {'sim-codec', 'sim-error'}:
+        errors.append(f'规则1：sim-core 仅可依赖 sim-codec/sim-error，实际 {sorted(deps)}')
     if name in AUTHORITATIVE:
         # 运行时依赖禁止指向非权威；sim-test-support 仅允许出现在 dev-dependencies（规则 5）
         bad = deps & NON_AUTHORITATIVE

@@ -34,7 +34,7 @@ f32/f64、Instant::now/SystemTime::now——详见 clippy-layering-REPORT.md。
 
 ## 依赖方向约束（dep_graph_check.py 强制）
 
-1. sim-core 不得有任何依赖（模拟核心是依赖根）。
+1. sim-core 仅可依赖基础设施 crate（sim-codec、sim-error）；不得依赖业务层/工具层（模拟核心是业务依赖根）。（2026-11-19 Stage 2C C3a 修订：预算注册表需 canonical 编码与错误分层；两基础设施 crate 均为叶子 crate，无环。）
 2. 权威 crate 不得依赖非权威 crate（sim-view、sim-test-support、dep-verify）。
 3. 任何 crate 不得依赖 sim-view（工具层不可被模拟依赖；2.2"工具层不能成为模拟状态的唯一管理者"）。
 4. crates/ 与权威层不得依赖 spikes/（验证件不得成为正式依赖）。
