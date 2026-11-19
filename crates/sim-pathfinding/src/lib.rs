@@ -7,8 +7,9 @@
 //! - 机制 B（ADR-NEW-20 三硬约束）：B_k = min(b·g^k, L)，g=2，L=|V|；单 tick 原子搜索
 //!   （方案③：跨 tick 不保存部分搜索状态，让步即丢弃本 tick 进度、下 tick 以更大预算重做）；
 //!   解析上界 k ≤ ⌈log_g(|V|/b)⌉ + 1 tick 内完成或进入受阻判定。
-//! - 双计数器分离（ADR-NEW-20）：budget_yield_count（预算让步）与 stale_recompute_count
-//!   （过期重算）互不共用上限。
+//! - 三计数器分离（ADR-NEW-20 + X2 审计修复）：budget_yield_count（请求自身预算让步，
+//!   债务 #27 判据只认它）与 stale_recompute_count（过期重算）与 quota_yield_count
+//!   （全局配额耗尽让步）互不混用。
 
 #![forbid(unsafe_code)]
 
@@ -78,7 +79,20 @@ pub enum FindOutcome {
     /// 本 tick 节点预算耗尽（让步；不保存中间状态，下 tick 以 B_k 重做）。
     Yielded { expanded: u64 },
     /// open 集耗尽未达目标：不可达（进入受阻终态的判定输入）。
-    Unreachable,
+    /// 携带本次展开节点数（X2 审计修复：不可达搜索实耗必须入账，否则同 tick
+    /// 多不可达请求可绕过全局配额 Q，违反 ADR-NEW-14 条 3）。
+    Unreachable { expanded: u64 },
+}
+
+impl FindOutcome {
+    /// 本次搜索展开的节点数（三种结果均携带；全局配额扣减用）。
+    pub fn expanded(&self) -> u64 {
+        match self {
+            FindOutcome::Complete { expanded, .. }
+            | FindOutcome::Yielded { expanded }
+            | FindOutcome::Unreachable { expanded } => *expanded,
+        }
+    }
 }
 
 /// 寻路器状态：双计数器 + 机制 B 执行（ADR-NEW-20）。
@@ -89,6 +103,10 @@ pub struct PathFinder {
     pub budget_yield_count: u64,
     /// 过期重算计数（与让步分离，独立上限由调用方约束）。
     pub stale_recompute_count: u64,
+    /// 配额让步计数（全局每 tick 配额耗尽导致的让步；X2 审计修复：与
+    /// budget_yield_count 分离——债务 #27 "让步≥8"切换判据只认请求自身预算
+    /// 让步，配额让步混入会污染判据，MiMo/GPT-6/Gemini 审计命中）。
+    pub quota_yield_count: u64,
 }
 
 impl PathFinder {
@@ -101,7 +119,7 @@ impl PathFinder {
         let budget = self.policy.budget_for_yield(self.budget_yield_count, net.node_count());
         let out = find_once(net, coords, start, goal, budget);
         match &out {
-            FindOutcome::Complete { .. } | FindOutcome::Unreachable => {
+            FindOutcome::Complete { .. } | FindOutcome::Unreachable { .. } => {
                 self.budget_yield_count = 0;
             }
             FindOutcome::Yielded { .. } => {
@@ -125,7 +143,7 @@ impl PathFinder {
         budget: &mut TickBudget,
     ) -> FindOutcome {
         if budget.remaining == 0 {
-            self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+            self.quota_yield_count = self.quota_yield_count.saturating_add(1);
             return FindOutcome::Yielded { expanded: 0 };
         }
         let b_k = self
@@ -133,11 +151,10 @@ impl PathFinder {
             .budget_for_yield(self.budget_yield_count, net.node_count())
             .min(budget.remaining);
         let out = find_once(net, coords, start, goal, b_k);
-        if let FindOutcome::Complete { expanded, .. } | FindOutcome::Yielded { expanded } = &out {
-            budget.remaining = budget.remaining.saturating_sub(*expanded);
-        }
+        // 不可达同样携带 expanded 并扣减全局配额（X2 审计修复）。
+        budget.remaining = budget.remaining.saturating_sub(out.expanded());
         match &out {
-            FindOutcome::Complete { .. } | FindOutcome::Unreachable => {
+            FindOutcome::Complete { .. } | FindOutcome::Unreachable { .. } => {
                 self.budget_yield_count = 0;
             }
             FindOutcome::Yielded { .. } => {
@@ -247,7 +264,7 @@ pub fn find_once(
             open.insert((ff, hh, to), ());
         }
     }
-    FindOutcome::Unreachable
+    FindOutcome::Unreachable { expanded }
 }
 
 // ---------------- 测试 ----------------
@@ -386,7 +403,7 @@ mod tests {
                     assert!(ticks <= bound, "超解析上界: ticks={ticks} bound={bound}");
                     continue;
                 }
-                FindOutcome::Unreachable => panic!("网格必连通"),
+                FindOutcome::Unreachable { .. } => panic!("网格必连通"),
             }
         }
         assert!(ticks <= bound, "终态 tick 数必须 ≤ 解析上界");
@@ -405,7 +422,8 @@ mod tests {
         for id in [1u64, 2, 3, 4] {
             net.publish(Tx { id: 100 + id, ops: vec![Op::RemoveEdge { id }] }).unwrap();
         }
-        assert_eq!(find_once(&net, &coords, 0, 3, 100), FindOutcome::Unreachable);
+        let out = find_once(&net, &coords, 0, 3, 100);
+        assert!(matches!(out, FindOutcome::Unreachable { expanded } if expanded > 0), "不可达须携带展开数");
     }
 
     /// 双计数器分离（ADR-NEW-20）：让步与过期重算互不影响。
@@ -487,7 +505,7 @@ mod tests {
                         zero_yield += 1;
                     }
                 }
-                FindOutcome::Unreachable => panic!("10x10 网格角到角必须可达"),
+                FindOutcome::Unreachable { .. } => panic!("10x10 网格角到角必须可达"),
             }
         }
         assert!(total <= 64, "全局每 tick 总展开必须 ≤ Q，实测 {total}");
@@ -514,9 +532,49 @@ mod tests {
             match out {
                 FindOutcome::Complete { .. } => break,
                 FindOutcome::Yielded { .. } => assert!(ticks <= 16, "让步必须在有限 tick 内终止"),
-                FindOutcome::Unreachable => panic!("必须可达"),
+                FindOutcome::Unreachable { .. } => panic!("必须可达"),
             }
         }
         assert_eq!(finder.budget_yield_count, 0, "完成后让步计数清零");
+    }
+
+    /// X2 审计修复回归：不可达搜索实耗必须扣减全局配额（否则同 tick 多不可达
+    /// 请求可绕过 Q，违反 ADR-NEW-14 条 3）。
+    #[test]
+    fn unreachable_expansion_is_charged_to_budget() {
+        let (net, coords) = grid(3, 3);
+        let mut finder = PathFinder::new(BudgetPolicy { b: 64, g: 2 });
+        let mut budget = TickBudget::new(64);
+        // 9 号节点在 3x3 网格中不存在——用孤立图改测不可达更稳：从网格取一节点
+        // 去边不可行（grid 不暴露），改用目标=孤立构造。
+        let isolated = Network::from_edges(vec![]);
+        let ic: Vec<(i64, i64)> = vec![(0, 0), (1000, 0)];
+        let out = finder.request_with_budget(&isolated, &ic, 0, 1, &mut budget);
+        assert!(
+            matches!(out, FindOutcome::Unreachable { expanded } if expanded == 1),
+            "孤立图：展开起点 1 个节点后 open 耗尽"
+        );
+        assert_eq!(budget.remaining, 63, "不可达实耗 1 展开必须入账");
+        // 可达路径对照：同一 budget 继续扣减
+        let _ = finder.request_with_budget(&net, &coords, 0, 8, &mut budget);
+        assert!(budget.remaining < 63, "后续请求继续扣减");
+    }
+
+    /// X2 审计修复回归：配额耗尽让步计入 quota_yield_count，不污染
+    /// budget_yield_count（债务 #27 "让步≥8"切换判据只认请求自身预算让步）。
+    #[test]
+    fn quota_yield_does_not_pollute_switch_criterion() {
+        let (net, coords) = grid(10, 10);
+        let mut finder = PathFinder::new(BudgetPolicy { b: 64, g: 2 });
+        let mut budget = TickBudget::new(0); // 配额为 0：首请求即配额让步
+        let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+        assert!(matches!(out, FindOutcome::Yielded { expanded: 0 }), "配额耗尽即让步");
+        assert_eq!(finder.quota_yield_count, 1, "配额让步单独计数");
+        assert_eq!(finder.budget_yield_count, 0, "配额让步不得污染预算让步判据");
+        // 对照：请求自身预算让步仍走 budget_yield_count
+        let mut b2 = TickBudget::new(4);
+        let _ = finder.request_with_budget(&net, &coords, 0, 99, &mut b2);
+        assert!(finder.budget_yield_count >= 1, "自身预算让步单独计数");
+        assert_eq!(finder.quota_yield_count, 1, "对照请求不新增配额让步");
     }
 }

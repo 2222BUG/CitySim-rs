@@ -81,7 +81,7 @@ fn run_request(net: &Network, coords: &[(i64, i64)], start: u64, goal: u64, n_no
                 discarded += expanded;
                 k += 1;
             }
-            FindOutcome::Unreachable => {
+            FindOutcome::Unreachable { .. } => {
                 return ReqStat {
                     dup_rate: if discarded == 0 { 0.0 } else { 1.0 },
                     total_expansions: discarded,

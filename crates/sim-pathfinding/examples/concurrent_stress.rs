@@ -191,7 +191,7 @@ fn run(threads: usize, chaos_seed: u64) -> (String, Metrics) {
                     m.yield_events += 1;
                     still.push(r);
                 }
-                FindOutcome::Unreachable => {
+                FindOutcome::Unreachable { .. } => {
                     m.blocked_unreachable += 1;
                 }
             }

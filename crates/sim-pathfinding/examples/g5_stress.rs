@@ -194,7 +194,7 @@ fn main() {
                 worst_exp = worst_exp.max(e);
                 break;
             }
-            FindOutcome::Unreachable => {
+            FindOutcome::Unreachable { .. } => {
                 blocked = 1.0;
                 break;
             }

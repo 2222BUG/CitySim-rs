@@ -82,7 +82,7 @@ fn main() {
             match pf.request(&net, &coords, start, goal) {
                 FindOutcome::Complete { path, .. } => break path,
                 FindOutcome::Yielded { .. } => continue,
-                FindOutcome::Unreachable => break Vec::new(),
+                FindOutcome::Unreachable { .. } => break Vec::new(),
             }
         };
         total_ticks += ticks_used;
@@ -123,7 +123,7 @@ fn main() {
                                     break;
                                 }
                                 FindOutcome::Yielded { .. } => continue,
-                                FindOutcome::Unreachable => {
+                                FindOutcome::Unreachable { .. } => {
                                     blocked += 1;
                                     break;
                                 }

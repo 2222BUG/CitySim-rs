@@ -391,8 +391,8 @@ mfd_coupling 断言聚合一致；workspace 全绿（0 失败，1 ignore=有意�
 
 | 步骤 | 内容 | 状态 | 提交 |
 | --- | --- | --- | --- |
-| X1 | P0 口径/判定修复（sim-traffic）：k/q 同群体采样（last_step_population）+q≤k fail-fast、ZoneBands 预注册绝对带去自指、越界判失败口径（binding 仅诊断）、目标判据同构（相对误差平方和）、数值安全（u128/除零）、证据 commit 标注（SETD_COMMIT）、稳态敏感性（back-half） | 进行中 | - |
-| X2 | 预算修复（sim-pathfinding）：Unreachable 携带 expanded 扣预算、让步计数分离、回归测试 | 待开始 | - |
+| X1 | P0 口径/判定修复（sim-traffic）：k/q 同群体采样（last_step_population）+q≤k fail-fast、ZoneBands 预注册绝对带去自指、越界判失败口径（binding 仅诊断）、目标判据同构（相对误差平方和）、数值安全（u128/除零）、证据 commit 标注（SETD_COMMIT）、稳态敏感性（back-half） | 已完成（2026-11-20）| fix(stage2c): X1——审计 P0 修复 |
+| X2 | 预算修复（sim-pathfinding）：Unreachable 携带 expanded 扣预算、让步计数分离（budget_yield_count/ quota_yield_count）、FindOutcome::expanded()、回归测试 2 个 | 已完成（2026-11-20）| fix(stage2c): X2——Unreachable 预算入账+让步计数分离 |
 | X3 | 广义凹形族（p-norm p=2）并行辨识 | 待开始 | - |
 | X4 | Set D 复测（修后重跑，证据带 commit）+豆包 A2 复判路径 | 待开始 | - |
 | X5 | 状态/文档卫生：#27 保持候选、#28 改待实装、Q=65536 钉死、README/主文档/核销清单/ADR-26 公式 | 待开始 | - |
@@ -440,6 +440,7 @@ mfd_coupling 断言聚合一致；workspace 全绿（0 失败，1 ignore=有意�
 | 2026-11-19 | **V5 收官**：条件核销 #30（A* 细则补遗 5 测试）、#27 基线进展注（数值定案随 G2）；ADR-NEW-25 转 Verified 条件进展表（3a 部分通过+债务 #31、3c 半达成、阈值候选、R3 过/R4 移交）；goal-53eb075f V1–V5 全程完成 |
 | 2026-11-19 | **决策4 投票裁决落盘（债务 #31）**：10 票 A7:B2:C1→凹形扩展启动；ADR-NEW-25 决策 1/3a 判据修订（函数族写死+去自指+Set D）、ADR-NEW-26 k_ref 特征密度修订、代码整改 6 项（判据常量单一来源/门禁对齐/fail-safe 改向/双实现删除/聚合断言）；MiniMax E 异议与 Claude 疑云如实记录 |
 | 2026-11-20 | **债务 #31 执行面 W1–W3**：凹形有理饱和拟合器实装（自由估计+越界披露+物理可行回退）、Set D 复测（两拓扑自由流 148/142‰ FAIL）→按预注册终止条件**转 C**：MFD 永久纯统计展示、ADR-NEW-26 通道冻结、债务 #31 核销；E 议题（微观基准修基）为唯一重开路径 |
+| 2026-11-20 | **债务闭合审计与整改**：7 家审计（审计1.MD）确认转 C 程序忠实但证据基础四项 P0→债务 #31 回退"暂定（审计退回）"；整改 X1 P0 修复（k/q 口径、预注册绝对带、越界判失败、目标同构，c8a7a28）、X2 预算修复（Unreachable 入账、让步计数分离）；审计包/单文本包/分享规矩（d8f1a11/eaf7b1b/c2b2e53），issue #27 |
 
 ## 关联
 
