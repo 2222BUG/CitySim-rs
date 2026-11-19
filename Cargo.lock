@@ -5085,7 +5085,9 @@ name = "sim-traffic"
 version = "0.1.0"
 dependencies = [
  "sim-codec",
+ "sim-core",
  "sim-digest",
+ "sim-parallel",
  "sim-rng",
 ]
 

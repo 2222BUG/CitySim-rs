@@ -9,3 +9,7 @@ publish = false
 sim-codec = { path = "../sim-codec" }
 sim-digest = { path = "../sim-digest" }
 sim-rng = { path = "../sim-rng" }
+
+[dev-dependencies]
+sim-core = { path = "../sim-core" }
+sim-parallel = { path = "../sim-parallel" }

@@ -93,6 +93,10 @@ pub struct BudgetRegistry {
     over_streak: u32,
     /// 连续低于恢复线 tick 计数（恢复门）。
     under_streak: u32,
+    /// 本 tick 外部需求压力（万分比，0..=10000；MFD→降级信号通道，ADR-NEW-26 草案）。
+    demand_bp: u32,
+    /// 连续高需求 tick 计数（与 over_streak 同门限语义）。
+    demand_streak: u32,
     pub level: DegradationLevel,
     thresholds: DegradationThresholds,
 }
@@ -106,6 +110,8 @@ impl BudgetRegistry {
             rolling_used_bp: 0,
             over_streak: 0,
             under_streak: 0,
+            demand_bp: 0,
+            demand_streak: 0,
             level: DegradationLevel::Normal,
             thresholds,
         }
@@ -128,6 +134,12 @@ impl BudgetRegistry {
             .expect("undeclared system");
         self.spent[idx] = self.spent[idx].saturating_add(amount);
         self.spent[idx] > self.decls[idx].per_tick_cap
+    }
+
+    /// 记录本 tick 外部需求压力（万分比；确定性定点，来自权威状态导出——
+    /// 如 sim-traffic 密度/k_c 比值。ADR-NEW-26 草案通道；每 tick 末清零）。
+    pub fn note_demand_pressure(&mut self, pressure_bp: u32) {
+        self.demand_bp = pressure_bp.min(10_000);
     }
 
     /// tick 边界：按确定性工作量单位更新降级等级，重置每 tick 计量。
@@ -154,23 +166,37 @@ impl BudgetRegistry {
             .unwrap_or(0);
         self.rolling_used_bp = used_bp;
         let t = self.thresholds;
-        // 触发/恢复连续计数（确定性派生状态）
-        if used_bp >= t.l1_bp {
+        // 触发/恢复连续计数（确定性派生状态）：有效压力 = max(工作量占比, 外部需求压力)。
+        // 需求压力参与触发/恢复门，但单独触发时降级封顶 L1（模型形式未裁决=债务 #31，
+        // 限制影响面；工作量压力仍可推 L2/L3）。
+        let effective_bp = used_bp.max(self.demand_bp);
+        if effective_bp >= t.l1_bp {
             self.over_streak = self.over_streak.saturating_add(1);
+            self.demand_streak = if self.demand_bp >= t.l1_bp {
+                self.demand_streak.saturating_add(1)
+            } else {
+                0
+            };
         } else {
             self.over_streak = 0;
+            self.demand_streak = 0;
         }
-        if used_bp < t.recover_bp {
+        if effective_bp < t.recover_bp {
             self.under_streak = self.under_streak.saturating_add(1);
         } else {
             self.under_streak = 0;
         }
         let triggered = self.over_streak >= t.trigger_ticks;
+        let demand_only_trigger = triggered
+            && used_bp < t.l1_bp
+            && self.demand_streak >= t.trigger_ticks;
         let recovered = self.under_streak >= t.recover_ticks;
         self.level = match self.level {
             DegradationLevel::Normal => {
                 if !triggered {
                     DegradationLevel::Normal
+                } else if demand_only_trigger {
+                    DegradationLevel::L1
                 } else if used_bp >= t.l3_bp {
                     DegradationLevel::L3
                 } else if used_bp >= t.l2_bp {
@@ -208,6 +234,7 @@ impl BudgetRegistry {
             }
         };
         self.spent.iter_mut().for_each(|s| *s = 0);
+        self.demand_bp = 0;
         self.level
     }
 
@@ -216,6 +243,8 @@ impl BudgetRegistry {
         w.u32(self.rolling_used_bp);
         w.u32(self.over_streak);
         w.u32(self.under_streak);
+        w.u32(self.demand_bp);
+        w.u32(self.demand_streak);
         w.u8(match self.level {
             DegradationLevel::Normal => 0,
             DegradationLevel::L1 => 1,
@@ -352,5 +381,50 @@ mod tests {
             r.spend(99, 1);
         }));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn demand_pressure_triggers_l1_only_with_hysteresis() {
+        // MFD→降级通道（ADR-NEW-26 草案）：需求压力参与触发/恢复门（effective=max），
+        // 单独触发封顶 L1；恢复需需求与工作量同时回落。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 tick：触发门未到
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        r.note_demand_pressure(0);
+        assert_eq!(r.end_tick(), DegradationLevel::L1); // 第 1 个低需求 tick：不恢复
+        r.note_demand_pressure(0);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 2 个：恢复
+    }
+
+    #[test]
+    fn demand_alone_cannot_reach_l2_l3() {
+        // 需求压力单独触发封顶 L1（债务 #31 未裁决前限制影响面）；
+        // 工作量压力仍可推 L2/L3。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        for _ in 0..2 {
+            r.note_demand_pressure(10_000);
+            assert_ne!(r.end_tick(), DegradationLevel::L2);
+        }
+        assert_eq!(r.level(), DegradationLevel::L1);
+        for _ in 0..2 {
+            r.spend(1, 2000);
+            r.end_tick();
+        }
+        assert_eq!(r.level(), DegradationLevel::L3);
+    }
+
+    #[test]
+    fn demand_state_is_covered_by_encode() {
+        // 需求通道状态入档/入摘要（G3）：demand_bp 敏感。
+        let mk = |demand: u32| {
+            let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+            r.note_demand_pressure(demand);
+            let mut w = CanonicalWriter::new("sim-core", "BudgetState");
+            r.encode_state(&mut w);
+            w.into_bytes()
+        };
+        assert_ne!(mk(0), mk(10_000), "demand_bp must be covered");
     }
 }

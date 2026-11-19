@@ -130,6 +130,16 @@ impl GridTraffic {
     }
 
     /// 活跃车辆数（密度分子）。
+    /// 需求压力（万分比 0..=10000）= 当前密度 k 相对临界密度 k_c_permille 的比值封顶。
+    /// 确定性定点（权威状态导出）；MFD→降级信号通道（ADR-NEW-26 草案、ADR-NEW-25 3c）。
+    pub fn demand_pressure_bp(&self, k_c_permille: u64) -> u32 {
+        if k_c_permille == 0 {
+            return 10_000;
+        }
+        let k = self.active_count() * 1000 / self.edge_count();
+        ((k as u128 * 10_000 / k_c_permille as u128).min(10_000)) as u32
+    }
+
     pub fn active_count(&self) -> u64 {
         self.vehicles.len() as u64
     }
