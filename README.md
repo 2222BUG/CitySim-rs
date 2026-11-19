@@ -18,7 +18,7 @@
 | 设计 | [技术方案 V1.9.3](docs/architecture/CitySim-rs-Technical-Spec-V1.9.3.md)（唯一现行主文档）；10 份 ADR（NEW-14~23）已正式裁决（Accepted，附条件）；[26 项决策债务](docs/architecture/decisions/decision-log.md)台账管理 |
 | Stage 0 | ✅ 关闭（2026-11-19，[退出核对 6/6](docs/benchmarks/Stage-0-Exit-CHECKLIST.md)）：参数基线定案、5 个 Spike 验证、依赖五件套、CI 骨架 |
 | Stage 1 | ✅ 完成（2026-11-19，[退出核对 6/6](docs/benchmarks/Stage-1-Exit-CHECKLIST.md)）：分层 crate 骨架、SimScalar、RNG 协议、GlobalDigest、存档/读档、错误分层 |
-| Stage 2 | 未开工（2A 路网/A*、2B 并行确定性、2C 交通与降级） |
+| Stage 2 | ✅ 完成（2A 路网/A*、2B 并行确定性、2C 交通与降级；[2A](docs/benchmarks/Stage-2A-Exit-CHECKLIST.md)/[2B](docs/benchmarks/Stage-2B-Exit-CHECKLIST.md)/[2C](docs/benchmarks/Stage-2C-Exit-CHECKLIST.md) 退出核对） |
 | 游戏本体 | 尚无——当前是引擎地基与可验证文档；欢迎一起设计 |
 
 ## 快速开始

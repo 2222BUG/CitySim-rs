@@ -95,6 +95,9 @@ pub struct BudgetRegistry {
     under_streak: u32,
     /// 本 tick 外部需求压力（万分比，0..=10000；MFD→降级信号通道，ADR-NEW-26 草案）。
     demand_bp: u32,
+    /// 本 tick 需求压力的归档口径（X5 审计修复：demand_bp 在 end_tick 清零，
+    /// 直接入档恒 0——last_demand_bp 跨 end_tick 保留供 encode_state 归档）。
+    last_demand_bp: u32,
     /// 连续高需求 tick 计数（与 over_streak 同门限语义）。
     demand_streak: u32,
     pub level: DegradationLevel,
@@ -111,6 +114,7 @@ impl BudgetRegistry {
             over_streak: 0,
             under_streak: 0,
             demand_bp: 0,
+            last_demand_bp: 0,
             demand_streak: 0,
             level: DegradationLevel::Normal,
             thresholds,
@@ -140,6 +144,7 @@ impl BudgetRegistry {
     /// 如 sim-traffic 密度/k_c 比值。ADR-NEW-26 草案通道；每 tick 末清零）。
     pub fn note_demand_pressure(&mut self, pressure_bp: u32) {
         self.demand_bp = pressure_bp.min(10_000);
+        self.last_demand_bp = self.demand_bp;
     }
 
     /// tick 边界：按确定性工作量单位更新降级等级，重置每 tick 计量。
@@ -243,7 +248,7 @@ impl BudgetRegistry {
         w.u32(self.rolling_used_bp);
         w.u32(self.over_streak);
         w.u32(self.under_streak);
-        w.u32(self.demand_bp);
+        w.u32(self.last_demand_bp);
         w.u32(self.demand_streak);
         w.u8(match self.level {
             DegradationLevel::Normal => 0,
@@ -426,5 +431,21 @@ mod tests {
             w.into_bytes()
         };
         assert_ne!(mk(0), mk(10_000), "demand_bp must be covered");
+    }
+
+    #[test]
+    fn demand_archival_survives_end_tick() {
+        // X5 审计修复：encode_state 归档 last_demand_bp（end_tick 清零 demand_bp
+        // 后仍可归档——旧口径入档恒 0）。
+        let decls = vec![BudgetDecl { system_id: 1, unit: WorkUnit::NodeExpansions, per_tick_cap: 1000, overflow: OverflowBehavior::YieldToNextTick }];
+        let mk = |demand: u32| {
+            let mut r = BudgetRegistry::new(decls.clone(), DegradationThresholds::default());
+            r.note_demand_pressure(demand);
+            r.end_tick(); // 清零 demand_bp 后归档
+            let mut w = CanonicalWriter::new("sim-core", "Budget");
+            r.encode_state(&mut w);
+            w.into_bytes()
+        };
+        assert_ne!(mk(0), mk(10_000), "last_demand_bp must survive end_tick");
     }
 }

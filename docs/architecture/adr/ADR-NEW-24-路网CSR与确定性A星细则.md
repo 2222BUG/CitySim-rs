@@ -48,7 +48,7 @@ Stage 2A 实施前有四个未决问题会直接破坏确定性承诺：
 - 递增函数 **B_k = min(b·2^k, L)**，k = 连续让步次数 budget_yield_count；
 - 解析上界（ADR-NEW-20 三硬约束）：k ≤ ⌈log₂(|V|/b)⌉ + 1 个 tick 内要么完成要么进入受阻判定；最坏累计**总展开** ≤ |V|·g/(g−1) = 2|V|（2026-11-19 措辞修订：其中浪费 < |V|，有功展开 ≤ |V|）；
 - 递增属工作量驱动确定性规则，**不触发** ADR-NEW-14 条 4 的配置变更记录（区别于人工调参）；
-- **定案（债务 #29，2026-11-19 Stage 2B 前置定案）**：全局每 tick 寻路配额——每 tick 创建全局预算 `TickBudget{remaining = Q}`（确定性工作量单位=节点展开数，对齐 ADR-NEW-14 条 3），逐请求上限 B_k ≤ min(b·2^k, L, remaining)，请求实耗展开数扣减 remaining；remaining 耗尽即其余请求让步（budget_yield_count+1），多请求处理顺序=请求 ID 稳定序；每 tick 预算独立重置（Q 重置归满，k 递增体现等待）。**效果**：全局每 tick 总展开 ≤ Q（化解 Claude 指出的"单 tick 最坏展开=|V| 与 ADR-14 条 3 冲突"），单请求仍受 min(b·2^k, L)。Q 数值待 ADR-NEW-14 阈值回填（Stage 2B 占位 Q=65536 并实测记录）。让步计数（budget_yield_count）为模拟状态而非配置，入存档（EC-03）与摘要（G3 已实装）。
+- **定案（债务 #29，2026-11-19 Stage 2B 前置定案）**：全局每 tick 寻路配额——每 tick 创建全局预算 `TickBudget{remaining = Q}`（确定性工作量单位=节点展开数，对齐 ADR-NEW-14 条 3），逐请求上限 B_k ≤ min(b·2^k, L, remaining)，请求实耗展开数扣减 remaining；remaining 耗尽即其余请求让步（budget_yield_count+1），多请求处理顺序=请求 ID 稳定序；每 tick 预算独立重置（Q 重置归满，k 递增体现等待）。**效果**：全局每 tick 总展开 ≤ Q（化解 Claude 指出的"单 tick 最坏展开=|V| 与 ADR-14 条 3 冲突"），单请求仍受 min(b·2^k, L)。Q=65536 **已定案**（2026-11-19 决策3 投票 1a，9:1 通过；含义=对实测 worst 398@40k 留余量的保险丝；单一来源 `sim-pathfinding::TICK_QUOTA`，2026-11-20 X5 钉死消除多处字面量互斥）。让步计数（budget_yield_count）为模拟状态而非配置，入存档（EC-03）与摘要（G3 已实装）。
 
 ### 4. Stage 2A 退出判据（债务 #17/#18 收口）
 
@@ -113,7 +113,7 @@ Accepted（2026-11-19，附条件）——第二轮外部评审八家独立 AI �
 - 决策 4 判据表：重算率口径统一（分母=请求总数，实测 3/200=0.015）；阈值过渡口径成文（债务 #27）；冲突重试 tx_id 待决（债务 #28）。
 - **2026-11-19 Stage 2B 前置定案（债务 #28/#29，裁决条件 ③④ 落实）**：
   - 债务 #28 事务重试 tx_id 定案=**沿用原 tx_id，按 tx_id 全序重排入队重试**（事务身份稳定=2.8 稳定键原则；新 ID 显式链接需额外映射状态入档入摘要，否决）；重试上限 3 次超限转受阻状态+诊断事件。
-  - 债务 #29 全局每 tick 寻路配额定案=**TickBudget{remaining=Q}**（Q 对齐 ADR-NEW-14 条 3"每 tick 工作量上限"，占位 65536）；B_k≤min(b·2^k, L, remaining)；实耗扣减、耗尽让步、每 tick 重置、请求 ID 稳定序处理；全局每 tick 总展开 ≤ Q。
+  - 债务 #29 全局每 tick 寻路配额定案=**TickBudget{remaining=Q}**（Q=65536 已定案：决策3 投票 1a；单一来源 `sim-pathfinding::TICK_QUOTA`）；B_k≤min(b·2^k, L, remaining)；实耗扣减、耗尽让步、每 tick 重置、请求 ID 稳定序处理；全局每 tick 总展开 ≤ Q。
 - 替代方案名录补充（豆包）：禁 BinaryHeap 的替代实现=有序 Vec/稳定二叉堆/BTreeMap，显式确定性顺序。
 - 8/8 共识：Edge 有向语义入典（债务 #8）、阈值过渡口径、让步强读档专项→2B、R3/R4+并发队列→2B。
 

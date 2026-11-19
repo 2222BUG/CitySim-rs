@@ -16,7 +16,7 @@ use sim_codec::CanonicalWriter;
 use sim_digest::GlobalDigest;
 use sim_network::{Edge, Network, Op, StaleOutcome, Tx};
 use sim_parallel::{run_parallel, Task};
-use sim_pathfinding::{BudgetPolicy, FindOutcome, PathFinder, TickBudget};
+use sim_pathfinding::{BudgetPolicy, FindOutcome, PathFinder, TickBudget, TICK_QUOTA};
 use sim_rng::event_u64;
 use sim_test_support::chaos::chaos_spin;
 
@@ -25,7 +25,7 @@ const W: u64 = 200;
 const H: u64 = 200;
 const REQUESTS: u64 = 500;
 const TICKS_MAX: u64 = 300;
-const QUOTA: u64 = 65536;
+const QUOTA: u64 = TICK_QUOTA; // 单一来源（决策3 1a 定案 65536）
 const TX_EVERY: u64 = 8;
 const TX_REMOVE: u64 = 4;
 

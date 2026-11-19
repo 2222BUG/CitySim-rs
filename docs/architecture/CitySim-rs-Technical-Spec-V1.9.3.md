@@ -1033,7 +1033,7 @@ Demo 的性能表现必须通过实测报告说明，不得提前承诺帧率或
 
 - 交通模型具备可复现验证场景。
 
-**2026-11-19 Stage 2C 完成**：六条退出条件实施面 6/6 达成。交付：ADR-NEW-25（MFD 交通模型与验证方案，Proposed）、ADR-NEW-14 C2 预算契约细化（BudgetRegistry 声明载体、L1/L2/L3 确定性降级）、sim-core budget 模块、sim-traffic MFD 微观基准+T-Bench-1 可复现场景（数据见 docs/benchmarks/mfd-tbench1.txt，核对表见 docs/benchmarks/Stage-2C-Exit-CHECKLIST.md）。待办：ADR-NEW-25 评审裁决；阈值候选（Q=65536、70/90/100、恢复 50%）待项目负责人确认后转定案。
+**2026-11-19 Stage 2C 完成**：六条退出条件实施面 6/6 达成。交付：ADR-NEW-25（MFD 交通模型与验证方案，Proposed）、ADR-NEW-14 C2 预算契约细化（BudgetRegistry 声明载体、L1/L2/L3 确定性降级）、sim-core budget 模块、sim-traffic MFD 微观基准+T-Bench-1 可复现场景（数据见 docs/benchmarks/mfd-tbench1.txt，核对表见 docs/benchmarks/Stage-2C-Exit-CHECKLIST.md）。待办（2026-11-20 更新）：ADR-NEW-25 已裁决（Accepted 附条件），债务 #31 经审计整改后 Set D 复测**判定翻转（转 C 不成立）**，待投票确认三项后收口；阈值（Q=65536、70/90/100、恢复 50%、事务 1024）**已定案**（2026-11-19 决策3 投票）。
 
 ### 后续阶段
 
