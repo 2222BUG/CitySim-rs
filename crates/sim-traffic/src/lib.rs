@@ -70,19 +70,27 @@ impl GridTraffic {
         for _ in 0..n {
             let id = self.next_id;
             self.next_id += 1;
-            let sx = (event_u64(self.seed, "traffic.od", id, 0) % self.w as u64) as u32;
-            let sy = (event_u64(self.seed, "traffic.od", id, 1) % self.h as u64) as u32;
-            let gx = (event_u64(self.seed, "traffic.od", id, 2) % self.w as u64) as u32;
-            let gy = (event_u64(self.seed, "traffic.od", id, 3) % self.h as u64) as u32;
-            self.pending.push(Vehicle {
-                id,
-                x: sx,
-                y: sy,
-                goal_x: gx,
-                goal_y: gy,
-                edge_traversals: 0,
-            });
+            self.inject_with_id(id);
         }
+    }
+
+    /// 显式 ID 注入（2026-11-19 投票修复：注入顺序无关性）。
+    /// 契约：ID 由集中分配点按稳定键分配（ADR-NEW-20 口径）；OD 派生只依赖 ID，
+    /// pending 入档/进网均按 id 稳定序 → 注入的物理顺序不影响任何权威状态。
+    /// 调用方负责 ID 唯一性（重复 ID 会产生两辆车，属调用方契约违例）。
+    pub fn inject_with_id(&mut self, id: u64) {
+        let sx = (event_u64(self.seed, "traffic.od", id, 0) % self.w as u64) as u32;
+        let sy = (event_u64(self.seed, "traffic.od", id, 1) % self.h as u64) as u32;
+        let gx = (event_u64(self.seed, "traffic.od", id, 2) % self.w as u64) as u32;
+        let gy = (event_u64(self.seed, "traffic.od", id, 3) % self.h as u64) as u32;
+        self.pending.push(Vehicle {
+            id,
+            x: sx,
+            y: sy,
+            goal_x: gx,
+            goal_y: gy,
+            edge_traversals: 0,
+        });
     }
 
     /// 推进一个 tick：注入进网、车辆沿曼哈顿路径前进一步（容量让行）。
@@ -143,8 +151,11 @@ impl GridTraffic {
         w.u64(self.seed);
         w.u64(self.tick);
         w.u64(self.next_id);
-        w.seq_len(self.pending.len());
-        for v in &self.pending {
+        // pending 按 id 稳定序入档（注入顺序无关契约）
+        let mut pending_sorted: Vec<&Vehicle> = self.pending.iter().collect();
+        pending_sorted.sort_by_key(|v| v.id);
+        w.seq_len(pending_sorted.len());
+        for v in pending_sorted {
             w.u64(v.id);
             w.u32(v.x);
             w.u32(v.y);
@@ -357,6 +368,29 @@ mod tests {
         assert_eq!(f.q_max_permille, 100);
         assert!(f.descending_branch_observed);
         assert_eq!(f.w_permille, 500);
+    }
+
+    #[test]
+    fn explicit_id_injection_is_order_independent() {
+        // 2026-11-19 投票修复：同一 ID 集合以不同物理顺序注入，权威状态（摘要）必须一致。
+        let run = |order: &[u64]| {
+            let mut gt = GridTraffic::new(8, 8, 1, 0x00C0_FFEE_1234_5678);
+            for &id in order {
+                gt.inject_with_id(id);
+            }
+            let mut g = GlobalDigest::new();
+            gt.fold_digest(&mut g);
+            for _ in 0..10u64 {
+                gt.step();
+                gt.fold_digest(&mut g);
+            }
+            g.finalize()
+        };
+        let d1 = run(&[3, 1, 2, 5, 4]);
+        let d2 = run(&[1, 2, 3, 4, 5]);
+        let d3 = run(&[5, 4, 3, 2, 1]);
+        assert_eq!(d1, d2, "injection order must not matter");
+        assert_eq!(d2, d3, "injection order must not matter");
     }
 
     #[test]

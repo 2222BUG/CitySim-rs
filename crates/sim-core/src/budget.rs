@@ -51,20 +51,32 @@ pub enum DegradationLevel {
     L3,
 }
 
-/// 降级阈值（候选占位：70/90/100 万分比 + 恢复 500‰；ADR-NEW-14 C2 待负责人确认）。
+/// 降级阈值（候选占位：70/90/100 万分比 + 恢复 5000bp；ADR-NEW-14 C2 待负责人确认）。
+/// 2026-11-19 投票修复（Claude）：触发/恢复加连续 tick 要求，防单 tick 突发误触发/误恢复。
 #[derive(Debug, Clone, Copy)]
 pub struct DegradationThresholds {
-    /// 预算消耗比例 ≥ 此值触发（万分比：7000=70%）。
+    /// 预算消耗比例 ≥ 此值触发（万分比：7000=70%）。触发比较为闭区间（>=）。
     pub l1_bp: u32,
     pub l2_bp: u32,
     pub l3_bp: u32,
-    /// 恢复迟滞（万分比：5000=50%）。
+    /// 恢复迟滞（万分比：5000=50%）。恢复比较为开区间（<）。
     pub recover_bp: u32,
+    /// 进入降级所需连续超阈 tick 数（候选占位=2；单 tick 突发不触发）。
+    pub trigger_ticks: u32,
+    /// 恢复 Normal 所需连续低于 recover_bp 的 tick 数（候选占位=2）。
+    pub recover_ticks: u32,
 }
 
 impl Default for DegradationThresholds {
     fn default() -> Self {
-        Self { l1_bp: 7000, l2_bp: 9000, l3_bp: 10000, recover_bp: 5000 }
+        Self {
+            l1_bp: 7000,
+            l2_bp: 9000,
+            l3_bp: 10000,
+            recover_bp: 5000,
+            trigger_ticks: 2,
+            recover_ticks: 2,
+        }
     }
 }
 
@@ -74,8 +86,13 @@ pub struct BudgetRegistry {
     decls: Vec<BudgetDecl>,
     /// 本 tick 各系统实耗（索引与 decls 对齐）。
     spent: Vec<u64>,
-    /// 滚动预算状态：本 tick 全系统消耗比例（万分比，确定性派生）。
+    /// 本 tick 各系统预算占比的最大值（万分比）。2026-11-19 投票修复（MiniMax/GPT-6）：
+    /// 聚合口径=逐系统比例取最严（旧口径按 cap 加权总和，单系统饱和会被空闲系统稀释）。
     rolling_used_bp: u32,
+    /// 连续超阈 tick 计数（触发门）。
+    over_streak: u32,
+    /// 连续低于恢复线 tick 计数（恢复门）。
+    under_streak: u32,
     pub level: DegradationLevel,
     thresholds: DegradationThresholds,
 }
@@ -83,7 +100,15 @@ pub struct BudgetRegistry {
 impl BudgetRegistry {
     pub fn new(decls: Vec<BudgetDecl>, thresholds: DegradationThresholds) -> Self {
         let spent = vec![0; decls.len()];
-        Self { decls, spent, rolling_used_bp: 0, level: DegradationLevel::Normal, thresholds }
+        Self {
+            decls,
+            spent,
+            rolling_used_bp: 0,
+            over_streak: 0,
+            under_streak: 0,
+            level: DegradationLevel::Normal,
+            thresholds,
+        }
     }
 
     pub fn decls(&self) -> &[BudgetDecl] {
@@ -107,23 +132,51 @@ impl BudgetRegistry {
 
     /// tick 边界：按确定性工作量单位更新降级等级，重置每 tick 计量。
     /// 返回新等级。触发/恢复只依赖 spent/cap 比例（工作量单位），无墙钟。
+    ///
+    /// 2026-11-19 投票修复：
+    /// - 聚合口径=逐系统比例取最严（max_i spent_i/cap_i），单系统饱和不被稀释；
+    /// - 触发（Normal→降级）需连续 trigger_ticks 个超阈 tick（触发比较闭区间 >=）；
+    /// - 恢复（→Normal）需连续 recover_ticks 个低于 recover_bp 的 tick（开区间 <）；
+    /// - 升级（L1→L2→L3）保持即时（安全方向不加延迟）。
     pub fn end_tick(&mut self) -> DegradationLevel {
-        let total_cap: u128 = self.decls.iter().map(|d| d.per_tick_cap as u128).sum();
-        let total_spent: u128 = self.spent.iter().map(|s| *s as u128).sum();
-        let used_bp: u32 = (total_spent.saturating_mul(10_000).checked_div(total_cap).unwrap_or(0))
-            .min(10_000) as u32;
+        let used_bp: u32 = self
+            .decls
+            .iter()
+            .zip(self.spent.iter())
+            .map(|(d, s)| {
+                if d.per_tick_cap == 0 {
+                    if *s > 0 { 10_000u32 } else { 0 }
+                } else {
+                    ((*s as u128).saturating_mul(10_000) / d.per_tick_cap as u128).min(10_000) as u32
+                }
+            })
+            .max()
+            .unwrap_or(0);
         self.rolling_used_bp = used_bp;
         let t = self.thresholds;
+        // 触发/恢复连续计数（确定性派生状态）
+        if used_bp >= t.l1_bp {
+            self.over_streak = self.over_streak.saturating_add(1);
+        } else {
+            self.over_streak = 0;
+        }
+        if used_bp < t.recover_bp {
+            self.under_streak = self.under_streak.saturating_add(1);
+        } else {
+            self.under_streak = 0;
+        }
+        let triggered = self.over_streak >= t.trigger_ticks;
+        let recovered = self.under_streak >= t.recover_ticks;
         self.level = match self.level {
             DegradationLevel::Normal => {
-                if used_bp >= t.l3_bp {
+                if !triggered {
+                    DegradationLevel::Normal
+                } else if used_bp >= t.l3_bp {
                     DegradationLevel::L3
                 } else if used_bp >= t.l2_bp {
                     DegradationLevel::L2
-                } else if used_bp >= t.l1_bp {
-                    DegradationLevel::L1
                 } else {
-                    DegradationLevel::Normal
+                    DegradationLevel::L1
                 }
             }
             DegradationLevel::L1 => {
@@ -131,7 +184,7 @@ impl BudgetRegistry {
                     DegradationLevel::L3
                 } else if used_bp >= t.l2_bp {
                     DegradationLevel::L2
-                } else if used_bp < t.recover_bp {
+                } else if recovered {
                     DegradationLevel::Normal
                 } else {
                     DegradationLevel::L1
@@ -140,14 +193,14 @@ impl BudgetRegistry {
             DegradationLevel::L2 => {
                 if used_bp >= t.l3_bp {
                     DegradationLevel::L3
-                } else if used_bp < t.recover_bp {
+                } else if recovered {
                     DegradationLevel::Normal
                 } else {
                     DegradationLevel::L2
                 }
             }
             DegradationLevel::L3 => {
-                if used_bp < t.recover_bp {
+                if recovered {
                     DegradationLevel::Normal
                 } else {
                     DegradationLevel::L3
@@ -161,6 +214,8 @@ impl BudgetRegistry {
     /// 编码入档/入摘要（字段序即 canonical 序，G3 口径）。
     pub fn encode_state(&self, w: &mut CanonicalWriter) {
         w.u32(self.rolling_used_bp);
+        w.u32(self.over_streak);
+        w.u32(self.under_streak);
         w.u8(match self.level {
             DegradationLevel::Normal => 0,
             DegradationLevel::L1 => 1,
@@ -218,21 +273,64 @@ mod tests {
 
     #[test]
     fn degradation_levels_follow_workload_only() {
-        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
-        // 总 cap=110；消耗 77 → 7000bp → L1
+        // trigger_ticks=1：纯比例路径（旧口径测试迁移）
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        // 逐系统取最严：系统 1 消耗 77/100 → 7700bp ≥7000 → L1
         r.spend(1, 77);
         assert_eq!(r.end_tick(), DegradationLevel::L1);
         // 重置后无消耗 → 恢复 Normal（< 5000bp）
         assert_eq!(r.end_tick(), DegradationLevel::Normal);
-        // 消耗 110 → 10000bp → L3
+        // 系统 1 消耗 110 → 10000bp → L3
         r.spend(1, 110);
         assert_eq!(r.end_tick(), DegradationLevel::L3);
-        // 迟滞：消耗 60（5454bp）< recover 5000? 5454>=5000 → 保持 L3
+        // 迟滞：60/100=6000bp ≥5000 → 保持 L3
         r.spend(1, 60);
         assert_eq!(r.end_tick(), DegradationLevel::L3);
-        // 消耗 30（2727bp）< 5000 → 恢复
+        // 30/100=3000bp < 5000 → 恢复
         r.spend(1, 30);
         assert_eq!(r.end_tick(), DegradationLevel::Normal);
+    }
+
+    #[test]
+    fn single_system_saturation_is_not_diluted() {
+        // 2026-11-19 投票修复（MiniMax/GPT-6）回归：旧 cap 加权口径下
+        // 系统 2（cap=10）打满只贡献 10/110≈9%→永不触发；新口径取最严必须触发。
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        r.spend(2, 10); // 系统 2 满负荷 10000bp，系统 1 空闲
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+    }
+
+    #[test]
+    fn threshold_boundaries_are_closed_open() {
+        // GPT-6 边界要求：恰 70/90/100 触发（闭区间 >=），恰 50 不恢复（开区间 <）。
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        r.spend(1, 70); // 7000bp 恰= l1
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        r.spend(1, 90); // 9000bp 恰= l2
+        assert_eq!(r.end_tick(), DegradationLevel::L2);
+        r.spend(1, 100); // 10000bp 恰= l3
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        r.spend(1, 50); // 5000bp 恰= recover → 不恢复（开区间）
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        r.spend(1, 49); // 4900bp < 5000 → 恢复
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+    }
+
+    #[test]
+    fn trigger_and_recover_need_consecutive_ticks() {
+        // Claude：单 tick 突发不触发/不恢复（默认 trigger_ticks=recover_ticks=2）。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 个超阈 tick：不触发
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::L3); // 第 2 个：触发
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::L3); // 第 1 个低消耗 tick：不恢复
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 2 个：恢复
     }
 
     #[test]

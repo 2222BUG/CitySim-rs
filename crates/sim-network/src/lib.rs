@@ -131,6 +131,185 @@ pub enum TxError {
     EmptyTx,
     DuplicateEdge { id: u64 },
     UnknownEdge { id: u64 },
+    /// 预算预检拒绝（2026-11-19 投票修复 1d；事务不入队，下 tick 重试）。
+    BudgetExceeded { kind: TxBudgetKind },
+}
+
+/// 事务预算分类（拓扑/代价分开计量；一笔含拓扑操作的事务整体按拓扑计）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxBudgetKind {
+    Topology,
+    Cost,
+    EdgeOps,
+}
+
+/// 事务每 tick 上限（候选占位，待 ADR-NEW-14 阈值回填；2026-11-19 投票修复 1d）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxLimits {
+    /// 拓扑事务（增/删边）每 tick 上限。
+    pub topology_per_tick: u64,
+    /// 纯代价事务每 tick 上限。
+    pub cost_per_tick: u64,
+    /// 单笔事务工作量上限（op 数+几何点数），防一笔超大事务绕过预算。
+    pub max_edge_ops: u64,
+}
+
+impl Default for TxLimits {
+    fn default() -> Self {
+        Self { topology_per_tick: 1024, cost_per_tick: 1024, max_edge_ops: 8192 }
+    }
+}
+
+/// 事务预算限制器（确定性工作量单位；publish 前预检 → 超限=QueueToNextTick 语义）。
+/// 调用契约：`admit` 通过后调用 `Network::publish`；tick 边界调用 `reset`。
+#[derive(Clone, Debug)]
+pub struct TxLimiter {
+    limits: TxLimits,
+    topology_used: u64,
+    cost_used: u64,
+}
+
+impl TxLimiter {
+    pub fn new(limits: TxLimits) -> Self {
+        Self { limits, topology_used: 0, cost_used: 0 }
+    }
+
+    pub fn reset(&mut self) {
+        self.topology_used = 0;
+        self.cost_used = 0;
+    }
+
+    fn op_work(op: &Op) -> u64 {
+        match op {
+            Op::AddEdge(e) => 1 + e.geom.len() as u64,
+            _ => 1,
+        }
+    }
+
+    /// 预检并计量（拒绝时零计量，可下 tick 原样重试）。
+    pub fn admit(&mut self, tx: &Tx, _net: &Network) -> Result<(), TxError> {
+        if tx.ops.is_empty() {
+            return Err(TxError::EmptyTx);
+        }
+        let work: u64 = tx.ops.iter().map(Self::op_work).sum();
+        if work > self.limits.max_edge_ops {
+            return Err(TxError::BudgetExceeded { kind: TxBudgetKind::EdgeOps });
+        }
+        let is_topology = tx.ops.iter().any(|op| matches!(op, Op::AddEdge(_) | Op::RemoveEdge { .. }));
+        if is_topology {
+            if self.topology_used >= self.limits.topology_per_tick {
+                return Err(TxError::BudgetExceeded { kind: TxBudgetKind::Topology });
+            }
+            self.topology_used += 1;
+        } else {
+            if self.cost_used >= self.limits.cost_per_tick {
+                return Err(TxError::BudgetExceeded { kind: TxBudgetKind::Cost });
+            }
+            self.cost_used += 1;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod txlimiter_tests {
+    use super::*;
+
+    fn cost_tx(id: u64) -> Tx {
+        Tx { id, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] }
+    }
+    fn topo_tx(id: u64) -> Tx {
+        Tx {
+            id,
+            ops: vec![Op::AddEdge(Edge {
+                id: 100 + id,
+                a: 0,
+                b: 1,
+                cost: 1,
+                geom: vec![(0, 0), (1, 0)],
+            })],
+        }
+    }
+
+    #[test]
+    fn topology_and_cost_budgets_are_separate() {
+        // 纯代价事务用满不应挡住拓扑事务（1d：分开上限）。
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+            max_edge_ops: 100,
+        });
+        assert!(lim.admit(&cost_tx(1), &net).is_ok());
+        assert_eq!(
+            lim.admit(&cost_tx(2), &net),
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::Cost })
+        );
+        assert!(lim.admit(&topo_tx(3), &net).is_ok(), "topology budget independent");
+        assert_eq!(
+            lim.admit(&topo_tx(4), &net),
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::Topology })
+        );
+    }
+
+    #[test]
+    fn oversized_single_tx_is_rejected() {
+        // 一笔超大事务不能绕过预算（工作量上限）。
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 10,
+            cost_per_tick: 10,
+            max_edge_ops: 3,
+        });
+        let big = Tx {
+            id: 9,
+            ops: vec![Op::AddEdge(Edge {
+                id: 9,
+                a: 0,
+                b: 1,
+                cost: 1,
+                geom: vec![(0, 0), (1, 0), (2, 0), (3, 0)],
+            })],
+        };
+        assert_eq!(
+            lim.admit(&big, &net),
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::EdgeOps })
+        );
+    }
+
+    #[test]
+    fn rejected_tx_consumes_nothing_and_reset_rearms() {
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+            max_edge_ops: 100,
+        });
+        assert!(lim.admit(&topo_tx(1), &net).is_ok());
+        assert!(lim.admit(&topo_tx(2), &net).is_err());
+        // 拒绝不计量：reset 后原样可入（QueueToNextTick 语义）
+        lim.reset();
+        assert!(lim.admit(&topo_tx(2), &net).is_ok());
+    }
+
+    #[test]
+    fn mixed_tx_counts_as_topology() {
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 5,
+            max_edge_ops: 100,
+        });
+        let mixed = Tx {
+            id: 7,
+            ops: vec![
+                Op::SetDynamicCost { id: 1, cost: 5 },
+                Op::AddEdge(Edge { id: 7, a: 0, b: 1, cost: 1, geom: vec![(0, 0)] }),
+            ],
+        };
+        assert!(lim.admit(&mixed, &net).is_ok());
+        assert!(lim.admit(&topo_tx(8), &net).is_err(), "mixed tx consumes topology budget");
+    }
 }
 
 /// 事务记录（ADR-NEW-23 条文 7 聚合与窄判所需：按版本区间查询）。
