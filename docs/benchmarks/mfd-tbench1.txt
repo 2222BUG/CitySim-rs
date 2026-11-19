@@ -1,16 +1,39 @@
    Compiling sim-traffic v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-traffic)
-    Finished `release` profile [optimized] target(s) in 1.03s
-     Running `D:\AIWORK\CITYSIM\target\release\examples\tbench1.exe`
+    Finished `release` profile [optimized] target(s) in 0.65s
+     Running `target\release\examples\tbench1.exe`
 T-Bench-1 (ADR-NEW-25) — 40x40 grid, seed 0xc0ffee12345678, 260 ticks/density
-density_inj | active_veh | k(‰edges) | q(‰edges/tick)
-         2 |         50 |         8 |             8
-         4 |        110 |        17 |            18
-         8 |        216 |        34 |            33
-        16 |        465 |        74 |            66
-        32 |       1307 |       209 |           136
-        64 |       6335 |      1015 |           213
-       128 |      21491 |      3444 |           239
-       256 |      54098 |      8669 |           249
+sampling: window mean over last 60 ticks (2026-11-19 vote fix; steady = front/back half q diff <= 2‰)
+inj | k_mean(‰) | q_mean(‰) | q_min | q_max | steady
+  2 |         7 |         7 |     6 |     9 | true
+  4 |        16 |        16 |    15 |    18 | true
+  8 |        35 |        34 |    32 |    37 | true
+ 16 |        73 |        66 |    62 |    70 | true
+ 32 |       204 |       135 |   131 |   139 | true
+ 64 |       935 |       212 |   208 |   219 | true
+128 |      3079 |       239 |   237 |   241 | true
+256 |      7705 |       248 |   246 |   250 | true
 
-triangle fit (fixed-point permille):
-  v_free = 31125
+descending sweep (hysteresis check):
+inj | q_mean_dn(‰) | q_mean_up(‰) | diff(‰) | hysteresis
+256 |          248 |          248 |        0 | false
+128 |          239 |          239 |        0 | false
+ 64 |          212 |          212 |        0 | false
+ 32 |          135 |          135 |        0 | false
+ 16 |           66 |           66 |        0 | false
+  8 |           34 |           34 |        0 | false
+  4 |           16 |           16 |        0 | false
+  2 |            7 |            7 |        0 | false
+
+hysteresis observed: false
+
+basic-diagram fit (fixed-point permille):
+  v_free                    = 1000
+  k_c                       = 7705
+  q_max                     = 248
+  w                         = 0
+  descending_branch_observed = false
+  interpretation: monotone-saturation (plateau) — congested branch not identifiable;
+  triangle -w is not supported by this data (point-queue model has no spillback).
+
+note: thresholds in ADR-NEW-25 are placeholders pending calibration review;
+      MFD output is non-authoritative statistics/degradation input (ADR-NEW-25 决策 2).
