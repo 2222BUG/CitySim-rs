@@ -21,7 +21,7 @@ fn grid_edges(w: usize, h: usize) -> Vec<Edge> {
     // 双向网格：每条链接两条有向边（a→b 与 b→a），保证任意两点互达（churn 场景需要）。
     let mut es = Vec::new();
     let mut id = 0u64;
-    let mut push = |es: &mut Vec<Edge>, a: u64, b: u64, x1: i64, y1: i64, x2: i64, y2: i64, id: &mut u64| {
+    let push = |es: &mut Vec<Edge>, a: u64, b: u64, x1: i64, y1: i64, x2: i64, y2: i64, id: &mut u64| {
         es.push(Edge { id: *id, a, b, cost: 1000, geom: vec![(x1, y1), (x2, y2)] });
         *id += 1;
     };
@@ -74,7 +74,7 @@ fn main() {
 
     for i in 0..n_requests {
         // 机制 B 求解（每次让步重做直到终态）
-        let goal = (splitmix64(i.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7)) % (n_nodes as u64)) as u64;
+        let goal = splitmix64(i.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7)) % (n_nodes as u64);
         let start = if i % 2 == 0 { 0u64 } else { (n_nodes - 1) as u64 };
         let mut ticks_used = 0u64;
         let path = loop {
@@ -98,7 +98,7 @@ fn main() {
         if (i + 1) % tx_every == 0 {
             tx_alloc += 1;
             let n_edges = grid_edges(W, H).len() as u64; // 双向网格边总数（确定性）
-            let band = (i as u64) % (n_edges / 4);
+            let band = i % (n_edges / 4);
             let ops: Vec<Op> = (0..5u64)
                 .map(|k| Op::RemoveEdge { id: (band * 2 + k * 977) % n_edges })
                 .collect();
@@ -114,7 +114,7 @@ fn main() {
                         recomputes += 1;
                         pf.note_stale_recompute();
                         // 机制 B 重找（新 base）
-                        let goal = (splitmix64(rid.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7)) % (n_nodes as u64)) as u64;
+                        let goal = splitmix64(rid.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7)) % (n_nodes as u64);
                         let start = if rid % 2 == 0 { 0u64 } else { (n_nodes - 1) as u64 };
                         loop {
                             match pf.request(&net, &coords, start, goal) {
