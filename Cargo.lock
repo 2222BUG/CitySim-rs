@@ -5083,6 +5083,11 @@ version = "0.0.1"
 [[package]]
 name = "sim-traffic"
 version = "0.1.0"
+dependencies = [
+ "sim-codec",
+ "sim-digest",
+ "sim-rng",
+]
 
 [[package]]
 name = "sim-view"

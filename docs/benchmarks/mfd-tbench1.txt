@@ -1,0 +1,16 @@
+   Compiling sim-traffic v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-traffic)
+    Finished `release` profile [optimized] target(s) in 1.03s
+     Running `D:\AIWORK\CITYSIM\target\release\examples\tbench1.exe`
+T-Bench-1 (ADR-NEW-25) — 40x40 grid, seed 0xc0ffee12345678, 260 ticks/density
+density_inj | active_veh | k(‰edges) | q(‰edges/tick)
+         2 |         50 |         8 |             8
+         4 |        110 |        17 |            18
+         8 |        216 |        34 |            33
+        16 |        465 |        74 |            66
+        32 |       1307 |       209 |           136
+        64 |       6335 |      1015 |           213
+       128 |      21491 |      3444 |           239
+       256 |      54098 |      8669 |           249
+
+triangle fit (fixed-point permille):
+  v_free = 31125
