@@ -182,6 +182,16 @@ impl Network {
         Network { version: 1, ..Default::default() }
     }
 
+    /// 批量构造（构建期入口，非事务路径；一次 CSR 重建）。
+    pub fn from_edges(edges: Vec<Edge>) -> Self {
+        let mut n = Network::new();
+        for e in edges {
+            n.edges.insert(e.id, e);
+        }
+        n.rebuild_csr();
+        n
+    }
+
     pub fn version(&self) -> u64 {
         self.version
     }

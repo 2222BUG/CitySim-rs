@@ -1,0 +1,15 @@
+# G5 联动组压测数据（200x200 网格，40k 节点）
+# Stage 2A Phase 3 | 2026-11-19 | rustc 1.100.0 Windows x86_64
+# 运行：cargo run --release --example g5_stress -p sim-pathfinding
+# 场景：角到角最长请求 start=0 -> goal=39999，b=64，机制 A/B/C 对比
+
+mechanism | ticks | worst_tick_expansions | worst_tick_ms | total_expansions | discarded | dup_rate | terminal | blocked | fake_progress
+A(resume) | 7 | 64 | 0.049 | 398 | 0 | 0.00 | 1.00 | 0.00 | 0.00
+B(grow)   | 4 | 398 | 0.139 | 846 | 448 | 0.53 | 1.00 | 0.00 | 0.53
+C(once)   | 1 | 64 | 0.031 | 64 | 0 | 0.00 | 0.00 | 1.00 | 0.00
+
+analytic bound (B): ticks <= 11
+note: (f,h,node_id) tie-break with h-ascending prefers the deepest frontier first, so the
+      corner-to-corner run expands ~Manhattan-length nodes rather than the whole domain;
+      the stress point exercises the longest possible request, not a degenerate expansion blow-up.
+

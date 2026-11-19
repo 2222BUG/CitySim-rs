@@ -5030,10 +5030,17 @@ version = "0.1.0"
 [[package]]
 name = "sim-network"
 version = "0.1.0"
+dependencies = [
+ "sim-codec",
+ "sim-digest",
+]
 
 [[package]]
 name = "sim-pathfinding"
 version = "0.1.0"
+dependencies = [
+ "sim-network",
+]
 
 [[package]]
 name = "sim-rng"

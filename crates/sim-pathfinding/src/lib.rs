@@ -73,8 +73,8 @@ impl BudgetPolicy {
 /// 单次（单 tick 原子）搜索结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FindOutcome {
-    /// 找到路径：边 ID 序列 + 总代价。
-    Complete { path: Vec<u64>, cost: i64 },
+    /// 找到路径：边 ID 序列 + 总代价 + 本次展开节点数。
+    Complete { path: Vec<u64>, cost: i64, expanded: u64 },
     /// 本 tick 节点预算耗尽（让步；不保存中间状态，下 tick 以 B_k 重做）。
     Yielded { expanded: u64 },
     /// open 集耗尽未达目标：不可达（进入受阻终态的判定输入）。
@@ -136,7 +136,7 @@ pub fn find_once(
     node_budget: u64,
 ) -> FindOutcome {
     if start == goal {
-        return FindOutcome::Complete { path: Vec::new(), cost: 0 };
+        return FindOutcome::Complete { path: Vec::new(), cost: 0, expanded: 0 };
     }
     // open 集：BTreeMap<(f, h, node_id), ()> 升序弹出 = 排序键全序（决策 2 第 2 条）
     let h0 = h_manhattan(coords, start, goal);
@@ -165,7 +165,7 @@ pub fn find_once(
                 cur = p;
             }
             path.reverse();
-            return FindOutcome::Complete { path, cost: g[&goal] };
+            return FindOutcome::Complete { path, cost: g[&goal], expanded };
         }
         if expanded >= node_budget {
             // 预算耗尽：让步（不保存中间状态，方案③）
