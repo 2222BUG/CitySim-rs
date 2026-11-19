@@ -5036,6 +5036,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-parallel"
+version = "0.1.0"
+dependencies = [
+ "sim-test-support",
+]
+
+[[package]]
 name = "sim-pathfinding"
 version = "0.1.0"
 dependencies = [

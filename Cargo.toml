@@ -24,6 +24,7 @@ members = [
     "crates/sim-digest",
     "crates/sim-error",
     "crates/sim-save",
+    "crates/sim-parallel",
 ]
 
 [workspace.package]

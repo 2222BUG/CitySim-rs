@@ -1,0 +1,10 @@
+[package]
+name = "sim-parallel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+sim-test-support = { path = "../sim-test-support" }

@@ -23,6 +23,7 @@
 | crates/sim-rng | RNG 协议（ADR-NEW-22） | ✅ | 严格 | 派生流 + Stream64 |
 | crates/simscalar | SimScalar（ADR-NEW-21） | ✅ | 严格 | Q32.32 定点 |
 | crates/sim-save | 存档/读档（EC-03） | ✅ | 严格 | 保存并恢复语义 |
+| crates/sim-parallel | 确定性并行执行（2.9 条 6） | ✅ | 严格 | 快照只读+稳定键排序+串行提交 |
 | crates/sim-test-support | 测试基建（EC-07） | ❌ | 无（不受限） | fixtures/harness/property/benchmark |
 | crates/dep-verify | 依赖验证件（Step 8） | ❌ | 无（不受限） | 五件套验证 |
 | spikes/*（4 个） | Spike 验证件 | ✅（验证口径） | 严格 | 保留至正式 crate 迁移完成；不得被 crates/ 依赖 |
