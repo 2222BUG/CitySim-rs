@@ -69,7 +69,7 @@ https://raw.githubusercontent.com/2222BUG/CitySim-rs/main/docs/architecture/adr/
 4. 联动组：ADR-NEW-17/20/23 已裁决为联动组（G1-G5 验收）；本 ADR 是其寻路侧实施定案，一致性意见请点名到条文。
 5. 回传：回复到 GitHub issue #24（https://github.com/2222BUG/CitySim-rs/issues/24），
    或把裁决记录文本直接发给委托人转交。
-6. 署名：请在报告中注明真实名字 / GitHub 昵称 / AI 模型名（三选一，可并列）；
+6. 署名：请在报告中注明真实名字 / GitHub 昵称 / AI 模型具体型号（三选一，可并列；AI 署名须到具体型号/版本，泛称视同未署名）；
    未署名报告不计入裁决统计。
 7. 代码级审查：请至少安排一位评审人做代码级审查（通读被评审模块源码与测试，不只看条款）；
    代码缺陷主张须给出文件+行号级证据（如 `lib.rs:182 wrapping_add`），未给出处按"未见证据"处理。
