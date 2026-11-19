@@ -1,0 +1,44 @@
+   Compiling sim-traffic v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-traffic)
+warning: unused imports: `RationalSaturationFit` and `fit_rational_saturation`
+  --> crates\sim-traffic\examples\mfd_setd.rs:18:28
+   |
+18 |     evaluate_rational_fit, fit_rational_saturation, q_rational_permille, GridTraffic, MfdSample,
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+19 |     RationalSaturationFit, FREE_FLOW_CRIT_PERMILLE, SATURATED_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `sim-traffic` (example "mfd_setd") generated 1 warning (run `cargo fix --example "mfd_setd" -p sim-traffic` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.70s
+     Running `D:\AIWORK\CITYSIM\target\release\examples\mfd_setd.exe`
+Set D re-verification (debt #31; pre-registered fixture, disjoint seeds)
+criteria: free<=100‰ transition<=250‰ saturated<=250‰ (single source = sim-traffic consts)
+=== topology 40x40 (Set D seeds 0xc0ffee22220000+0..8) ===
+steady diagnostics: fit 1/8 steady, holdout 1/8 steady (dual criterion; unsteady ladders disclosed)
+fit: q_max=262‰ k_half=263‰ zero-density slope=996‰ (free estimate 1242‰, bound binding: true)
+  k    11‰ q_obs   12‰ q_model   11‰ err 83‰
+  k    25‰ q_obs   24‰ q_model   23‰ err 41‰
+  k    54‰ q_obs   50‰ q_model   45‰ err 100‰
+  k   129‰ q_obs  101‰ q_model   86‰ err 148‰
+  k   502‰ q_obs  185‰ q_model  172‰ err 70‰
+  k  1974‰ q_obs  231‰ q_model  231‰ err 0‰
+  k  5383‰ q_obs  245‰ q_model  250‰ err 20‰
+  k 12405‰ q_obs  250‰ q_model  257‰ err 28‰
+  free-flow max err   =  148‰  (criterion <= 100‰)  FAIL
+  transition max err  =   70‰  (criterion <= 250‰)  PASS
+  saturated max err   =   28‰  (criterion <= 250‰)  PASS
+=== topology 64x64 (Set D seeds 0xc0ffee22220000+0..8) ===
+steady diagnostics: fit 0/8 steady, holdout 0/8 steady (dual criterion; unsteady ladders disclosed)
+fit: q_max=272‰ k_half=272‰ zero-density slope=1000‰ (free estimate 1271‰, bound binding: true)
+  k     6‰ q_obs    7‰ q_model    6‰ err 142‰
+  k    14‰ q_obs   14‰ q_model   13‰ err 71‰
+  k    31‰ q_obs   30‰ q_model   28‰ err 66‰
+  k    69‰ q_obs   62‰ q_model   55‰ err 112‰
+  k   176‰ q_obs  124‰ q_model  107‰ err 137‰
+  k   602‰ q_obs  199‰ q_model  187‰ err 60‰
+  k  1824‰ q_obs  233‰ q_model  237‰ err 17‰
+  k  4489‰ q_obs  245‰ q_model  256‰ err 44‰
+  free-flow max err   =  142‰  (criterion <= 100‰)  FAIL
+  transition max err  =  137‰  (criterion <= 250‰)  PASS
+  saturated max err   =   44‰  (criterion <= 250‰)  PASS

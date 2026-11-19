@@ -303,15 +303,21 @@ pub fn q_rational_permille(fit: &RationalSaturationFit, k_permille: u64) -> u64 
 
 /// 辨识（确定性定点）：q_max 与 k_half **联合**整数网格最小化残差平方和
 /// （u128 定点；平局取先遇到的最小 (q_max, k_half)）。q_max 候选域=观测最大值
-/// 至其 4 倍+16（渐近值在未饱和数据下不可由观测最大值代表——W1 实测教训：
-/// 200/250 合成数据观测 max q=160，单取观测值必偏）；k_half 候选域=1..4·k_max。
-/// **越界判失败**：零密度斜率超出 1000‰（每车每 tick 至多一条边）直接 panic
-/// ——决策4"自由估计越界判失败"（禁止把物理约束当估计用，豆包意见）。
-pub fn fit_rational_saturation(samples: &[MfdSample]) -> RationalSaturationFit {
+/// 至其 4 倍+16（渐近值在未饱和数据下不可由观测最大值代表——W1 实测教训）；
+/// k_half 候选域=1..4·k_max。
+/// **越界判失败口径（决策4，豆包）**：先做无约束自由估计；若零密度斜率超
+/// 1000‰（每车每 tick 至多一条边），**不截断掩盖**——披露越界幅度（第 2 返回值）
+/// 并回退到物理可行域内的最优解（binding=true）。禁止把物理约束当估计用
+/// （旧 v_free=min(1000) 把估计截到边界=信息量为零，已废）。
+/// 返回 (拟合, 自由估计零密度斜率‰, 约束是否绑定)。
+pub fn fit_rational_saturation_detailed(
+    samples: &[MfdSample],
+) -> (RationalSaturationFit, u64, bool) {
     assert!(!samples.is_empty(), "no samples");
     let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
     let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
-    let mut best: Option<(u128, u64, u64)> = None; // (sse, q_max, k_half)
+    let mut best_free: Option<(u128, u64, u64)> = None;
+    let mut best_feasible: Option<(u128, u64, u64)> = None;
     for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
         for k_half in 1..=k_max.saturating_mul(4).max(1) {
             let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
@@ -320,19 +326,31 @@ pub fn fit_rational_saturation(samples: &[MfdSample]) -> RationalSaturationFit {
                 let e = q_rational_permille(&fit, s.k_permille) as i128 - s.q_permille as i128;
                 sse += (e * e) as u128;
             }
-            if best.is_none_or(|(b, _, _)| sse < b) {
-                best = Some((sse, q_max, k_half));
+            if best_free.is_none_or(|(b, _, _)| sse < b) {
+                best_free = Some((sse, q_max, k_half));
+            }
+            if k_half >= q_max && best_feasible.is_none_or(|(b, _, _)| sse < b) {
+                best_feasible = Some((sse, q_max, k_half));
             }
         }
     }
-    let (_, q_max, k_half) = best.unwrap();
-    let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
-    assert!(
-        fit.zero_density_slope_permille() <= 1000,
-        "fitted zero-density slope {}‰ exceeds physical bound 1000‰",
-        fit.zero_density_slope_permille()
-    );
-    fit
+    let (_, q_free, k_free) = best_free.unwrap();
+    let free_slope = (q_free as u128 * 1000 / k_free as u128) as u64;
+    if free_slope <= 1000 {
+        let fit = RationalSaturationFit { q_max_permille: q_free, k_half_permille: k_free };
+        return (fit, free_slope, false);
+    }
+    let (_, q_f, k_f) = best_feasible.expect("no physically feasible fit (slope<=1000‰)");
+    (
+        RationalSaturationFit { q_max_permille: q_f, k_half_permille: k_f },
+        free_slope,
+        true,
+    )
+}
+
+/// 便捷入口=详细版第 1 返回值（物理可行拟合）。
+pub fn fit_rational_saturation(samples: &[MfdSample]) -> RationalSaturationFit {
+    fit_rational_saturation_detailed(samples).0
 }
 
 /// 用留出样本评估有理饱和拟合（ADR-NEW-25 3a 独立参照；分区=k_turn=k_half）。
@@ -700,11 +718,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "exceeds physical bound")]
-    fn rational_bound_violation_panics() {
-        // 越界判失败（决策4：禁止把物理约束当估计）：q_max=500/k_half=50 → 斜率 10000‰。
+    fn rational_bound_violation_is_disclosed_and_constrained() {
+        // 越界判失败口径（决策4）：自由估计越界→披露幅度+物理可行解回退，
+        // 不 panic 不截断。合成 (500,50) 自由斜率 10000‰ 必越界。
         let ks: Vec<u64> = (1..=20).map(|i| i * 10).collect();
-        let _ = fit_rational_saturation(&rational_samples(500, 50, &ks));
+        let (fit, free_slope, binding) =
+            fit_rational_saturation_detailed(&rational_samples(500, 50, &ks));
+        assert!(binding, "bound must bind");
+        assert_eq!(free_slope, 10_000, "violation magnitude must be disclosed");
+        assert!(fit.zero_density_slope_permille() <= 1000);
     }
 
     #[test]
