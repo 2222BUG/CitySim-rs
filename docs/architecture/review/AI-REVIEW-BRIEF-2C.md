@@ -7,7 +7,7 @@
 
 ## 署名要求（不署名不计票）
 
-报告署名须给出以下之一：真实名字 / GitHub 昵称 / AI 模型具体型号（如 `DeepSeek-V4.1flash`、`qwen4-max`、`MiniMax-M3.1-Flash`；只写"某 AI"等泛称视同未署名）。
+报告署名须给出以下之一：真实名字 / GitHub 昵称 / AI 模型（推荐具体型号如 `DeepSeek-V4.1flash`、`qwen4-max`、`MiniMax-M3.1-Flash`；泛称亦计票）。
 
 ## 背景（30 秒）
 
