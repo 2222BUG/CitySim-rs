@@ -366,6 +366,78 @@ pub fn fit_rational_saturation(samples: &[MfdSample]) -> RationalSaturationFit {
     fit_rational_saturation_detailed(samples).0
 }
 
+/// 广义凹形族（p-norm p=2）：q(k) = q_max·k / sqrt(k² + k0²)。
+/// X3 审计整改（豆包清单 d）：多族并行辨识，避免"单族以偏概全"——
+/// W3 转 C 的复测只用了有理族一支，豆包实证 p-norm p=2 在同数据上可全过。
+/// 定点 +−×÷ + 整数平方根（u128::isqrt），无超越函数（确定性红线保持）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PNormConcaveFit {
+    /// 渐近流量上界 q_max（‰）
+    pub q_max_permille: u64,
+    /// 尺度密度 k0（‰）——q(k0)=q_max/√2；零密度斜率=q_max·1000/k0。
+    pub k0_permille: u64,
+}
+
+impl PNormConcaveFit {
+    /// 零密度斜率（‰）；物理上界=1000‰。
+    pub fn zero_density_slope_permille(&self) -> u64 {
+        if self.k0_permille == 0 { return u64::MAX; }
+        (self.q_max_permille as u128 * 1000 / self.k0_permille as u128) as u64
+    }
+}
+
+/// 定点模型流量 q(k)=q_max·k/sqrt(k²+k0²)（‰），就近舍入。
+pub fn q_pnorm_permille(fit: &PNormConcaveFit, k_permille: u64) -> u64 {
+    if k_permille == 0 { return 0; }
+    let q_max = fit.q_max_permille as u128;
+    let k = k_permille as u128;
+    let k0 = fit.k0_permille as u128;
+    let den = (k * k + k0 * k0).isqrt().max(1);
+    let num = q_max * k;
+    ((num + den / 2) / den) as u64
+}
+
+/// p-norm 族辨识（目标判据同构：相对误差平方和；越界判失败口径同有理族）。
+/// q_max 候选域=观测最大值至 4 倍+16；k0 候选域=1..4·k_max；可行域 k0≥q_max。
+pub fn fit_pnorm_concave_detailed(
+    samples: &[MfdSample],
+) -> (PNormConcaveFit, u64, bool) {
+    assert!(!samples.is_empty(), "no samples");
+    let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
+    let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
+    let mut best_free: Option<(u128, u64, u64)> = None;
+    let mut best_feasible: Option<(u128, u64, u64)> = None;
+    for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
+        for k0 in 1..=k_max.saturating_mul(4).max(1) {
+            let fit = PNormConcaveFit { q_max_permille: q_max, k0_permille: k0 };
+            let mut sse: u128 = 0;
+            for s in samples {
+                let e = q_pnorm_permille(&fit, s.k_permille) as i128 - s.q_permille as i128;
+                let er = (e * 1000) / (s.q_permille.max(1) as i128);
+                sse += (er * er) as u128;
+            }
+            if best_free.is_none_or(|(b, _, _)| sse < b) {
+                best_free = Some((sse, q_max, k0));
+            }
+            if k0 >= q_max && best_feasible.is_none_or(|(b, _, _)| sse < b) {
+                best_feasible = Some((sse, q_max, k0));
+            }
+        }
+    }
+    let (_, q_free, k_free) = best_free.unwrap();
+    let free_slope = (q_free as u128 * 1000 / k_free as u128) as u64;
+    if free_slope <= 1000 {
+        return (PNormConcaveFit { q_max_permille: q_free, k0_permille: k_free }, free_slope, false);
+    }
+    let (_, q_f, k_f) = best_feasible.expect("no physically feasible fit (slope<=1000‰)");
+    (PNormConcaveFit { q_max_permille: q_f, k0_permille: k_f }, free_slope, true)
+}
+
+/// 便捷入口=详细版第 1 返回值。
+pub fn fit_pnorm_concave(samples: &[MfdSample]) -> PNormConcaveFit {
+    fit_pnorm_concave_detailed(samples).0
+}
+
 /// 分区带（审计修复 2026-11-20：判定边界须为**预注册固定 fixture**，禁止由
 /// 被评模型参数导出——决策4 3a(a)；自指边界=同参 gaming，豆包实证：自指带
 /// 下 FAIL 的数据在绝对带上三区全 PASS）。
@@ -383,9 +455,11 @@ impl ZoneBands {
     pub const SET_D: ZoneBands = ZoneBands { free_max_k: 100, trans_max_k: 2000 };
 }
 
-/// 用留出样本评估有理饱和拟合（ADR-NEW-25 3a 独立参照；分区=预注册绝对带）。
-pub fn evaluate_rational_fit(
-    fit: &RationalSaturationFit,
+/// 用留出样本评估拟合（ADR-NEW-25 3a 独立参照；分区=预注册绝对带）。
+/// 泛化核：对任意模型 q(k) 评估（X3 审计整改：消除各族评估的双实现，
+/// 豆包/MiniMax 报告 q_model 副本漂移教训）。
+pub fn evaluate_q_fn(
+    q: impl Fn(u64) -> u64,
     holdout: &[MfdSample],
     bands: &ZoneBands,
 ) -> FitErrorReport {
@@ -394,7 +468,7 @@ pub fn evaluate_rational_fit(
     let mut trans_max = 0u64;
     let mut sat_max = 0u64;
     for s in holdout {
-        let qm = q_rational_permille(fit, s.k_permille);
+        let qm = q(s.k_permille);
         let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
             / (s.q_permille.max(1) as u128);
         let err = err as u64;
@@ -413,6 +487,24 @@ pub fn evaluate_rational_fit(
         k_c_err_permille: 0, // 平台/饱和族无峰值拐点，N/A
         points_evaluated: holdout.len(),
     }
+}
+
+/// 有理饱和族评估（evaluate_q_fn 委托）。
+pub fn evaluate_rational_fit(
+    fit: &RationalSaturationFit,
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    evaluate_q_fn(|k| q_rational_permille(fit, k), holdout, bands)
+}
+
+/// p-norm 族评估（evaluate_q_fn 委托）。
+pub fn evaluate_pnorm_fit(
+    fit: &PNormConcaveFit,
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    evaluate_q_fn(|k| q_pnorm_permille(fit, k), holdout, bands)
 }
 
 /// (k, q) 采样点：k=活跃车辆/边（放大 1000 倍定点），q=边遍历/边每 tick（放大 1000 倍）。
@@ -769,6 +861,53 @@ mod tests {
         let fit = fit_rational_saturation(&rational_samples(200, 250, &ks));
         let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
         let r = evaluate_rational_fit(&fit, &rational_samples(200, 250, &holdout), &ZoneBands::SET_D);
+        assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
+        assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
+        assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);
+    }
+
+    // ===== X3：p-norm p=2 族（豆包清单 d：多族并行辨识） =====
+
+    fn pnorm_samples(q_max: u64, k0: u64, ks: &[u64]) -> Vec<MfdSample> {
+        let fit = PNormConcaveFit { q_max_permille: q_max, k0_permille: k0 };
+        ks.iter()
+            .map(|&k| MfdSample { k_permille: k, q_permille: q_pnorm_permille(&fit, k) })
+            .collect()
+    }
+
+    #[test]
+    fn synthetic_pnorm_is_recovered() {
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(200, 250, &ks));
+        assert_eq!(fit, PNormConcaveFit { q_max_permille: 200, k0_permille: 250 });
+        assert_eq!(free_slope, 800);
+        assert!(!binding);
+    }
+
+    #[test]
+    fn pnorm_identification_is_deterministic() {
+        let ks: Vec<u64> = (1..=16).map(|i| i * 40).collect();
+        let s = pnorm_samples(300, 400, &ks);
+        assert_eq!(fit_pnorm_concave_detailed(&s), fit_pnorm_concave_detailed(&s));
+    }
+
+    #[test]
+    fn pnorm_bound_violation_is_disclosed_and_constrained() {
+        // 自由估计斜率超界（500/50=10000‰）→binding=true 即失败信号；
+        // 可行解回退仅诊断，zero_density_slope≤1000‰。
+        let ks: Vec<u64> = (1..=16).map(|i| i * 40).collect();
+        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(500, 50, &ks));
+        assert!(binding);
+        assert!(free_slope > 1000);
+        assert!(fit.zero_density_slope_permille() <= 1000);
+    }
+
+    #[test]
+    fn pnorm_holdout_meets_criteria_on_synthetic() {
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+        let fit = fit_pnorm_concave(&pnorm_samples(200, 250, &ks));
+        let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
+        let r = evaluate_pnorm_fit(&fit, &pnorm_samples(200, 250, &holdout), &ZoneBands::SET_D);
         assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
         assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
         assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);

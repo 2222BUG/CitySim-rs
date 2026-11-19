@@ -17,7 +17,9 @@
 #![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
 use sim_traffic::{
-    evaluate_rational_fit, fit_rational_saturation_detailed, q_rational_permille, GridTraffic,
+    evaluate_pnorm_fit, evaluate_rational_fit, fit_pnorm_concave_detailed,
+    fit_rational_saturation_detailed, q_pnorm_permille, q_rational_permille, FitErrorReport,
+    GridTraffic,
     MfdSample, ZoneBands, FREE_FLOW_CRIT_PERMILLE, SATURATED_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE,
 };
 
@@ -102,6 +104,29 @@ fn sample_ladder(w: u32, h: u32, ladder: &[u64]) -> (Vec<MfdSample>, usize) {
     (samples, unsteady)
 }
 
+/// 相对误差平方和（‰口径）——族比较统一目标（与判据同构）。
+fn rel_sse(q: impl Fn(u64) -> u64, samples: &[MfdSample]) -> u128 {
+    let mut sse = 0u128;
+    for s in samples {
+        let e = q(s.k_permille) as i128 - s.q_permille as i128;
+        let er = (e * 1000) / (s.q_permille.max(1) as i128);
+        sse += (er * er) as u128;
+    }
+    sse
+}
+
+/// 单族判定：越界（binding）即 FAIL；三区判据常量单一来源。
+fn family_verdict(binding: bool, r: &FitErrorReport) -> &'static str {
+    if binding
+        || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
+        || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE
+    {
+        "FAIL"
+    } else {
+        "PASS"
+    }
+}
+
 fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
     emit(format!("=== topology {w}x{h} (Set D seeds {SETD_SEED_BASE:#x}+0..{N_SEEDS}) ==="));
     let (mut fit_samples, unsteady_fit) = sample_ladder(w, h, &FIT_LADDER);
@@ -160,11 +185,37 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
         || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE;
     emit(format!(
-        "  topology verdict = {} (binding={} free={}‰ sat={}‰)",
+        "  topology verdict [rational] = {} (binding={} free={}‰ sat={}‰)",
         if topology_fail { "FAIL" } else { "PASS" },
         binding,
         r.free_flow_max_err_permille,
         r.saturated_max_err_permille
+    ));
+    // ===== X3：p-norm p=2 并行辨识（豆包清单 d：多族并行，防"单族以偏概全"）=====
+    // 防 gaming 协议（GPT-6/豆包）：族选择只看拟合集相对 SSE（先于留出评估锁定），
+    // 留出集不参与选族；两族留出指标全部披露。
+    let (pfit, p_slope, p_binding) = fit_pnorm_concave_detailed(&fit_samples);
+    let rp = evaluate_pnorm_fit(&pfit, &holdout, &ZoneBands::SET_D);
+    emit(format!(
+        "  [family pnorm-p2] fit: q_max={}‰ k0={}‰ slope free={}‰ binding={}",
+        pfit.q_max_permille, pfit.k0_permille, p_slope, p_binding
+    ));
+    emit(format!(
+        "  [family pnorm-p2] free={}‰ trans={}‰ sat={}‰ -> {}",
+        rp.free_flow_max_err_permille, rp.transition_max_err_permille, rp.saturated_max_err_permille,
+        family_verdict(p_binding, &rp)
+    ));
+    let sse_r = rel_sse(|k| q_rational_permille(&fit, k), &fit_samples);
+    let sse_p = rel_sse(|k| q_pnorm_permille(&pfit, k), &fit_samples);
+    let selected = if sse_p < sse_r { "pnorm-p2" } else { "rational" };
+    emit(format!(
+        "  [family pre-selection] fit-set rel-SSE rational={} pnorm={} -> selected={} (locked before holdout)",
+        sse_r, sse_p, selected
+    ));
+    emit(format!(
+        "  Set D outcome (selected family {}) = {}",
+        selected,
+        if selected == "pnorm-p2" { family_verdict(p_binding, &rp) } else { family_verdict(binding, &r) }
     ));
     // 稳态敏感性（审计修复 2026-11-20）：窗口后半单独采样复算三区指标，
     // 若与全窗结论一致则"稳态仅披露"升级为"已验证稳健"。

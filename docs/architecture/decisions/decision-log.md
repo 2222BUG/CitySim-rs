@@ -393,7 +393,7 @@ mfd_coupling 断言聚合一致；workspace 全绿（0 失败，1 ignore=有意�
 | --- | --- | --- | --- |
 | X1 | P0 口径/判定修复（sim-traffic）：k/q 同群体采样（last_step_population）+q≤k fail-fast、ZoneBands 预注册绝对带去自指、越界判失败口径（binding 仅诊断）、目标判据同构（相对误差平方和）、数值安全（u128/除零）、证据 commit 标注（SETD_COMMIT）、稳态敏感性（back-half） | 已完成（2026-11-20）| fix(stage2c): X1——审计 P0 修复 |
 | X2 | 预算修复（sim-pathfinding）：Unreachable 携带 expanded 扣预算、让步计数分离（budget_yield_count/ quota_yield_count）、FindOutcome::expanded()、回归测试 2 个 | 已完成（2026-11-20）| fix(stage2c): X2——Unreachable 预算入账+让步计数分离 |
-| X3 | 广义凹形族（p-norm p=2）并行辨识 | 待开始 | - |
+| X3 | 广义凹形族并行辨识（p-norm p=2：q=q_max·k/sqrt(k²+k0²) 定点 isqrt、拟合、评估、4 测试）+评估泛化核 evaluate_q_fn 消除双实现+Set D 报告双族并行（防 gaming：族选择只看拟合集 SSE 锁定于留出评估前） | 已完成（2026-11-20）| fix(stage2c): X3——p-norm p=2 族并行辨识 |
 | X4 | Set D 复测（修后重跑，证据带 commit）+豆包 A2 复判路径 | 待开始 | - |
 | X5 | 状态/文档卫生：#27 保持候选、#28 改待实装、Q=65536 钉死、README/主文档/核销清单/ADR-26 公式 | 待开始 | - |
 | X6 | 审计裁决记录（7 家）+issue #27 回贴+终验 | 待开始 | - |
