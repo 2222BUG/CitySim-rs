@@ -215,9 +215,9 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 - [ ] ADR-NEW-23：6 场景矩阵验收指标实测入 docs/benchmarks/（误判率/重算率/阻塞率/等待 tick）
 - [ ] ADR-NEW-23：PartialPath/UseValidPrefix 启用前清债务 #18
 - [ ] ADR-NEW-24：Edge 有向语义入数据字典（方向性/平行边策略/代价下限不变量）（债务 #8 剩余，Stage 2B 前）
-- [ ] ADR-NEW-24：机制 B→A 切换阈值定案（债务 #27，Stage 2B 并发压测后）
+- [ ] ADR-NEW-24：机制 B→A 切换阈值定案（债务 #27，Stage 2B 并发压测后）——**进展（2026-11-19 V4）**：多场景基线已实测（dup_rate 证伪为判据、候选判据=单次尝试展开>4096 或让步≥8 切机制 A），**数值定案随 G2 锁定**后核销本行
 - [x] ADR-NEW-24：事务重试 tx_id 语义（债务 #28）+全局每 tick 寻路配额（债务 #29）——**2026-11-19 Stage 2B 前置定案**（#28=沿用原 tx_id 全序重排+重试上限 3 转受阻；#29=TickBudget{remaining=Q}，B_k≤min(b·2^k,L,remaining)，Q 占位 65536 待 NEW-14 阈值回填）；实装与测试随 Stage 2B
-- [ ] ADR-NEW-24：A* 细则补遗（h 一致性不变量/L=|V|×reopen 上界/前驱裁决明文/CSR u32 边界）（债务 #30）
+- [x] ADR-NEW-24：A* 细则补遗（h 一致性不变量/L=|V|×reopen 上界/前驱裁决明文/CSR u32 边界）（债务 #30）——**已核销（2026-11-19 V3）**：astar_edge_cases 5 测试（reopen 差分 13 vs 1010、等代价前驱=先发现保留、乱序注入稳定、CSR u32=179,400 边、h 一致性边界书面化），docs/benchmarks 证据=crates/sim-pathfinding/tests/astar_edge_cases.rs
 - [x] ADR-NEW-24：让步路径强读档等价专项 + 并发队列压测 + R3 线程无关（1/2/8 线程+混沌注入）——**2026-11-19 Stage 2B 完成**（证据：docs/benchmarks/Stage-2B-Exit-CHECKLIST.md、Stage2B-concurrent-stress.txt、sim-save `yield_state_strong_readback`）
 - [ ] ADR-NEW-24：R4 跨平台摘要一致性（移交 R4 发布前门禁，不属 Stage 2B 范围）
 
@@ -333,7 +333,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | V1 | 3a 独立参照验证（拟合 A/试点 B/确认 C 三集+多 seed 平均、三区判据复核回填、mfd-3a-reference.txt） | 已完成（2026-11-19） | docs(stage2c): V1——3a 独立参照验证 || V2 | 3c 生产代码路径（MFD→降级信号接入 BudgetRegistry）+专用耦合线程无关测试 | 已完成（2026-11-19） | docs(stage2c): V2——需求压力降级通道（ADR-NEW-26 草案）+耦合线程无关测试 |
 | V3 | 债务 #30 A* 细则补遗测试（reopen 差分/等代价多路径/乱序注入/CSR u32 边界） | 已完成（2026-11-19） | docs(stage2c): V3——A* 细则四组边界测试（astar_edge_cases 5 测试） |
 | V4 | 债务 #27 机制 B→A 切换阈值基线（障碍/迷宫场景 dup_rate 多场景实测→候选提案） | 已完成（2026-11-19） | docs(stage2c): V4——G5 阈值基线三场景实测（dup_rate 证伪、候选判据=单次展开 4096/让步 8） |
-| V5 | 条件核销清单更新+状态迁移+终验 | 待开始 | - |
+| V5 | 条件核销清单更新+状态迁移+终验 | 已完成（2026-11-19） | docs(stage2c): V5——条件核销（#30）、#27 基线进展、ADR-25 条件进展表、goal 收官 |
 
 V1 实测结论：确认集 C 饱和区 102‰ PASS（判据 250‰）、自由流区 190‰ FAIL（判据 100‰）、
 转折区 521‰ 记录；根因=模型形式凹形缺陷（债务 #31）；3a 状态=部分通过，转 Verified
@@ -378,6 +378,7 @@ V1 实测结论：确认集 C 饱和区 102‰ PASS（判据 250‰）、自由�
 | 2026-11-19 | **V2 3c 生产代码路径**：需求压力降级通道（sim-traffic demand_pressure_bp→BudgetRegistry::note_demand_pressure，effective=max、需求单独触发封顶 L1、状态入档入摘要）+ADR-NEW-26 草案；专用耦合线程无关测试 mfd_coupling（1/2/8 线程+混沌注入+串行参考三路摘要一致）；budget+traffic 测试 12+14 全绿 |
 | 2026-11-19 | **V3 债务 #30 A* 细则补遗**：astar_edge_cases 5 测试（reopen 差分=违反代价下限前提场景 13 vs 1010、等代价前驱=先发现保留、乱序注入=代价/摘要稳定、CSR u32=179,400 边 300×300 网格、h 一致性不变式边界书面化） |
 | 2026-11-19 | **V4 债务 #27 阈值基线**：G5 三场景（open/obstacle-20%/maze）各 200 请求实测——dup_rate 证伪为切换判据（max 0.664≈2/3 结构上界）；候选判据=单次尝试展开>4096 或让步≥8 切机制 A（确定性工作量单位，墙钟仅遥测）；数据 docs/benchmarks/G5-threshold-baseline.txt，ADR-NEW-24 阈值段回填 |
+| 2026-11-19 | **V5 收官**：条件核销 #30（A* 细则补遗 5 测试）、#27 基线进展注（数值定案随 G2）；ADR-NEW-25 转 Verified 条件进展表（3a 部分通过+债务 #31、3c 半达成、阈值候选、R3 过/R4 移交）；goal-53eb075f V1–V5 全程完成 |
 
 ## 关联
 
