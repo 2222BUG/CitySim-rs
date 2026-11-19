@@ -215,7 +215,8 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 - [ ] ADR-NEW-24：机制 B→A 切换阈值定案（债务 #27，Stage 2B 并发压测后）
 - [x] ADR-NEW-24：事务重试 tx_id 语义（债务 #28）+全局每 tick 寻路配额（债务 #29）——**2026-11-19 Stage 2B 前置定案**（#28=沿用原 tx_id 全序重排+重试上限 3 转受阻；#29=TickBudget{remaining=Q}，B_k≤min(b·2^k,L,remaining)，Q 占位 65536 待 NEW-14 阈值回填）；实装与测试随 Stage 2B
 - [ ] ADR-NEW-24：A* 细则补遗（h 一致性不变量/L=|V|×reopen 上界/前驱裁决明文/CSR u32 边界）（债务 #30）
-- [ ] ADR-NEW-24：让步路径强读档等价专项 + 并发队列压测（Stage 2B 硬门禁）+ R3/R4
+- [x] ADR-NEW-24：让步路径强读档等价专项 + 并发队列压测 + R3 线程无关（1/2/8 线程+混沌注入）——**2026-11-19 Stage 2B 完成**（证据：docs/benchmarks/Stage-2B-Exit-CHECKLIST.md、Stage2B-concurrent-stress.txt、sim-save `yield_state_strong_readback`）
+- [ ] ADR-NEW-24：R4 跨平台摘要一致性（移交 R4 发布前门禁，不属 Stage 2B 范围）
 
 ## Stage 1 执行日志
 
@@ -273,9 +274,9 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | 步骤 | 内容 | 状态 | 提交 |
 | --- | --- | --- | --- |
 | B1 | 前置定案（债务 #28 事务重试 tx_id、#29 全局每 tick 寻路配额）+ TickBudget 实装 + 让步强读档专项 | 已完成（2026-11-19） | ffd4516 + B1c 提交 |
-| B2 | 确定性并行框架（2.9 条 6：快照读取+稳定键分片+串行提交）+ 线程无关 harness | 待开始 | - |
-| B3 | 线程无关 1/2/8 线程+注入延迟测试 + 并发队列压测 | 待开始 | - |
-| B4 | 退出核对（主文档 Stage 2B 四条退出条件）+ 文档同步 | 待开始 | - |
+| B2 | 确定性并行框架（2.9 条 6：快照读取+稳定键分片+串行提交）+ 线程无关 harness | 已完成（2026-11-19） | feat(stage2b): B2——sim-parallel 确定性并行框架（47ab0e2，含 CI 矩阵补 Stage 1 六 crate） |
+| B3 | 线程无关 1/2/8 线程+注入延迟测试 + 并发队列压测 | 已完成（2026-11-19） | feat(stage2b): B3——线程无关场景测试 + 并发队列压测（af9427c，1/2/8 线程摘要一致 PASS） |
+| B4 | 退出核对（主文档 Stage 2B 四条退出条件）+ 文档同步 | 已完成（2026-11-19） | docs(stage2b): B4——退出核对 4/4、Stage-2B-Exit-CHECKLIST |
 
 ## 变更历史
 
@@ -306,6 +307,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | 2026-11-19 | **Stage 2A Phase 4 完成**：退出核对 5/5（docs/benchmarks/Stage-2A-Exit-CHECKLIST.md）；churn 补测（200×200 双向网格）重算率 0.0027 ≤ 5% PASS、阻塞率 0.00（G5-churn-200x200.txt）；事故教训=Edge 有向语义需入数据字典（债务 #8 增补）；ADR-NEW-24 裁决待第 7 章流程 |
 | 2026-11-19 | **ADR-NEW-24 第二轮评审裁决**：八家独立 AI 评审 8:0 有条件采纳→Accepted（附条件）；QWEN4-MAX 两条代码缺陷修复（溢出契约 saturating、父边松弛实际边，2 回归测试）；判据口径统一（重算率分母=请求总数 3/200=0.015）；阈值过渡口径落 ADR-24（数值待 Stage 2B，债务 #27）；新增债务 #27/#28/#29/#30、#8 更新；G5 机制锁定核销（累计 9/28）；票面归档 review/archive/决策2-ADR24-投票-2026-11-19.docx；issue #24 回贴 |
 | 2026-11-19 | **Stage 2B 开工（B1）**：债务 #28/#29 前置定案（tx_id 沿用原 ID 全序重排、重试上限 3 转受阻；TickBudget{remaining=Q} 全局每 tick 配额，Q 占位 65536 待 NEW-14 阈值回填）；sim-pathfinding TickBudget+request_with_budget 实装（2 新测试）；让步强读档专项 yield_state_strong_readback 通过（G3 计数入档+让步态强等价） |
+| 2026-11-19 | **Stage 2B 完成**：B1~B4（#28/#29 定案实装、让步强读档专项、sim-parallel 确定性并行框架、线程无关 1/2/8+混沌注入+并发队列压测 PASS）；退出条件 4/4、硬门禁 3/3（R4 移交发布门禁），见 docs/benchmarks/Stage-2B-Exit-CHECKLIST.md 与 Stage2B-concurrent-stress.txt；条件核销（专项+压测+R3 项）；提交 ffd4516→1272e37→47ab0e2→af9427c→本次 |
 
 ## 关联
 
