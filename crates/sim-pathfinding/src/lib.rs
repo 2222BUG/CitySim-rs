@@ -122,7 +122,10 @@ impl PathFinder {
 fn h_manhattan(coords: &[(i64, i64)], node: u64, goal: u64) -> i64 {
     let (x1, y1) = coords.get(node as usize).copied().unwrap_or((0, 0));
     let (x2, y2) = coords.get(goal as usize).copied().unwrap_or((0, 0));
-    (x1 - x2).abs().wrapping_add((y1 - y2).abs())
+    // 溢出契约（ADR-NEW-21 决策 3）：禁止静默环绕，i128 中间值 + 饱和收敛到 i64。
+    let dx = (x1 as i128 - x2 as i128).abs();
+    let dy = (y1 as i128 - y2 as i128).abs();
+    (dx + dy).min(i64::MAX as i128) as i64
 }
 
 /// 单 tick 原子搜索：展开节点数不超过 node_budget；确定性五条内联。
@@ -144,23 +147,17 @@ pub fn find_once(
     open.insert((h0, h0, start), ());
     let mut g: BTreeMap<u64, i64> = BTreeMap::new();
     g.insert(start, 0);
-    let mut parent: BTreeMap<u64, u64> = BTreeMap::new();
+    // parent 记录 (父节点, 松弛时实际使用的边 ID)：平行同向边存在时路径边集与代价严格一致。
+    let mut parent: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
     let mut closed: BTreeSet<u64> = BTreeSet::new();
     let mut expanded = 0u64;
 
     while let Some(((_f, _h, node), ())) = open.pop_first() {
         if node == goal {
-            // 回溯路径
+            // 回溯路径（使用松弛时记录的边 ID）
             let mut path = Vec::new();
             let mut cur = goal;
-            while let Some(&p) = parent.get(&cur) {
-                // 找到 p->cur 的边 ID（CSR 数组序中最小者，确定性）
-                let eid = net
-                    .neighbors(p)
-                    .filter(|&(_, to, _)| to == cur)
-                    .map(|(eid, _, _)| eid)
-                    .min()
-                    .expect("父边必须存在");
+            while let Some(&(p, eid)) = parent.get(&cur) {
                 path.push(eid);
                 cur = p;
             }
@@ -178,17 +175,17 @@ pub fn find_once(
         let g_cur = g[&node];
         // 邻居展开序 = CSR 数组序（决策 2 第 3 条）
         for (eid, to, cost) in net.neighbors(node) {
-            let _ = eid;
-            let new_g = g_cur.wrapping_add(cost);
+            // 溢出契约（ADR-NEW-21 决策 3）：饱和运算，禁止静默环绕。
+            let new_g = g_cur.saturating_add(cost);
             let known = g.get(&to).copied();
             if known.is_some_and(|k| new_g >= k) {
                 continue; // 仅严格更小才松弛/reopen（决策 2 第 4 条）
             }
             g.insert(to, new_g);
-            parent.insert(to, node);
+            parent.insert(to, (node, eid));
             closed.remove(&to); // 允许 reopen
             let hh = h_manhattan(coords, to, goal);
-            let ff = new_g.wrapping_add(hh);
+            let ff = new_g.saturating_add(hh);
             open.insert((ff, hh, to), ());
         }
     }
@@ -200,6 +197,7 @@ pub fn find_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim_network::Edge;
     use sim_network::{Op, Tx};
 
     fn grid(w: u64, h: u64) -> (Network, Vec<(i64, i64)>) {
@@ -268,7 +266,7 @@ mod tests {
             }
             done.insert(u);
             for (_, to, cost) in net.neighbors(u) {
-                let nd = du.wrapping_add(cost);
+                let nd = du.saturating_add(cost);
                 if dist.get(&to).is_none_or(|&d| nd < d) {
                     dist.insert(to, nd);
                 }
@@ -361,5 +359,51 @@ mod tests {
         pf.note_stale_recompute();
         assert_eq!(pf.budget_yield_count, 5, "过期重算不得动让步计数");
         assert_eq!(pf.stale_recompute_count, 2);
+    }
+
+    /// 平行同向边：路径边集必须是松弛实际使用的边（QWEN4-MAX 第二轮评审缺陷回归）。
+    /// 回溯按 min edge id 会在平行边不同代价时返回与报告 cost 不符的边集。
+    #[test]
+    fn parallel_edge_reconstruction_is_exact() {
+        let net = Network::from_edges(vec![
+            Edge { id: 1, a: 0, b: 1, cost: 10, geom: vec![(0, 0), (0, 0)] }, // 平行边（较贵，id 小）
+            Edge { id: 2, a: 0, b: 1, cost: 3, geom: vec![(0, 0), (0, 0)] },  // 平行边（较便宜）
+            Edge { id: 3, a: 1, b: 2, cost: 5, geom: vec![(0, 0), (0, 0)] },
+        ]);
+        let coords = vec![(0i64, 0i64); 3];
+        let FindOutcome::Complete { path, cost, .. } =
+            find_once(&net, &coords, 0, 2, 100)
+        else {
+            panic!("must complete")
+        };
+        assert_eq!(cost, 8, "最优代价=3+5");
+        assert_eq!(path, vec![2, 3], "必须选便宜的平行边 id=2，而非 min id=1");
+        // 边集代价之和 == 报告 cost（stale 窄判依赖边集正确性）
+        let sum: i64 = path
+            .iter()
+            .map(|&eid| net.edge(eid).expect("边存在").cost)
+            .sum();
+        assert_eq!(sum, cost, "返回边集的代价和必须等于报告 cost");
+    }
+
+    /// 溢出契约（ADR-NEW-21 决策 3）：饱和运算，禁止静默环绕；超大坐标/代价下确定性。
+    #[test]
+    fn overflow_saturates_deterministically() {
+        let net = Network::from_edges(vec![Edge {
+            id: 1,
+            a: 0,
+            b: 1,
+            cost: i64::MAX,
+            geom: vec![(0, 0), (0, 0)],
+        }]);
+        let coords = vec![(i64::MIN, i64::MIN), (i64::MAX, i64::MAX)];
+        // h 不得环绕为负/恐慌：饱和到 i64::MAX
+        assert_eq!(h_manhattan(&coords, 0, 1), i64::MAX);
+        let a = find_once(&net, &coords, 0, 1, 100);
+        let b = find_once(&net, &coords, 0, 1, 100);
+        assert_eq!(a, b, "溢出路径下两次运行必须逐边一致");
+        let FindOutcome::Complete { cost, path, .. } = a else { panic!("must complete") };
+        assert!(cost >= 0, "饱和运算不得环绕为负");
+        assert_eq!(path, vec![1]);
     }
 }

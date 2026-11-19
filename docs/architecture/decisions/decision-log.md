@@ -25,7 +25,7 @@
 | ADR-NEW-21 | SimScalar 数值格式定案（Spike A 数值设计决策） | Accepted（2026-11-19） | 采纳（2026-11-19 正式裁决，无条件） | Q24.40 整数位勘误（±2^23≈8.39e6 m，结论不变）；转 Verified 外围条件=债务 #22 工具链收敛、正式基准替代冒烟、dt/漂移黄金值入 R4 门禁 |
 | ADR-NEW-22 | 系统级 RNG 协议（Spike B 协议设计决策） | Accepted（2026-11-19，附条件） | 有条件采纳（2026-11-19 正式裁决） | namespace 注册表+注册期 64 位碰撞校验（债务 #25，已补注）；统计质量正式测试（TestU01/PractRand 级）R4 前；协议版本 bump 随 EC-03；跨平台黄金值复验（R4） |
 | ADR-NEW-23 | 路网事务过期结果细则与行走删路行为（Spike C 实测定案建议） | Accepted（2026-11-19，联动组定案，实施前置） | 有条件采纳（联动组，2026-11-19 正式裁决） | 实施前置=两阶段（AABB+边 ID 窄判）与代价默认不触发的测试覆盖（6 场景矩阵：误判率/重算率/阻塞率/平均与最大等待 tick）+组级验收；"影响"节矛盾句已勘误；兜底候选启用前定义"部分路径可接受性"（债务 #18）；并发撤销与事务日志回滚点随 ADR-NEW-19 编码器 |
-| ADR-NEW-24 | 路网 CSR 与确定性 A* 细则（Stage 2A 实施前置定案） | Proposed（2026-11-19 起草） | 待评审 | CSR 定案（整表重建原子替换/代价原位）；A* 唯一性五条（(f,h,node_id) 全序、CSR 数组序展开、启发式曼哈顿定点）；机制 B 参数 g=2/L=|V|/B_k=min(b·2^k,L)；Stage 2A 退出判据（最优性对拍/唯一性/重算率≤5%/阻塞率≤1%/预算上界）；取消与冲突合并语义——收口债务 #8/#17/#18/#26；随 Stage 2A 实施验证后按第 7 章裁决 |
+| ADR-NEW-24 | 路网 CSR 与确定性 A* 细则（Stage 2A 实施前置定案） | Accepted（2026-11-19，附条件） | 有条件采纳（第二轮外部评审 8:0） | 条件绑定债务 #27（机制 B→A 切换阈值）、#28（事务重试 tx_id）、#29（全局每 tick 寻路配额）、#30（A* 细则补遗：h 一致性不变量/L=|V|×reopen/前驱裁决/CSR u32 边界）、#8（Edge 语义入数据字典）；QWEN4-MAX 两条代码缺陷已修复（2026-11-19，含 2 条回归测试）；条件截止点=Stage 2B（并发队列+R3/R4+让步强读档专项） |
 
 ## 未登记决策债务登记（2026-11-18 设计审计入账）
 
@@ -40,7 +40,7 @@
 | 5 | SimError/错误码/诊断事件 schema；SimErrorContext.entity_id 与 2.3 解耦冲突 | EC-08 | 重要 | Stage 0 |
 | 6 | 坐标系 / 单位 / 角度表示 | 2.4、2.10 | 重要 | Stage 0（与 2.10 定案同期） |
 | 7 | Agent 状态机与"受阻状态"定义 | EC-01、ADR-NEW-17 条文 10 | 重要 | Stage 1 前 |
-| 8 | 路网数据字典；CSR 定案表述矛盾（Accepted vs 待性能测试） | 2.1、2.5 | 重要 | Stage 2A 前 |
+| 8 | 路网数据字典；CSR 定案表述矛盾（Accepted vs 待性能测试） | 2.1、2.5 | 重要 | Stage 2A 前（2026-11-19 更新：CSR 表述矛盾已收口=ADR-NEW-24 决策 1；剩余=Edge 有向语义三件事入数据字典——方向性/平行边策略/代价下限不变量，第二轮评审 8/8 要求，Stage 2B 前） |
 | 9 | 影响区域表示法（矩形 / 边集 / 瓦片）与请求/结果字段 | EC-01 | 重要 | 已立项 ADR-NEW-23（Spike C 已完成 2026-11-18：轴对齐包围盒 1 mm 网格 + 并集聚合粒度），待评审裁决 |
 | 10 | 回放输入 / 模拟配置 schema | 2.7、2.9 条 8、EC-11 | 重要 | Stage 1 前 |
 | 11 | 存档序列化格式（与摘要 canonical 编码共用编码器） | EC-03 | 重要 | Stage 1 前，随 ADR-NEW-19 编码器定案；canonical 编码方向已由 save-restore-spike 验证（小端 + u64 长度前缀 + 尾字节拒绝，Step 5） |
@@ -60,6 +60,10 @@
 | 24 | 请求/事务 ID 分配点唯一性（tick 内固定相位、单一分配点按 (agent_id, local_sequence) 取号、禁止并行阶段分配） | ADR-NEW-20、EC-03 | 重要 | Stage 1 寻路实现前定案（2026-11-19 正式裁决新增，评审 C） |
 | 25 | namespace 注册表与 64 位哈希碰撞校验（注册期检测、发布后不得复用或变更语义） | ADR-NEW-22、EC-02 | 一般 | RNG 协议实施前（2026-11-19 正式裁决新增，评审 C/B） |
 | 26 | CSR 数据结构定案 + A* 确定性细则（平局打破/邻居展开序/启发式舍入）——GlobalDigest 漂移风险 | 2.1、2.4、Stage 2A（扩债务 #8/#17） | 重要 | Stage 2A 前（2026-11-19 正式裁决新增，评审 D） |
+| 27 | 机制 B→A 切换阈值定案（dup_rate 结构性基线 0.53 是 g=2 级数水平，单请求重复率上界→2/3；切换触发候选=最坏单 tick 耗时 SLO 或 dup_rate 超阈；数值需多请求并发/非均匀路网数据） | ADR-NEW-24 决策 3/4、ADR-NEW-20 | 重要 | Stage 2B 并发压测后定案（2026-11-19 第二轮评审新增，MIMO/豆包/Gemini/GROK） |
+| 28 | 寻路请求取消/冲突重试的 tx_id 语义（沿用原 ID 按全序重排 vs 新 ID 显式链接；重试上限衔接受阻状态） | ADR-NEW-24 取消/冲突、ADR-NEW-17、ADR-NEW-20 | 一般 | Stage 2B 前（2026-11-19 第二轮评审新增，MIMO/QWEN/Gemini/Claude） |
+| 29 | 全局每 tick 寻路配额（B_k≤min(b·2^k,L,剩余配额)、多请求共享配额上界）——L=|V| 使单请求最坏展开=|V|，与 ADR-NEW-14 条 3 每 tick 工作量上限的关系待对齐 | ADR-NEW-24 决策 3、ADR-NEW-14、2.7 | 重要 | Stage 2B 前（2026-11-19 第二轮评审新增，Claude/QWEN） |
+| 30 | A* 细则补遗：h 一致性不变量（h(u)≤cost(u,v)+h(v)，动态代价更新后仍须成立）、L=|V|×reopen 上界重证（或一致性免 reopen）、open 集 g 相等先发现保留明文、CSR u32 容量边界（>u32::MAX 确定性失败）、node_id 整表重建前后稳定 | ADR-NEW-24 决策 2 | 重要 | Stage 2B 前（2026-11-19 第二轮评审新增，CHATGPT/Claude/QWEN） |
 
 ## 2026-11-18 首轮评审裁决记录（13 项建议）
 
@@ -197,7 +201,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 - [ ] ADR-NEW-19：纳入模块清单定稿（含预算队列/让步状态）（Stage 1 进展：sim-save 摘要已含预算队列/让步状态（G3）；全模块清单待模拟核心各模块落地定稿）
 - [ ] ADR-NEW-19：滚动摘要去留实测定案（性能 1~5 ms/tick 为估计值）
 - [ ] ADR-NEW-20：验收 6 项实测（含让步路径强读档等价）
-- [ ] ADR-NEW-20：G5 压测后 A/B/C 机制锁定（默认候选 B+三硬约束）
+- [x] ADR-NEW-20：G5 压测后 A/B/C 机制锁定（默认候选 B+三硬约束）——已核销（2026-11-19，Phase 3：docs/benchmarks/G5-Verdict-REPORT.md，机制 B 默认候选确认、A 为低浪费切换、C 单独不可用；切换阈值数值另立债务 #27）
 - [ ] ADR-NEW-20：每 tick 节点上限、最大等待 tick 上限与受阻衔接定值（随 NEW-14 阈值）
 - [ ] ADR-NEW-20：请求/事务 ID 单一分配点定案（债务 #24）（Stage 1 进展：T3/T7 已实装集中单一分配点（CommandIdAllocator / Allocators）；tick 内固定相位取号规则随调度器（Stage 2B）钉死）
 - [ ] ADR-NEW-21：R4 跨平台黄金值复验（dt_raw、drift_golden）（跨平台待 R4）
@@ -207,6 +211,11 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 - [ ] ADR-NEW-22：协议版本不符处理随 EC-03 兼容矩阵（债务 #12）回填
 - [ ] ADR-NEW-23：6 场景矩阵验收指标实测入 docs/benchmarks/（误判率/重算率/阻塞率/等待 tick）
 - [ ] ADR-NEW-23：PartialPath/UseValidPrefix 启用前清债务 #18
+- [ ] ADR-NEW-24：Edge 有向语义入数据字典（方向性/平行边策略/代价下限不变量）（债务 #8 剩余，Stage 2B 前）
+- [ ] ADR-NEW-24：机制 B→A 切换阈值定案（债务 #27，Stage 2B 并发压测后）
+- [ ] ADR-NEW-24：事务重试 tx_id 语义（债务 #28）+全局每 tick 寻路配额（债务 #29）
+- [ ] ADR-NEW-24：A* 细则补遗（h 一致性不变量/L=|V|×reopen 上界/前驱裁决明文/CSR u32 边界）（债务 #30）
+- [ ] ADR-NEW-24：让步路径强读档等价专项 + 并发队列压测（Stage 2B 硬门禁）+ R3/R4
 
 ## Stage 1 执行日志
 
@@ -230,7 +239,34 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | Phase 1 | 定案前置：ADR-NEW-24（CSR 定案、A* 确定性细则、机制 B 参数、Stage 2A 退出判据、取消/冲突语义） | 已完成（2026-11-19） | docs(stage2a): ADR-NEW-24 草案（f205722） |
 | Phase 2 | 实施：sim-network（CSR+原子事务+ADR-NEW-23 两阶段判定，9 测试）+ sim-pathfinding（确定性 A*+机制 B 预算让步+双计数器，7 测试） | 已完成（2026-11-19） | feat(stage2a): sim-network + sim-pathfinding |
 | Phase 3 | G1-G5 联动组 200×200 压测（机制 A/B/C 对比） | 已完成（2026-11-19） | docs(benchmarks): G5-stress-200x200.txt + G5-Verdict-REPORT.md（A=7 ticks 零浪费/B=4 ticks 浪费 0.53/C=100% 阻塞；B 上界 11 实测 4 ✅） |
-| Phase 4 | Stage 2A 退出核对 + ADR-NEW-24 走第 7 章裁决 | 退出核对已完成（2026-11-19，判据 5/5）；ADR-NEW-24 裁决待办 | docs(benchmarks): Stage-2A-Exit-CHECKLIST.md + G5-churn-200x200.txt（重算率 0.0027 PASS） |
+| Phase 4 | Stage 2A 退出核对 + ADR-NEW-24 走第 7 章裁决 | 已完成（2026-11-19：退出核对 5/5；第二轮外部评审 8:0 有条件采纳→Accepted（附条件）） | docs(benchmarks): Stage-2A-Exit-CHECKLIST.md + G5-churn-200x200.txt（重算率 0.0027 PASS）+ 决策2.docx 八家票面 |
+
+## 2026-11-19 第二轮评审裁决记录（ADR-NEW-24，八家独立 AI 评审）
+
+票面：review/archive/决策2-ADR24-投票-2026-11-19.docx（8 家全部署名：MIMO V2-PRO、DEEPSEEK V4.1 FLASH、豆包专家、QWEN4-MAX、CHATGPT、GEMINI、GROK-快速、Claude）。评审材料包=CitySim-rs-ADR24-REVIEW.zip（含 MANIFEST 数据口径说明）；任务书=review/AI-REVIEW-BRIEF-ADR24.md；回传渠道=issue #24。
+
+| # | 评审 | 裁决 | 关键要求（摘要） | 核对/落实 |
+| --- | --- | --- | --- | --- |
+| 1 | MIMO V2-PRO | 有条件采纳 | 重算率分母应为请求数（3/200=0.015）；0.53 是 g=2 结构性水平（单请求重复率上界 (2^k−1)/(3·2^{k−1})→2/3），切换触发候选=最坏单 tick 耗时 SLO+dup_rate>0.7；"2|V| 实为总展开上界，浪费<|V|"措辞修 | 采纳：判据口径/阈值过渡口径/措辞回填 ADR-24 |
+| 2 | DEEPSEEK V4.1 FLASH | 有条件采纳 | 阈值写入 ADR、Edge 入典、R3/R4+并发队列、让步强读档专项；decision-log 链接访问失败 | 采纳；decision-log 与外部材料一致性由维护者核对无冲突 |
+| 3 | 豆包专家 | 有条件采纳 | Edge 入典关债务 #8；让步计数是状态非配置；BinaryHeap 替代名录（有序向量/稳定二叉堆）；1M 节点整表重建尖峰 | 采纳：让步计数语义澄清+替代名录入 ADR-24 修订 |
+| 4 | QWEN4-MAX | 有条件采纳 | **两条代码缺陷坐实**：(a) wrapping_add 违反 ADR-NEW-21 溢出契约（h/g/f+参考 Dijkstra 对拍盲视）；(b) 回溯父边取 min edge id 而非松弛实际边，平行边下代价与边集不符、污染 stale 窄判 | 全部采纳并已修复（2026-11-19）+2 回归测试（parallel_edge_reconstruction_is_exact、overflow_saturates_deterministically） |
+| 5 | CHATGPT | 有条件采纳 | h 一致性不变量；L=|V|×reopen 二选一+reopen 测试；open 集前驱裁决规则；CSR u32 容量边界；交错场景强等价 | 采纳：登记债务 #30 |
+| 6 | GEMINI | 有条件采纳 | 并发队列+复杂路网压测（障碍/非均匀权）；阈值 P95>0.65 或耗时尖峰；Edge costs 按有向边索引 | 采纳：压测入 Stage 2B 门禁 |
+| 7 | GROK-快速 | 有条件采纳 | Edge 入典；阈值 ≥1.0；判据 Proposed→Accepted 保留 2B 限定 | 采纳 |
+| 8 | Claude | 有条件采纳 | 全局每 tick 寻路配额 B_k≤min(b·2^k,L,剩余配额)（L=|V| 与 ADR-14 条 3 每 tick 上限冲突）；不可达预检；"g 相等保留先发现前驱"明文；事务重试上限；补测清单 | 采纳：配额登记债务 #29、细则补遗 #30，其余回填 ADR-24 修订 |
+
+**共识（8/8 有条件采纳，无拒绝/延后）**：Edge 有向语义入典、阈值定案或书面过渡口径、让步强读档专项→Stage 2B、R3/R4+并发队列→Stage 2B；高频=重算率分母统一（4）、事务重试 tx_id（4）、L=|V|×reopen 上界（4）。
+
+**裁决：有条件采纳 → Accepted（2026-11-19，附条件）**（决策 1 全票口径注记；条件绑定债务 #8/#27/#28/#29/#30 与 Stage 2B 硬门禁（让步强读档专项、并发队列压测、R3/R4））。
+
+工程修复（2026-11-19）：
+1. **溢出契约**（QWEN-1）：h_manhattan 改 i128+饱和收敛、g/f 累加改 saturating_add、参考 Dijkstra 同步；回归 overflow_saturates_deterministically。
+2. **父边精确重建**（QWEN-2）：parent 记录 (父节点, 松弛实际边 ID)、回溯不再取 min edge id；回归 parallel_edge_reconstruction_is_exact（平行边下返回边集代价和==报告 cost）。
+3. **判据口径**：重算率定义=过期重算请求占比（分母=请求总数），实测 3/200=0.015；0.0027（3/1100）保留标注为 stale 检查口径。
+4. **阈值过渡口径**：0.53 记为 g=2 结构性观测基线（不触发/误触发风险），切换触发候选=最坏单 tick 耗时 SLO 或 dup_rate 超阈；数值待 Stage 2B 并发压测定案（债务 #27）。
+
+过时/澄清（不采）：Claude 引 ADR-23"重做展开消耗预算问题不存在"句已于 2026-11-18 勘误修复（属过时信息）；Claude"不可达走满档总展开≈105k"推算前提不成立（open 耗尽即 Unreachable 提前终止，不走满让步档）；budget_yield_count=单请求计数器终值（完成清零语义），累计让步≈405=605−200（MANIFEST 口径）；G5 churn 删边非成对（MANIFEST 口径，成对删边列入 Claude 补测清单）。
 
 ## 变更历史
 
@@ -259,6 +295,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | 2026-11-19 | **Stage 2A Phase 2 实施**：sim-network（CSR 邻接稳定序、事务原子发布、代价原位、ADR-NEW-23 两阶段相交判定+合法性，9 测试）+ sim-pathfinding（ADR-NEW-24 五条确定性 A*、机制 B 预算让步 B_k=min(b·2^k,\|V\|)、解析上界断言、双计数器分离，7 测试，含 Dijkstra 最优性对拍与平局打破黄金断言）；workspace 140 测试全绿 |
 | 2026-11-19 | **Stage 2A Phase 3 完成**：G5 联动组 200×200 压测（机制 A/B/C 对比）入 docs/benchmarks/（G5-stress-200x200.txt + G5-Verdict-REPORT.md）——A=7 ticks 零浪费、B=4 ticks 重复展开率 0.53（解析上界 11 实测 4 ✅）、C=100% 阻塞不可单独采用；G5 五指标全记录（最坏单 tick 耗时 0.139ms 无尖峰/重复展开率/终止率/阻塞率/假前向进展）；B 维持默认候选、A 保留切换路径（切换阈值讨论数据=0.53） |
 | 2026-11-19 | **Stage 2A Phase 4 完成**：退出核对 5/5（docs/benchmarks/Stage-2A-Exit-CHECKLIST.md）；churn 补测（200×200 双向网格）重算率 0.0027 ≤ 5% PASS、阻塞率 0.00（G5-churn-200x200.txt）；事故教训=Edge 有向语义需入数据字典（债务 #8 增补）；ADR-NEW-24 裁决待第 7 章流程 |
+| 2026-11-19 | **ADR-NEW-24 第二轮评审裁决**：八家独立 AI 评审 8:0 有条件采纳→Accepted（附条件）；QWEN4-MAX 两条代码缺陷修复（溢出契约 saturating、父边松弛实际边，2 回归测试）；判据口径统一（重算率分母=请求总数 3/200=0.015）；阈值过渡口径落 ADR-24（数值待 Stage 2B，债务 #27）；新增债务 #27/#28/#29/#30、#8 更新；G5 机制锁定核销（累计 9/28）；票面归档 review/archive/决策2-ADR24-投票-2026-11-19.docx；issue #24 回贴 |
 
 ## 关联
 
