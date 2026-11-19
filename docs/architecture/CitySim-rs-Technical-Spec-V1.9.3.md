@@ -1033,6 +1033,8 @@ Demo 的性能表现必须通过实测报告说明，不得提前承诺帧率或
 
 - 交通模型具备可复现验证场景。
 
+**2026-11-19 Stage 2C 完成**：六条退出条件实施面 6/6 达成。交付：ADR-NEW-25（MFD 交通模型与验证方案，Proposed）、ADR-NEW-14 C2 预算契约细化（BudgetRegistry 声明载体、L1/L2/L3 确定性降级）、sim-core budget 模块、sim-traffic MFD 微观基准+T-Bench-1 可复现场景（数据见 docs/benchmarks/mfd-tbench1.txt，核对表见 docs/benchmarks/Stage-2C-Exit-CHECKLIST.md）。待办：ADR-NEW-25 评审裁决；阈值候选（Q=65536、70/90/100、恢复 50%）待项目负责人确认后转定案。
+
 ### 后续阶段
 
 保留原有七阶段路线的后续规划和扩展方向。具体后续阶段的名称、范围和交付标准，以原始路线图和后续 ADR 为准；在缺少完整阶段任务清单时，不通过文档整合自行增加或改写阶段。（引用文件缺失的处置见 Stage 1 评审修订注。）

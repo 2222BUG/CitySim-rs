@@ -286,7 +286,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | C1 | MFD 验证方案起草（ADR-NEW-25：模型形式候选、三项独立验证、T-Bench-1 可复现场景、确定性判据） | 进行中 | - |
 | C2 | 背压/预算契约（ADR-NEW-14 阈值候选提案 + L1/L2/L3 降级映射，债务 #16） | 已完成（2026-11-19） | docs(stage2c): C2——预算契约细化（ADR-NEW-14） |
 | C3 | 实施（sim-traffic 最小实现 + 寻路背压 + 确定性降级验证 + T-Bench-1） | 已完成（2026-11-19） | feat(stage2c): C3a——BudgetRegistry（sim-core 12 测试）；C3b——sim-traffic MFD+T-Bench-1（4 测试+基准数据） |
-| C4 | 退出核对（主文档 Stage 2C 六条退出条件）+ 文档同步 | 待开始 | - |
+| C4 | 退出核对（主文档 Stage 2C 六条退出条件）+ 文档同步 | 已完成（2026-11-19） | docs(stage2c): C4——退出核对 6/6、Stage-2C-Exit-CHECKLIST |
 
 ## 变更历史
 
@@ -321,6 +321,7 @@ Stage 0 判定（按评审 C 折中路径，A/B/C 可关 vs D 不可关）：正
 | 2026-11-19 | **Stage 2C 开工（C1）**：ADR-NEW-25-MFD 交通模型与验证方案草案（模型形式候选三角基本图、MFD 默认非权威统计/降级输入、适用范围/参数校准/耦合方式三项独立验证、T-Bench-1 可复现交通基准场景、确定性判据） |
 | 2026-11-19 | **Stage 2C C2**：ADR-NEW-14 预算契约细化——BudgetRegistry 声明载体定案（债务 #16 处置）、逐系统计量单位/上限候选表、L1/L2/L3 降级映射（触发=确定性预算消耗比例 70/90/100 候选）、降级状态入档入摘要；阈值数值待负责人确认 |
 | 2026-11-19 | **Stage 2C C3**：C3a sim-core budget 模块（BudgetRegistry+L1/L2/L3 确定性降级状态机+canonical 编码，依赖规则 1 修订=仅基础设施）；C3b sim-traffic MFD 微观基准（GridTraffic 容量排队+定点三角基本图拟合）+T-Bench-1（40×40 密度阶梯，mfd-tbench1.txt：q 8→249‰ 呈基本图形态）；测试 12+4 全绿 |
+| 2026-11-19 | **Stage 2C 完成（C4）**：六条退出条件实施面 6/6（Stage-2C-Exit-CHECKLIST）；ADR-NEW-25 Proposed 待裁决、C2 阈值候选待负责人确认；提交序列 1aeb338→6164553→0a896ae→fdd7869→本次 |
 
 ## 关联
 
