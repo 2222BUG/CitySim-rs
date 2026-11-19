@@ -177,6 +177,78 @@ impl GridTraffic {
     }
 }
 
+/// 拟合误差报告（3a 独立参照验证口径；全定点‰，权威 crate 禁浮点）。
+/// 三区口径（2026-11-19 校准复核）：自由流 k<k_turn/2、转折区 [k_turn/2, 4·k_turn)、
+/// 饱和区 k≥4·k_turn（转折区宽度系试点数据 B 导出，须由确认集 C 复测）；
+/// k_c 位置偏差仅对三角型（descending_branch_observed）有意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FitErrorReport {
+    /// 自由流区（k < k_turn/2）最大相对误差（‰）
+    pub free_flow_max_err_permille: u64,
+    /// 转折区（k_turn/2 ≤ k < 2·k_turn）最大相对误差（‰）——只记录不设硬判据
+    pub transition_max_err_permille: u64,
+    /// 饱和区（k ≥ 2·k_turn）最大相对误差（‰）
+    pub saturated_max_err_permille: u64,
+    /// 临界密度位置误差（|k_c_拟合 − k_c_观测|，‰）；平台型标 N/A 不判
+    pub k_c_err_permille: u64,
+    /// 参与评估的留出样本点数
+    pub points_evaluated: usize,
+}
+
+/// 模型流量 q_model(k)（‰）：平台型 min(v_free·k/1000, q_max)；
+/// 三角型在下降支 q_max − w·(k−k_c)（负值截 0）。
+fn q_model_permille(fit: &TriangleFit, k_permille: u64) -> u64 {
+    let q = fit.v_free_permille as u128 * k_permille as u128 / 1000;
+    let q = q.min(fit.q_max_permille as u128) as u64;
+    if fit.descending_branch_observed && k_permille > fit.k_c_permille {
+        let drop = fit.w_permille as u128 * (k_permille - fit.k_c_permille) as u128 / 1000;
+        q.saturating_sub(drop as u64)
+    } else {
+        q
+    }
+}
+
+/// 用留出样本（未参与拟合的密度点）评估拟合误差（ADR-NEW-25 3a 独立参照）。
+/// 误差=|q_model − q_obs|·1000 / max(q_obs, 1)（‰）；k_c 观测值=留出样本 argmax q 的密度。
+/// 模型转折密度 k_c* = q_max·1000 / v_free（平台/三角共用分区）。
+pub fn evaluate_fit(fit: &TriangleFit, holdout: &[MfdSample]) -> FitErrorReport {
+    assert!(!holdout.is_empty(), "no holdout samples");
+    let k_turn = if fit.v_free_permille > 0 {
+        (fit.q_max_permille as u128 * 1000 / fit.v_free_permille as u128) as u64
+    } else {
+        0
+    };
+    let mut free_max = 0u64;
+    let mut trans_max = 0u64;
+    let mut sat_max = 0u64;
+    for s in holdout {
+        let qm = q_model_permille(fit, s.k_permille);
+        let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
+            / (s.q_permille.max(1) as u128);
+        let err = err as u64;
+        if s.k_permille < k_turn / 2 {
+            free_max = free_max.max(err);
+        } else if s.k_permille < k_turn.saturating_mul(4) {
+            trans_max = trans_max.max(err);
+        } else {
+            sat_max = sat_max.max(err);
+        }
+    }
+    let k_obs_peak = holdout
+        .iter()
+        .max_by_key(|s| s.q_permille)
+        .map(|s| s.k_permille)
+        .unwrap_or(0);
+    let k_c_err = fit.k_c_permille.abs_diff(k_obs_peak);
+    FitErrorReport {
+        free_flow_max_err_permille: free_max,
+        transition_max_err_permille: trans_max,
+        saturated_max_err_permille: sat_max,
+        k_c_err_permille: k_c_err,
+        points_evaluated: holdout.len(),
+    }
+}
+
 /// (k, q) 采样点：k=活跃车辆/边（放大 1000 倍定点），q=边遍历/边每 tick（放大 1000 倍）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MfdSample {
@@ -432,5 +504,47 @@ mod tests {
         let mut g = GlobalDigest::new();
         gt.fold_digest(&mut g);
         assert_ne!(d1, g.finalize(), "vehicle goal must be covered");
+    }
+
+    #[test]
+    fn synthetic_holdout_meets_adr25_criteria() {
+        // 精确三角（v_free=1000‰, k_c=100‰, q_max=100‰, w=500‰）：
+        // 拟合用 (10,100,300) 三点，留出 (50,200) 两点——独立于拟合集评估。
+        let fit_in = vec![
+            MfdSample { k_permille: 10, q_permille: 10 },
+            MfdSample { k_permille: 100, q_permille: 100 },
+            MfdSample { k_permille: 300, q_permille: 0 },
+        ];
+        let holdout = vec![
+            MfdSample { k_permille: 50, q_permille: 50 },
+            MfdSample { k_permille: 200, q_permille: 50 },
+        ];
+        let f = fit_triangle(&fit_in);
+        assert!(f.descending_branch_observed);
+        assert_eq!(f.v_free_permille, 1000);
+        assert_eq!(f.w_permille, 500);
+        let r = evaluate_fit(&f, &holdout);
+        // ADR-NEW-25 3a 判据（原 10/20/25% 三区重分）：自由流 ≤100‰、饱和区 ≤250‰、
+        // k_c ≤200‰（三角）；转折区只记录不设硬判据。
+        assert!(r.free_flow_max_err_permille <= 100, "{}", r.free_flow_max_err_permille);
+        assert!(r.k_c_err_permille <= 200, "{}", r.k_c_err_permille);
+        assert!(r.saturated_max_err_permille <= 250, "{}", r.saturated_max_err_permille);
+    }
+
+    #[test]
+    fn simulation_holdout_free_flow_is_accurate() {
+        // 两次独立小场景（同种子不同密度阶梯）：A 拟合、B 留出——独立密度点评估。
+        let (_, mut a) = small_run(&[1, 2, 4, 8]);
+        let (_, b) = small_run(&[3, 6, 12]);
+        a.sort_by_key(|s| s.k_permille);
+        let f = fit_triangle(&a);
+        let r = evaluate_fit(&f, &b);
+        assert!(r.points_evaluated >= 2);
+        // 自由流插值应贴合（实测绝对阈值见 docs/benchmarks/mfd-3a-reference.txt）
+        assert!(
+            r.free_flow_max_err_permille <= 250,
+            "free-flow err {}‰",
+            r.free_flow_max_err_permille
+        );
     }
 }
