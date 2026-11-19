@@ -8,7 +8,7 @@
 //! 运行：cargo run --release --example mfd3a -p sim-traffic
 //! 输出：docs/benchmarks/mfd-3a-reference.txt
 
-use sim_traffic::{evaluate_fit, fit_triangle, FitErrorReport, GridTraffic, MfdSample};
+use sim_traffic::{evaluate_fit, fit_triangle, FitErrorReport, GridTraffic, MfdSample, ZoneBands};
 use std::fs;
 use std::path::PathBuf;
 
@@ -107,7 +107,7 @@ fn main() {
                 s.k_permille, s.q_permille
             ));
         }
-        evaluate_fit(&fit, holdout)
+        evaluate_fit(&fit, holdout, &ZoneBands::SET_D)
     };
     let r_pilot = report("pilot B", &pilot, &mut emit);
     let r = report("confirm C", &confirm, &mut emit);

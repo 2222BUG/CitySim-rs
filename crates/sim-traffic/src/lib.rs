@@ -47,6 +47,10 @@ pub struct GridTraffic {
     next_id: u64,
     /// 本 tick 完成的边遍历数（流量采样）。
     pub flow_this_tick: u64,
+    /// 本 tick 参与移动的车辆数（step 中移除到达车**之前**的人口；k 采样口径，
+    /// 与 flow 同群体 → q≤k 恒成立——审计修复 2026-11-20：旧口径 flow 含到达车
+    /// 末步、active_count 不含，q>k 违规点伪造误差地板）。
+    pub last_step_population: u64,
     seed: u64,
 }
 
@@ -61,6 +65,7 @@ impl GridTraffic {
             vehicles: Vec::new(),
             next_id: 0,
             flow_this_tick: 0,
+            last_step_population: 0,
             seed,
         }
     }
@@ -125,6 +130,9 @@ impl GridTraffic {
                 self.flow_this_tick += 1;
             }
         }
+        // k 采样口径（审计修复 2026-11-20）：人口在移除到达车之前计量，与
+        // flow_this_tick（含到达车末步）同群体 → q≤k 恒成立（每车每 tick ≤1 条边）。
+        self.last_step_population = self.vehicles.len() as u64;
         // 已到达车辆出网（保持 vehicles=活跃车辆）
         self.vehicles.retain(|v| !v.arrived());
     }
@@ -135,10 +143,12 @@ impl GridTraffic {
     /// 决策4 修订：k_ref=特征密度（q 首次 ≥90%·q_max 密度，版本化）；k_ref==0 返回 0
     /// （fail-safe 改向：分母未知时宁可不触发降级，原返回 10000 方向反）。
     pub fn demand_pressure_bp(&self, k_ref_permille: u64) -> u32 {
-        if k_ref_permille == 0 {
+        if k_ref_permille == 0 || self.edge_count() == 0 {
             return 0;
         }
-        let k = self.active_count() * 1000 / self.edge_count();
+        // 采样口径=last_step_population（与 q 同群体；审计修复 2026-11-20，
+        // MiMo #5：乘法走 u128 防 u64 环绕；edge_count==0 fail-safe 返回 0）。
+        let k = (self.last_step_population as u128 * 1000 / self.edge_count() as u128) as u64;
         ((k as u128 * 10_000 / k_ref_permille as u128).min(10_000)) as u32
     }
 
@@ -197,9 +207,9 @@ impl GridTraffic {
 pub struct FitErrorReport {
     /// 自由流区（k < k_turn/2）最大相对误差（‰）
     pub free_flow_max_err_permille: u64,
-    /// 转折区（k_turn/2 ≤ k < 2·k_turn）最大相对误差（‰）——只记录不设硬判据
+    /// 转折区（k_turn/2 ≤ k < 4·k_turn）最大相对误差（‰）——只记录不设硬判据
     pub transition_max_err_permille: u64,
-    /// 饱和区（k ≥ 2·k_turn）最大相对误差（‰）
+    /// 饱和区（k ≥ 4·k_turn）最大相对误差（‰）
     pub saturated_max_err_permille: u64,
     /// 临界密度位置误差（|k_c_拟合 − k_c_观测|，‰）；平台型标 N/A 不判
     pub k_c_err_permille: u64,
@@ -231,15 +241,13 @@ pub fn q_model_permille(fit: &TriangleFit, k_permille: u64) -> u64 {
 
 /// 用留出样本（未参与拟合的密度点）评估拟合误差（ADR-NEW-25 3a 独立参照）。
 /// 误差=|q_model − q_obs|·1000 / max(q_obs, 1)（‰）；k_c 观测值=留出样本 argmax q 的密度。
-/// 分区（与实现一致，单一口径）：自由流 k<k_turn/2、转折 k_turn/2..4·k_turn、
-/// 饱和 ≥4·k_turn；k_turn = q_max·1000 / v_free。
-pub fn evaluate_fit(fit: &TriangleFit, holdout: &[MfdSample]) -> FitErrorReport {
+/// 分区（审计修复 2026-11-20）：预注册绝对带 ZoneBands（禁由被评参数导出，决策4 3a(a)）。
+pub fn evaluate_fit(
+    fit: &TriangleFit,
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
     assert!(!holdout.is_empty(), "no holdout samples");
-    let k_turn = if fit.v_free_permille > 0 {
-        (fit.q_max_permille as u128 * 1000 / fit.v_free_permille as u128) as u64
-    } else {
-        0
-    };
     let mut free_max = 0u64;
     let mut trans_max = 0u64;
     let mut sat_max = 0u64;
@@ -248,9 +256,9 @@ pub fn evaluate_fit(fit: &TriangleFit, holdout: &[MfdSample]) -> FitErrorReport 
         let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
             / (s.q_permille.max(1) as u128);
         let err = err as u64;
-        if s.k_permille < k_turn / 2 {
+        if s.k_permille < bands.free_max_k {
             free_max = free_max.max(err);
-        } else if s.k_permille < k_turn.saturating_mul(4) {
+        } else if s.k_permille < bands.trans_max_k {
             trans_max = trans_max.max(err);
         } else {
             sat_max = sat_max.max(err);
@@ -297,7 +305,7 @@ impl RationalSaturationFit {
 pub fn q_rational_permille(fit: &RationalSaturationFit, k_permille: u64) -> u64 {
     if k_permille == 0 { return 0; }
     let num = fit.q_max_permille as u128 * k_permille as u128;
-    let den = (k_permille + fit.k_half_permille) as u128;
+    let den = k_permille as u128 + fit.k_half_permille as u128; // u128 先扩后加（GPT-6 E2 防 u64 环绕）
     ((num + den / 2) / den) as u64
 }
 
@@ -305,10 +313,11 @@ pub fn q_rational_permille(fit: &RationalSaturationFit, k_permille: u64) -> u64 
 /// （u128 定点；平局取先遇到的最小 (q_max, k_half)）。q_max 候选域=观测最大值
 /// 至其 4 倍+16（渐近值在未饱和数据下不可由观测最大值代表——W1 实测教训）；
 /// k_half 候选域=1..4·k_max。
-/// **越界判失败口径（决策4，豆包）**：先做无约束自由估计；若零密度斜率超
-/// 1000‰（每车每 tick 至多一条边），**不截断掩盖**——披露越界幅度（第 2 返回值）
-/// 并回退到物理可行域内的最优解（binding=true）。禁止把物理约束当估计用
-/// （旧 v_free=min(1000) 把估计截到边界=信息量为零，已废）。
+/// **越界判失败口径（决策4 条件⑧，审计修复 2026-11-20）**：先做无约束自由估计；
+/// 若零密度斜率超 1000‰（每车每 tick 至多一条边），**判定层直接 FAIL**（binding=true
+/// 即失败信号）；物理可行域回退解**仅作诊断披露与敏感性参考，不得参与 PASS/FAIL
+/// 判定**——旧口径"回退解参与判定"=把约束当估计用，与决策4 条件⑧相反，已废
+/// （旧 v_free=min(1000) 截断掩盖同样已废）。
 /// 返回 (拟合, 自由估计零密度斜率‰, 约束是否绑定)。
 pub fn fit_rational_saturation_detailed(
     samples: &[MfdSample],
@@ -323,8 +332,12 @@ pub fn fit_rational_saturation_detailed(
             let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
             let mut sse: u128 = 0;
             for s in samples {
+                // 目标=相对误差平方和（‰口径）——审计修复 2026-11-20（豆包 c）：
+                // 旧绝对 SSE 与判据的分区相对误差不同构（自由流区权重≈0），
+                // 目标与判据同构后自由流点获得应有权重。
                 let e = q_rational_permille(&fit, s.k_permille) as i128 - s.q_permille as i128;
-                sse += (e * e) as u128;
+                let er = (e * 1000) / (s.q_permille.max(1) as i128);
+                sse += (er * er) as u128;
             }
             if best_free.is_none_or(|(b, _, _)| sse < b) {
                 best_free = Some((sse, q_max, k_half));
@@ -353,10 +366,30 @@ pub fn fit_rational_saturation(samples: &[MfdSample]) -> RationalSaturationFit {
     fit_rational_saturation_detailed(samples).0
 }
 
-/// 用留出样本评估有理饱和拟合（ADR-NEW-25 3a 独立参照；分区=k_turn=k_half）。
-pub fn evaluate_rational_fit(fit: &RationalSaturationFit, holdout: &[MfdSample]) -> FitErrorReport {
+/// 分区带（审计修复 2026-11-20：判定边界须为**预注册固定 fixture**，禁止由
+/// 被评模型参数导出——决策4 3a(a)；自指边界=同参 gaming，豆包实证：自指带
+/// 下 FAIL 的数据在绝对带上三区全 PASS）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneBands {
+    /// 自由流区上界（k < free_max_k，‰）
+    pub free_max_k: u64,
+    /// 转折区上界（free_max_k ≤ k < trans_max_k，‰）
+    pub trans_max_k: u64,
+}
+
+impl ZoneBands {
+    /// Set D 主判定带（预注册绝对密度边界，豆包审计复算带）。
+    /// 敏感性带（如 free=64/263）由调用方另行构造披露。
+    pub const SET_D: ZoneBands = ZoneBands { free_max_k: 100, trans_max_k: 2000 };
+}
+
+/// 用留出样本评估有理饱和拟合（ADR-NEW-25 3a 独立参照；分区=预注册绝对带）。
+pub fn evaluate_rational_fit(
+    fit: &RationalSaturationFit,
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
     assert!(!holdout.is_empty(), "no holdout samples");
-    let k_turn = fit.k_half_permille.max(1);
     let mut free_max = 0u64;
     let mut trans_max = 0u64;
     let mut sat_max = 0u64;
@@ -365,9 +398,9 @@ pub fn evaluate_rational_fit(fit: &RationalSaturationFit, holdout: &[MfdSample])
         let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
             / (s.q_permille.max(1) as u128);
         let err = err as u64;
-        if s.k_permille < k_turn / 2 {
+        if s.k_permille < bands.free_max_k {
             free_max = free_max.max(err);
-        } else if s.k_permille < k_turn.saturating_mul(4) {
+        } else if s.k_permille < bands.trans_max_k {
             trans_max = trans_max.max(err);
         } else {
             sat_max = sat_max.max(err);
@@ -656,7 +689,7 @@ mod tests {
         assert!(f.descending_branch_observed);
         assert_eq!(f.v_free_permille, 1000);
         assert_eq!(f.w_permille, 500);
-        let r = evaluate_fit(&f, &holdout);
+        let r = evaluate_fit(&f, &holdout, &ZoneBands::SET_D);
         // ADR-NEW-25 3a 判据（原 10/20/25% 三区重分）：自由流 ≤100‰、饱和区 ≤250‰、
         // k_c ≤200‰（三角）；转折区只记录不设硬判据。
         assert!(r.free_flow_max_err_permille <= 100, "{}", r.free_flow_max_err_permille);
@@ -665,14 +698,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "债务 #31：凹形扩展 Set D 复测通过后恢复（当前点队列自由流 190‰ FAIL 判据 100‰）"]
+    #[ignore = "债务 #31 审计退回（2026-11-20）：保持 ignore，直至口径修复后 Set D 复测通过并经负责人追认（FAIL 翻转则按重投裁决处置）"]
     fn simulation_holdout_free_flow_is_accurate() {
         // 两次独立小场景（同种子不同密度阶梯）：A 拟合、B 留出——独立密度点评估。
         let (_, mut a) = small_run(&[1, 2, 4, 8]);
         let (_, b) = small_run(&[3, 6, 12]);
         a.sort_by_key(|s| s.k_permille);
         let f = fit_triangle(&a);
-        let r = evaluate_fit(&f, &b);
+        let r = evaluate_fit(&f, &b, &ZoneBands::SET_D);
         assert!(r.points_evaluated >= 2);
         // 门禁对齐（决策4 整改）：断言引用判据常量（100‰），不再用 250‰ 脱钩阈值。
         // 当前点队列模型自由流实测 190‰ FAIL——债务 #31（凹形扩展）Set D 复测通过前
@@ -735,7 +768,7 @@ mod tests {
         let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
         let fit = fit_rational_saturation(&rational_samples(200, 250, &ks));
         let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
-        let r = evaluate_rational_fit(&fit, &rational_samples(200, 250, &holdout));
+        let r = evaluate_rational_fit(&fit, &rational_samples(200, 250, &holdout), &ZoneBands::SET_D);
         assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
         assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
         assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);

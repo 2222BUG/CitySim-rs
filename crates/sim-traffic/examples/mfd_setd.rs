@@ -6,7 +6,8 @@
 //! - 拓扑：主 40×40 + 第二拓扑 64×64（判据修订要求）；
 //! - 密度阶梯：拟合集 2→256 倍增 8 档；留出集 3→384 倍增 8 档（交错不相交）；
 //! - 每档 260 tick，末 60 tick 窗口均值；稳态判据=窗口前后半 q 差 ≤2‰；
-//! - 每档 8 种子平均；分区边界 k_turn=k_half（拟合自拟合集，先于留出评估声明）；
+//! - 每档 8 种子平均；分区边界=ZoneBands::SET_D 预注册绝对带（k<100 / 100..2000 /
+//!   ≥2000‰，禁由拟合参数导出——审计修复 2026-11-20，决策4 3a(a)）；
 //! - 判据（常量单一来源=sim-traffic）：自由流 ≤100‰、转折 ≤250‰、饱和 ≤250‰。
 //!
 //! 终止条件（Claude）：任一拓扑任一区 FAIL → 转 C，不再延后。
@@ -17,7 +18,7 @@
 
 use sim_traffic::{
     evaluate_rational_fit, fit_rational_saturation_detailed, q_rational_permille, GridTraffic,
-    MfdSample, FREE_FLOW_CRIT_PERMILLE, SATURATED_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE,
+    MfdSample, ZoneBands, FREE_FLOW_CRIT_PERMILLE, SATURATED_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE,
 };
 
 const SETD_SEED_BASE: u64 = 0x00C0_FFEE_2222_0000;
@@ -38,7 +39,13 @@ fn run_density_seed(w: u32, h: u32, inj: u64, seed: u64) -> (u64, u64, bool) {
         gt.inject(inj);
         gt.step();
         if t >= TICKS - WINDOW {
-            k_sum += gt.active_count() * 1000 / gt.edge_count();
+            // q≤k fail-fast（审计修复 2026-11-20）：同群体口径（last_step_population
+            // 含到达车末步，与 flow 同群体）下每车每 tick ≤1 条边。
+            assert!(
+                gt.flow_this_tick <= gt.last_step_population,
+                "q>k impossible under same-population accounting"
+            );
+            k_sum += gt.last_step_population * 1000 / gt.edge_count();
             q_sum += gt.flow_this_tick * 1000 / gt.edge_count();
             if t >= TICKS - WINDOW / 2 {
                 q_back += gt.flow_this_tick;
@@ -53,6 +60,24 @@ fn run_density_seed(w: u32, h: u32, inj: u64, seed: u64) -> (u64, u64, bool) {
     let steady = q_front.abs_diff(q_back) * 1000 <= (q_front + q_back) * 2
         || q_front.abs_diff(q_back) <= (WINDOW as u64) / 4;
     (k_sum / n, q_sum / n, steady)
+}
+
+/// 稳态敏感性采样（审计修复 2026-11-20，DeepSeek A5/MiniMax A5）：仅窗口后半
+/// （t >= TICKS − WINDOW/2）采样，返回 (k̄, q̄)。
+fn run_density_seed_back_half(w: u32, h: u32, inj: u64, seed: u64) -> (u64, u64) {
+    let mut gt = GridTraffic::new(w, h, 1, seed);
+    let mut k_sum = 0u64;
+    let mut q_sum = 0u64;
+    for t in 0..TICKS {
+        gt.inject(inj);
+        gt.step();
+        if t >= TICKS - WINDOW / 2 {
+            k_sum += gt.last_step_population * 1000 / gt.edge_count();
+            q_sum += gt.flow_this_tick * 1000 / gt.edge_count();
+        }
+    }
+    let n = (WINDOW / 2) as u64;
+    (k_sum / n, q_sum / n)
 }
 
 /// 多种子平均采样。稳态仅作诊断（不阻断）：返回 (样本, 未稳态档数)。
@@ -106,8 +131,16 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
             s.k_permille, s.q_permille, qm, err
         ));
     }
-    let r = evaluate_rational_fit(&fit, &holdout);
+    let r = evaluate_rational_fit(&fit, &holdout, &ZoneBands::SET_D);
     let verdict = |v: u64, c: u64| if v <= c { "PASS" } else { "FAIL" };
+    // 越界判失败（决策4 条件⑧，审计修复 2026-11-20）：自由估计越界→本拓扑直接
+    // FAIL；binding 回退解仅诊断披露，不参与 PASS/FAIL 判定。
+    if binding {
+        emit(format!(
+            "  bound violation: free estimate slope {}‰ > 1000‰ -> topology verdict = FAIL (decision-4 clause 8; bound-fit is diagnostic only)",
+            free_slope
+        ));
+    }
     emit(format!(
         "  free-flow max err   = {:>4}‰  (criterion <= {}‰)  {}",
         r.free_flow_max_err_permille, FREE_FLOW_CRIT_PERMILLE,
@@ -123,11 +156,69 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         r.saturated_max_err_permille, SATURATED_CRIT_PERMILLE,
         verdict(r.saturated_max_err_permille, SATURATED_CRIT_PERMILLE)
     ));
+    let topology_fail = binding
+        || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
+        || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE;
+    emit(format!(
+        "  topology verdict = {} (binding={} free={}‰ sat={}‰)",
+        if topology_fail { "FAIL" } else { "PASS" },
+        binding,
+        r.free_flow_max_err_permille,
+        r.saturated_max_err_permille
+    ));
+    // 稳态敏感性（审计修复 2026-11-20）：窗口后半单独采样复算三区指标，
+    // 若与全窗结论一致则"稳态仅披露"升级为"已验证稳健"。
+    let back_fit: Vec<MfdSample> = FIT_LADDER
+        .iter()
+        .map(|&inj| {
+            let (mut k, mut q) = (0u64, 0u64);
+            for i in 0..N_SEEDS {
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SETD_SEED_BASE + i);
+                k += k1;
+                q += q1;
+            }
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    let back_hold: Vec<MfdSample> = HOLDOUT_LADDER
+        .iter()
+        .map(|&inj| {
+            let (mut k, mut q) = (0u64, 0u64);
+            for i in 0..N_SEEDS {
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SETD_SEED_BASE + i);
+                k += k1;
+                q += q1;
+            }
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    let (fit_b, _, binding_b) = fit_rational_saturation_detailed(&back_fit);
+    let r_b = evaluate_rational_fit(&fit_b, &back_hold, &ZoneBands::SET_D);
+    emit(format!(
+        "  [sensitivity back-half] free={}‰ sat={}‰ binding={} -> {}",
+        r_b.free_flow_max_err_permille,
+        r_b.saturated_max_err_permille,
+        binding_b,
+        if binding_b
+            || r_b.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
+            || r_b.saturated_max_err_permille > SATURATED_CRIT_PERMILLE
+        {
+            "FAIL"
+        } else {
+            "PASS"
+        }
+    ));
 }
 
 fn main() {
     let mut out: Vec<String> = Vec::new();
     out.push("Set D re-verification (debt #31; pre-registered fixture, disjoint seeds)".to_string());
+    // 证据-源码同源标注（审计修复 2026-11-20）：证据文件自带生成它的 commit hash
+    // （编译期捕获：运行前设 SETD_COMMIT=$(git rev-parse HEAD) 并重编译）。
+    out.push(format!(
+        "evidence commit: {}",
+        option_env!("SETD_COMMIT").unwrap_or("(unset — build with SETD_COMMIT env)")
+    ));
     out.push(format!(
         "criteria: free<={}‰ transition<={}‰ saturated<={}‰ (single source = sim-traffic consts)",
         FREE_FLOW_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE, SATURATED_CRIT_PERMILLE
