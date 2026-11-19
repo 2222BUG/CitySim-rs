@@ -31,8 +31,8 @@ impl Harness {
 fn fold_u64(d: &sim_save::Digest256) -> u64 {
     let b = d.0;
     let mut v = 0u64;
-    for chunk in b.chunks_exact(8) {
-        v ^= u64::from_le_bytes(chunk.try_into().unwrap());
+    for chunk in b.as_chunks::<8>().0 {
+        v ^= u64::from_le_bytes(*chunk);
     }
     v
 }
@@ -90,5 +90,5 @@ fn r2_fixture_smoke_runs_deterministically() {
     let mut h2 = Harness::from_fixture(&f);
     let d2 = h2.run_to(50);
     assert_eq!(d1, d2);
-    assert_eq!(f.tick_count > 0, true, "fixture defines a tick budget");
+    assert!(f.tick_count > 0, "fixture defines a tick budget");
 }

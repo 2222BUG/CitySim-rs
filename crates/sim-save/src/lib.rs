@@ -560,6 +560,32 @@ mod tests {
         assert_eq!(a, b2);
     }
 
+    /// 让步路径强读档专项（Stage 2B 硬门禁，第二轮评审条件⑥）：
+    /// 存档点处于让步态（budget_yield_count > 0）时，强读档等价仍成立且让步计数延续。
+    #[test]
+    fn yield_state_strong_readback() {
+        let mut a = scenario(0x1EE7_5EED_0000_0007);
+        a.budget_rolling = 10_001; // 触发降级 → 降级期奇数 tick 让步
+        let mut n = 0u64;
+        while a.budget_yield_count == 0 && n < 10 {
+            a.run_tick();
+            n += 1;
+        }
+        assert!(a.budget_yield_count > 0, "must reach yield state before save");
+        let saved_yield = a.budget_yield_count;
+        let b = a.clone();
+        let (bytes, _) = b.save().unwrap();
+        let r = SimState::load(&bytes).unwrap();
+        assert_eq!(r.budget_yield_count, saved_yield, "让步计数必须入档（G3）");
+        let mut b2 = r;
+        for _ in 0..60 {
+            a.run_tick();
+            b2.run_tick();
+        }
+        assert_eq!(state_digest(&a), state_digest(&b2), "让步态强读档等价被破坏");
+        assert!(a.budget_yield_count >= saved_yield, "让步计数延续");
+    }
+
     /// 弱形式（政策若改"丢弃并重新入队"则以此为准）：两次独立存档-读档运行一致。
     #[test]
     fn weak_form_equivalence() {
