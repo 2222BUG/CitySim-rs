@@ -105,7 +105,10 @@ fn sample_ladder(w: u32, h: u32, ladder: &[u64]) -> (Vec<MfdSample>, usize) {
 }
 
 /// 相对误差平方和（‰口径）——族比较统一目标（与判据同构）。
-fn rel_sse(q: impl Fn(u64) -> u64, samples: &[MfdSample]) -> u128 {
+/// 模型函数表项（clippy: type_complexity 收敛；生命周期须带出 'static 默认）。
+type QModelFn<'a> = Box<dyn Fn(u64) -> u64 + 'a>;
+fn rel_sse(
+q: impl Fn(u64) -> u64, samples: &[MfdSample]) -> u128 {
     let mut sse = 0u128;
     for s in samples {
         let e = q(s.k_permille) as i128 - s.q_permille as i128;
@@ -159,7 +162,7 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
     // 之后才生成留出表与评估（计算与打印顺序一致，防"先见留出"误读，Kimi）。
     let (pfit, p_slope, p_binding) = fit_pnorm_concave_detailed(&fit_samples);
     // 拟合集逐点归档（决策5 MiniMax/豆包 R5：预选所依据的 rel-SSE 须可复核）。
-    let qf_tab: Vec<(&str, Box<dyn Fn(u64) -> u64>)> = vec![
+    let qf_tab: Vec<(&str, QModelFn<'_>)> = vec![
         ("rational", Box::new(|k: u64| q_rational_permille(&fit, k))),
         ("pnorm-p2", Box::new(|k: u64| q_pnorm_permille(&pfit, k))),
     ];
