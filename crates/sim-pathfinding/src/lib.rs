@@ -146,10 +146,12 @@ impl PathFinder {
             self.quota_yield_count = self.quota_yield_count.saturating_add(1);
             return FindOutcome::Yielded { expanded: 0 };
         }
-        let b_k = self
-            .policy
-            .budget_for_yield(self.budget_yield_count, net.node_count())
-            .min(budget.remaining);
+        // 决策5 整改（预算截断归因，Gemini/Claude）：b_k 被 remaining 截断且本次
+        // 未能完成时属"配额让步"（quota_yield_count），不污染 #27"让步≥8 切换"
+        // 判据所用的 budget_yield_count（请求自身预算让步）。
+        let needs = self.policy.budget_for_yield(self.budget_yield_count, net.node_count());
+        let b_k = needs.min(budget.remaining);
+        let truncated = b_k < needs;
         let out = find_once(net, coords, start, goal, b_k);
         // 不可达同样携带 expanded 并扣减全局配额（X2 审计修复）。
         budget.remaining = budget.remaining.saturating_sub(out.expanded());
@@ -158,7 +160,11 @@ impl PathFinder {
                 self.budget_yield_count = 0;
             }
             FindOutcome::Yielded { .. } => {
-                self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+                if truncated {
+                    self.quota_yield_count = self.quota_yield_count.saturating_add(1);
+                } else {
+                    self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+                }
             }
         }
         out
@@ -576,10 +582,16 @@ mod tests {
         assert!(matches!(out, FindOutcome::Yielded { expanded: 0 }), "配额耗尽即让步");
         assert_eq!(finder.quota_yield_count, 1, "配额让步单独计数");
         assert_eq!(finder.budget_yield_count, 0, "配额让步不得污染预算让步判据");
-        // 对照：请求自身预算让步仍走 budget_yield_count
-        let mut b2 = TickBudget::new(4);
-        let _ = finder.request_with_budget(&net, &coords, 0, 99, &mut b2);
-        assert!(finder.budget_yield_count >= 1, "自身预算让步单独计数");
-        assert_eq!(finder.quota_yield_count, 1, "对照请求不新增配额让步");
+        // 对照：请求自身预算让步（b_k==needs 未截断）仍走 budget_yield_count。
+        let mut small = PathFinder::new(BudgetPolicy { b: 1, g: 2 });
+        let mut b2 = TickBudget::new(8);
+        let _ = small.request_with_budget(&net, &coords, 0, 99, &mut b2);
+        assert_eq!(small.budget_yield_count, 1, "自身预算让步单独计数");
+        assert_eq!(small.quota_yield_count, 0, "未截断让步不计入配额让步");
+        // 决策5 截断归因回归：0<remaining<B_k 的截断让步归 quota_yield_count。
+        let mut b3 = TickBudget::new(1); // needs=2（第 2 档）被截为 1
+        let _ = small.request_with_budget(&net, &coords, 0, 99, &mut b3);
+        assert_eq!(small.quota_yield_count, 1, "截断让步计入配额让步");
+        assert_eq!(small.budget_yield_count, 1, "截断让步不得污染预算让步判据");
     }
 }

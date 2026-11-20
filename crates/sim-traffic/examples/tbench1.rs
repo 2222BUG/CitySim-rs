@@ -37,7 +37,7 @@ fn run_density(inj: u64) -> Sample {
         gt.inject(inj);
         gt.step();
         if t >= TICKS - WINDOW {
-            let k = gt.active_count() * 1000 / gt.edge_count();
+            let k = gt.last_step_population * 1000 / gt.edge_count();
             let q = gt.flow_this_tick * 1000 / gt.edge_count();
             k_sum += k;
             q_sum += q;

@@ -31,7 +31,7 @@ fn run_density_seed(inj: u64, seed: u64) -> (u64, u64) {
         gt.inject(inj);
         gt.step();
         if t >= TICKS - WINDOW {
-            k_sum += gt.active_count() * 1000 / gt.edge_count();
+            k_sum += gt.last_step_population * 1000 / gt.edge_count();
             q_sum += gt.flow_this_tick * 1000 / gt.edge_count();
         }
     }

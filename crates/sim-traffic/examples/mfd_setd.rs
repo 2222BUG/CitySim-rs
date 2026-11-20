@@ -115,11 +115,18 @@ fn rel_sse(q: impl Fn(u64) -> u64, samples: &[MfdSample]) -> u128 {
     sse
 }
 
-/// 单族判定：越界（binding）即 FAIL；三区判据常量单一来源。
+/// 单一判定核（决策5 整改：合并原 family_verdict/topology_fail 双实现——
+/// 双实现漂移教训）。越界（binding）即 FAIL（决策4 条件⑧）；三区判据常量
+/// 单一来源，**含转折区硬判据**（决策4(b)——决策5 五家行号命中的漏接线缺陷）；
+/// 空区即 FAIL（决策4(d) 样本数下限：防空区真空 PASS；<2 点区在输出行标 n 值披露）。
 fn family_verdict(binding: bool, r: &FitErrorReport) -> &'static str {
     if binding
         || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
+        || r.transition_max_err_permille > TRANSITION_CRIT_PERMILLE
         || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE
+        || r.free_n == 0
+        || r.trans_n == 0
+        || r.sat_n == 0
     {
         "FAIL"
     } else {
@@ -148,6 +155,40 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         free_slope,
         binding
     ));
+    // ===== 决策5 Y1：选族前置（Q3 实装）——先辨识两族、只用拟合集选族并锁定，
+    // 之后才生成留出表与评估（计算与打印顺序一致，防"先见留出"误读，Kimi）。
+    let (pfit, p_slope, p_binding) = fit_pnorm_concave_detailed(&fit_samples);
+    // 拟合集逐点归档（决策5 MiniMax/豆包 R5：预选所依据的 rel-SSE 须可复核）。
+    let qf_tab: Vec<(&str, Box<dyn Fn(u64) -> u64>)> = vec![
+        ("rational", Box::new(|k: u64| q_rational_permille(&fit, k))),
+        ("pnorm-p2", Box::new(|k: u64| q_pnorm_permille(&pfit, k))),
+    ];
+    for (tag, qf) in &qf_tab {
+        for s in &fit_samples {
+            let qm = qf(s.k_permille);
+            let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000 / (s.q_permille.max(1) as u128);
+            emit(format!(
+                "  [fit-set {tag}] k {:>5}‰ q_obs {:>4}‰ q_model {:>4}‰ err {err}‰",
+                s.k_permille, s.q_permille, qm
+            ));
+        }
+    }
+    let sse_r = rel_sse(|k| q_rational_permille(&fit, k), &fit_samples);
+    let sse_p = rel_sse(|k| q_pnorm_permille(&pfit, k), &fit_samples);
+    // Q3 预选（决策5 全票通过）：物理可行域（binding=false）内拟合集 rel-SSE 最小；
+    // 越界族不具参赛资格（条件⑧族级读法：被判失败者不得当选）；全部越界→无族
+    // 可选（族级 FAIL 兜底，Grok/Gemini）；一次锁定不得回退（豆包）。
+    let selected: Option<&str> = match (binding, p_binding) {
+        (true, true) => None,
+        (false, true) => Some("rational"),
+        (true, false) => Some("pnorm-p2"),
+        (false, false) => Some(if sse_p < sse_r { "pnorm-p2" } else { "rational" }),
+    };
+    emit(format!(
+        "  [family pre-selection] fit-set rel-SSE rational={sse_r} pnorm={sse_p} binding(r={binding},p={p_binding}) -> selected={} (Q3 feasible-domain rule; locked before holdout)",
+        selected.unwrap_or("NONE (all binding)")
+    ));
+    // 留出集逐点表（证据展示；选族已锁定，不再影响 selected）
     for s in &holdout {
         let qm = q_rational_permille(&fit, s.k_permille);
         let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000 / (s.q_permille.max(1) as u128);
@@ -181,41 +222,34 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         r.saturated_max_err_permille, SATURATED_CRIT_PERMILLE,
         verdict(r.saturated_max_err_permille, SATURATED_CRIT_PERMILLE)
     ));
-    let topology_fail = binding
-        || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
-        || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE;
+    // 单一判定核输出（含转折硬判据+空区 FAIL+各区 n 披露，决策5 整改）
     emit(format!(
-        "  topology verdict [rational] = {} (binding={} free={}‰ sat={}‰)",
-        if topology_fail { "FAIL" } else { "PASS" },
-        binding,
-        r.free_flow_max_err_permille,
-        r.saturated_max_err_permille
+        "  topology verdict [rational] = {} (binding={} free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}))",
+        family_verdict(binding, &r), binding,
+        r.free_flow_max_err_permille, r.free_n,
+        r.transition_max_err_permille, r.trans_n,
+        r.saturated_max_err_permille, r.sat_n
     ));
-    // ===== X3：p-norm p=2 并行辨识（豆包清单 d：多族并行，防"单族以偏概全"）=====
-    // 防 gaming 协议（GPT-6/豆包）：族选择只看拟合集相对 SSE（先于留出评估锁定），
-    // 留出集不参与选族；两族留出指标全部披露。
-    let (pfit, p_slope, p_binding) = fit_pnorm_concave_detailed(&fit_samples);
-    let rp = evaluate_pnorm_fit(&pfit, &holdout, &ZoneBands::SET_D);
+    // ===== pnorm 留出评估（选族已在前置块锁定，此处只评估+终局）=====
     emit(format!(
         "  [family pnorm-p2] fit: q_max={}‰ k0={}‰ slope free={}‰ binding={}",
         pfit.q_max_permille, pfit.k0_permille, p_slope, p_binding
     ));
+    let rp = evaluate_pnorm_fit(&pfit, &holdout, &ZoneBands::SET_D);
     emit(format!(
-        "  [family pnorm-p2] free={}‰ trans={}‰ sat={}‰ -> {}",
-        rp.free_flow_max_err_permille, rp.transition_max_err_permille, rp.saturated_max_err_permille,
+        "  [family pnorm-p2] free={}‰ (n={}) trans={}‰ (n={}) sat={}‰ (n={}) -> {}",
+        rp.free_flow_max_err_permille, rp.free_n, rp.transition_max_err_permille, rp.trans_n,
+        rp.saturated_max_err_permille, rp.sat_n,
         family_verdict(p_binding, &rp)
-    ));
-    let sse_r = rel_sse(|k| q_rational_permille(&fit, k), &fit_samples);
-    let sse_p = rel_sse(|k| q_pnorm_permille(&pfit, k), &fit_samples);
-    let selected = if sse_p < sse_r { "pnorm-p2" } else { "rational" };
-    emit(format!(
-        "  [family pre-selection] fit-set rel-SSE rational={} pnorm={} -> selected={} (locked before holdout)",
-        sse_r, sse_p, selected
     ));
     emit(format!(
         "  Set D outcome (selected family {}) = {}",
-        selected,
-        if selected == "pnorm-p2" { family_verdict(p_binding, &rp) } else { family_verdict(binding, &r) }
+        selected.unwrap_or("NONE"),
+        match selected {
+            Some("pnorm-p2") => family_verdict(p_binding, &rp),
+            Some(_) => family_verdict(binding, &r),
+            None => "FAIL (no feasible family: all binding)",
+        }
     ));
     // 稳态敏感性（审计修复 2026-11-20）：窗口后半单独采样复算三区指标，
     // 若与全窗结论一致则"稳态仅披露"升级为"已验证稳健"。
@@ -246,18 +280,23 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
     let (fit_b, _, binding_b) = fit_rational_saturation_detailed(&back_fit);
     let r_b = evaluate_rational_fit(&fit_b, &back_hold, &ZoneBands::SET_D);
     emit(format!(
-        "  [sensitivity back-half] free={}‰ sat={}‰ binding={} -> {}",
-        r_b.free_flow_max_err_permille,
-        r_b.saturated_max_err_permille,
+        "  [sensitivity back-half rational] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        r_b.free_flow_max_err_permille, r_b.free_n,
+        r_b.transition_max_err_permille, r_b.trans_n,
+        r_b.saturated_max_err_permille, r_b.sat_n,
         binding_b,
-        if binding_b
-            || r_b.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
-            || r_b.saturated_max_err_permille > SATURATED_CRIT_PERMILLE
-        {
-            "FAIL"
-        } else {
-            "PASS"
-        }
+        family_verdict(binding_b, &r_b)
+    ));
+    // 决策5 共识收口条件：pnorm back-half 敏感性（此前只测 rational）。
+    let (pfit_b, _, p_binding_b) = fit_pnorm_concave_detailed(&back_fit);
+    let rp_b = evaluate_pnorm_fit(&pfit_b, &back_hold, &ZoneBands::SET_D);
+    emit(format!(
+        "  [sensitivity back-half pnorm-p2] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        rp_b.free_flow_max_err_permille, rp_b.free_n,
+        rp_b.transition_max_err_permille, rp_b.trans_n,
+        rp_b.saturated_max_err_permille, rp_b.sat_n,
+        p_binding_b,
+        family_verdict(p_binding_b, &rp_b)
     ));
 }
 

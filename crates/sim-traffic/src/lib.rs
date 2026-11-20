@@ -187,6 +187,9 @@ impl GridTraffic {
         }
         w.u64(self.vehicles.len() as u64);
         w.u64(self.flow_this_tick);
+        w.u64(self.last_step_population); // 决策5 豆包 R1：demand_pressure 的 k 来源，
+                                          // 权威输入必须入摘要（G3 覆盖），否则不同状态
+                                          // 同摘要而降级压力不同=强读档等价假通过风险
         for v in &self.vehicles {
             w.u64(v.id);
             w.u32(v.x);
@@ -215,6 +218,10 @@ pub struct FitErrorReport {
     pub k_c_err_permille: u64,
     /// 参与评估的留出样本点数
     pub points_evaluated: usize,
+    /// 各区样本数（决策4(d)/决策5 共识：空区不得真空 PASS；<2 在判定层标警示）
+    pub free_n: usize,
+    pub trans_n: usize,
+    pub sat_n: usize,
 }
 
 /// 判据常量（单一来源，ADR-NEW-25 3a 判据与代码断言必须引用同一常量——
@@ -247,36 +254,16 @@ pub fn evaluate_fit(
     holdout: &[MfdSample],
     bands: &ZoneBands,
 ) -> FitErrorReport {
-    assert!(!holdout.is_empty(), "no holdout samples");
-    let mut free_max = 0u64;
-    let mut trans_max = 0u64;
-    let mut sat_max = 0u64;
-    for s in holdout {
-        let qm = q_model_permille(fit, s.k_permille);
-        let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
-            / (s.q_permille.max(1) as u128);
-        let err = err as u64;
-        if s.k_permille < bands.free_max_k {
-            free_max = free_max.max(err);
-        } else if s.k_permille < bands.trans_max_k {
-            trans_max = trans_max.max(err);
-        } else {
-            sat_max = sat_max.max(err);
-        }
-    }
+    // 委托 evaluate_q_fn（X3 泛化核）：分区统计/计数单一实现（防双实现漂移）；
+    // 仅 k_c 位置误差为三角型特有。
+    let mut r = evaluate_q_fn(|k| q_model_permille(fit, k), holdout, bands);
     let k_obs_peak = holdout
         .iter()
         .max_by_key(|s| s.q_permille)
         .map(|s| s.k_permille)
         .unwrap_or(0);
-    let k_c_err = fit.k_c_permille.abs_diff(k_obs_peak);
-    FitErrorReport {
-        free_flow_max_err_permille: free_max,
-        transition_max_err_permille: trans_max,
-        saturated_max_err_permille: sat_max,
-        k_c_err_permille: k_c_err,
-        points_evaluated: holdout.len(),
-    }
+    r.k_c_err_permille = fit.k_c_permille.abs_diff(k_obs_peak);
+    r
 }
 
 // ===========================================================================
@@ -323,6 +310,12 @@ pub fn fit_rational_saturation_detailed(
     samples: &[MfdSample],
 ) -> (RationalSaturationFit, u64, bool) {
     assert!(!samples.is_empty(), "no samples");
+    // q≤k 不变量下沉到拟合器入口（决策5 豆包 R3）：示例外的任何调用方
+    // 亦不得喂入 q>k 样本（单位斜率物理界，违者=采样口径缺陷）。
+    assert!(
+        samples.iter().all(|s| s.q_permille <= s.k_permille),
+        "q>k sample violates unit-slope bound (sampling population mismatch)"
+    );
     let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
     let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
     let mut best_free: Option<(u128, u64, u64)> = None;
@@ -403,6 +396,12 @@ pub fn fit_pnorm_concave_detailed(
     samples: &[MfdSample],
 ) -> (PNormConcaveFit, u64, bool) {
     assert!(!samples.is_empty(), "no samples");
+    // q≤k 不变量下沉到拟合器入口（决策5 豆包 R3）：示例外的任何调用方
+    // 亦不得喂入 q>k 样本（单位斜率物理界，违者=采样口径缺陷）。
+    assert!(
+        samples.iter().all(|s| s.q_permille <= s.k_permille),
+        "q>k sample violates unit-slope bound (sampling population mismatch)"
+    );
     let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
     let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
     let mut best_free: Option<(u128, u64, u64)> = None;
@@ -467,6 +466,7 @@ pub fn evaluate_q_fn(
     let mut free_max = 0u64;
     let mut trans_max = 0u64;
     let mut sat_max = 0u64;
+    let (mut free_n, mut trans_n, mut sat_n) = (0usize, 0usize, 0usize);
     for s in holdout {
         let qm = q(s.k_permille);
         let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
@@ -474,10 +474,13 @@ pub fn evaluate_q_fn(
         let err = err as u64;
         if s.k_permille < bands.free_max_k {
             free_max = free_max.max(err);
+            free_n += 1;
         } else if s.k_permille < bands.trans_max_k {
             trans_max = trans_max.max(err);
+            trans_n += 1;
         } else {
             sat_max = sat_max.max(err);
+            sat_n += 1;
         }
     }
     FitErrorReport {
@@ -486,6 +489,9 @@ pub fn evaluate_q_fn(
         saturated_max_err_permille: sat_max,
         k_c_err_permille: 0, // 平台/饱和族无峰值拐点，N/A
         points_evaluated: holdout.len(),
+        free_n,
+        trans_n,
+        sat_n,
     }
 }
 
@@ -536,6 +542,9 @@ pub struct TriangleFit {
 /// 采样须按 k 升序传入（调用方排序，键相同按采样序稳定）。
 pub fn fit_triangle(samples: &[MfdSample]) -> TriangleFit {
     assert!(!samples.is_empty(), "no samples");
+    // 注（决策5）：q≤k 采样不变量的真实数据保障在两个 detailed 拟合器入口断言
+    // 与 example 采集点 fail-fast；fit_triangle 为遗留估计器，其 clamp 语义
+    // （v_free.min(1000)）需要越界合成数据才能测试，故此处不断言。
     let mut peak = samples[0];
     for s in samples {
         if s.q_permille > peak.q_permille {
@@ -846,7 +855,8 @@ mod tests {
     fn rational_bound_violation_is_disclosed_and_constrained() {
         // 越界判失败口径（决策4）：自由估计越界→披露幅度+物理可行解回退，
         // 不 panic 不截断。合成 (500,50) 自由斜率 10000‰ 必越界。
-        let ks: Vec<u64> = (1..=20).map(|i| i * 10).collect();
+        // 样本取 k≥500 保证 q≤k（采样不变量断言下合法），模型越界仍成立。
+        let ks: Vec<u64> = vec![500, 1000, 2000];
         let (fit, free_slope, binding) =
             fit_rational_saturation_detailed(&rational_samples(500, 50, &ks));
         assert!(binding, "bound must bind");
@@ -894,8 +904,8 @@ mod tests {
     #[test]
     fn pnorm_bound_violation_is_disclosed_and_constrained() {
         // 自由估计斜率超界（500/50=10000‰）→binding=true 即失败信号；
-        // 可行解回退仅诊断，zero_density_slope≤1000‰。
-        let ks: Vec<u64> = (1..=16).map(|i| i * 40).collect();
+        // 可行解回退仅诊断，zero_density_slope≤1000‰。样本 k≥500 保证 q≤k。
+        let ks: Vec<u64> = vec![500, 1000, 2000];
         let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(500, 50, &ks));
         assert!(binding);
         assert!(free_slope > 1000);
@@ -911,5 +921,21 @@ mod tests {
         assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
         assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
         assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);
+    }
+
+    #[test]
+    fn pnorm_isqrt_rounding_golden() {
+        // isqrt 舍入黄金（决策5 共识收口条件）：手算定点期望值钉死语义——
+        // q = round(q_max·k·1000 / isqrt((k²+k0²)·10⁶))，就近舍入 ((num+den/2)/den)。
+        let f = PNormConcaveFit { q_max_permille: 200, k0_permille: 250 };
+        // 注意 isqrt floor 偏差披露（决策5）：den 先取整再除，使结果较真值
+        // 有 +0~+1‰ 的系统性上偏（如 k=250 真值 141.42→定点 142）。
+        assert_eq!(q_pnorm_permille(&f, 0), 0);
+        // k=250：真值 141.42‰，定点就近→142（isqrt floor 偏差）
+        assert_eq!(q_pnorm_permille(&f, 250), 142);
+        // k=1000：真值 194.03‰ → 194
+        assert_eq!(q_pnorm_permille(&f, 1000), 194);
+        // k=2500：真值 198.03‰，定点→199（isqrt floor 偏差）
+        assert_eq!(q_pnorm_permille(&f, 2500), 199);
     }
 }
