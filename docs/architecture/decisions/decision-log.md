@@ -426,13 +426,48 @@ mfd_coupling 断言聚合一致；workspace 全绿（0 失败，1 ignore=有意�
 **待投票确认三项**（转 C 回滚确认/pnorm-p2 族入 ADR-25 决策 1/族预选规则=物理可行域
 内拟合集 SSE）。审计通过前 MFD→降级用途冻结。
 
+## 2026-11-21 决策5 投票裁决记录（债务 #31 复判，11 家署名票）
+
+票面：C:\Users\wenyu\Desktop\决策5.MD（归档 review\archive\）。三项裁决：
+
+- **Q1（转 C 回滚确认）：11:0 通过**。回滚理由口径（铁律）=**原证据无效（q>k 测量缺陷+判定边界自指）**，
+  不得表述为"复测已 PASS"（复测 PASS 是 Q3 规则下的反事实）；回滚≠解禁，MFD→降级保持冻结。
+- **Q2（pnorm-p2 决策 1 默认族）：采纳 2 + 有条件采纳 8 + 延后 1**（Qwen 摘要级票延后，
+  4 解锁条件齐备即可转确认；MiniMax"有权采纳"按有条件计）。MiMo 异议记录：pnorm 是
+  "淘汰赛冠军"（拟合集 rel-SSE 44390 劣于 rational 27996、转折 189>118），胜出靠物理
+  可行性非拟合优度，须原样记录。
+- **Q3（预选规则=物理可行域内拟合集 rel-SSE）：11:0 通过**，防 gaming 条款=选族锁定于
+  holdout 之前、一次锁定不得回退、族集合冻结扩族须重投票、绑定族不参与预选（已实装 Y1）。
+
+共识收口条件（已按 Y1 实装/并入 Y2）：family_verdict 转折闸门+各区 n 披露、预算截断归因、
+last_step_population 入 fold_digest、q≤k 下沉拟合器入口、isqrt 舍入黄金+floor 偏差披露、
+拟合集逐点归档、pnorm back-half、Set E 预注册新 fixture（新种子段+第三拓扑+种子不共用）。
+
+异议与限定保留：豆包（SET_D 带"预注册"性质属事后确立，须 Set E 重新钉；Q1↔Q3 打包生效）；
+Claude（稳态 0-1/8 判据容差过紧疑噪声；膝区系统性高估须披露）；DeepSeek（单文本包缺源码
+多处"未见证据"）；MiniMax（本轮=开发轮，Set E=正式确认轮；SSE 口径 rational 回退解 vs
+pnorm 自由解非 like-for-like）；制度建议（Qwen/GPT-6）：不可复议结论须 ≥2 独立证据链、
+统计通过与权威授权分离。
+
+**#31 状态（决策5 裁决 + Set E 实测，2026-11-21）：转 C 撤销（回滚确认 11:0，原证据无效）。
+凹形扩展（pnorm-p2）Set E 确认轮结果=2/3 拓扑 PASS、32×32 自由流 133‰ FAIL（判据 100‰，
+n=3）→**未全过确认，#31 不核销**。处置候选（待负责人裁决）：①按预注册"任一 FAIL"精神
+追认转 C（MFD 永久纯统计）；②按 MiniMax E 议题修微观基准语义（准入/行程时间/有向边容量）
+后扩族再战再投。禁止事后调判据救场（Qwen Q3 条款）。** Set E 预注册工件=9a73ee0（新种子段
+0x00C0_FFEE_3333_0000、fit/holdout 种子 +0..7/+8..15、第三拓扑 32×32、族与选族规则
+继承冻结实现），取数证据=mfd-3a-sete.txt（带 SETD_COMMIT 标注）。Set E 明细：40×40
+pnorm-p2 83/190/12 PASS；32×32 133/148/46 FAIL（free 超限）；64×64 48/120/20 PASS；
+三拓扑预选均按 Q3 规则选中 pnorm-p2（rational 全 binding=true 被排除——修复生效）；
+back-half pnorm 40×40 66/120/20 PASS。稳态诊断 0-1/8 持续注入固有（已披露）；
+32×32 free 区 n=3 小样本+‰ 取整舍入敏感性（Claude/豆包精度异议）如实记录。
+
 ## 决策5 落盘执行日志（Y1–Y4，2026-11-21）
 
 | 步骤 | 内容 | 状态 | 提交 |
 | --- | --- | --- | --- |
 | Y1 | 代码修复（决策5 共识收口条件）：family_verdict 合一判定核（补转折硬判据+空区 FAIL+各区 n 披露）、选族前置锁定（拟合集 rel-SSE、binding 过滤、holdout 前锁定）、q≤k 断言下沉 detailed 拟合器入口、fold_digest 补 last_step_population、isqrt 舍入黄金（含 floor 偏差披露）、预算截断归因（truncated 让步计 quota_yield_count）、mfd3a/tbench1 口径统一、back-half 补 pnorm | 已完成（2026-11-21） | fix(stage2c): Y1（359d2d8）+Y1 补遗（c0f94ba） |
-| Y2 | Set E 确认轮：预注册 fixture（新种子段 0x00C0_FFEE_3333_0000、fit/holdout 种子不共用 +0..7/+8..15、第三拓扑 32x32、族与选族规则继承冻结实现）先落盘后取数 | 预注册已完成（9a73ee0）；取数进行中 | feat(stage2c): Y2 预注册（9a73ee0） |
-| Y3 | 决策5 裁决入账（Q1 回滚确认 11:0/Q2 pnorm-p2 默认族 有条件/Q3 预选规则 11:0）+按 Set E 结果处置 #31 | 待开始 | - |
+| Y2 | Set E 确认轮：预注册 fixture（新种子段 0x00C0_FFEE_3333_0000、fit/holdout 种子不共用 +0..7/+8..15、第三拓扑 32x32、族与选族规则继承冻结实现）先落盘后取数 | 取数完成（2026-11-21）：40×40 PASS / 32×32 FAIL（free 133‰）/ 64×64 PASS；Q3 预选三拓扑均正确排除 binding 的 rational | feat(stage2c): Y2 预注册（9a73ee0）+取数（mfd-3a-sete.txt） |
+| Y3 | 决策5 裁决入账（Q1 回滚确认 11:0/Q2 pnorm-p2 默认族 有条件/Q3 预选规则 11:0）+按 Set E 结果处置 #31 | 裁决入账完成；#31 处置=待负责人裁决（转 C 追认 / E 议题修基再战） | - |
 | Y4 | issue #26 回贴+终验 | 待开始 | - |
 
 ## 变更历史

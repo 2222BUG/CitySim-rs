@@ -1,0 +1,121 @@
+   Compiling sim-core v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-core)
+   Compiling sim-traffic v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-traffic)
+    Finished `release` profile [optimized] target(s) in 0.89s
+     Running `target\release\examples\mfd_sete.exe`
+Set D re-verification (debt #31; pre-registered fixture, disjoint seeds)
+evidence commit: 9a73ee0743c568bb050c1bbf6c6ae272d3f213e2
+criteria: free<=100‰ transition<=250‰ saturated<=250‰ (single source = sim-traffic consts)
+=== topology 40x40 (Set E seeds 0xc0ffee33330000+0..8) ===
+steady diagnostics: fit 0/8 steady, holdout 1/8 steady (dual criterion; unsteady ladders disclosed)
+fit: q_max=271‰ k_half=271‰ zero-density slope=1000‰ (free estimate 1099‰, bound binding: true)
+  [fit-set rational] k     7‰ q_obs    7‰ q_model    7‰ err 0‰
+  [fit-set rational] k    16‰ q_obs   16‰ q_model   15‰ err 62‰
+  [fit-set rational] k    34‰ q_obs   32‰ q_model   30‰ err 62‰
+  [fit-set rational] k    78‰ q_obs   67‰ q_model   61‰ err 89‰
+  [fit-set rational] k   211‰ q_obs  135‰ q_model  119‰ err 118‰
+  [fit-set rational] k   938‰ q_obs  211‰ q_model  210‰ err 4‰
+  [fit-set rational] k  3092‰ q_obs  239‰ q_model  249‰ err 41‰
+  [fit-set rational] k  7719‰ q_obs  248‰ q_model  262‰ err 56‰
+  [fit-set pnorm-p2] k     7‰ q_obs    7‰ q_model    7‰ err 0‰
+  [fit-set pnorm-p2] k    16‰ q_obs   16‰ q_model   15‰ err 62‰
+  [fit-set pnorm-p2] k    34‰ q_obs   32‰ q_model   31‰ err 31‰
+  [fit-set pnorm-p2] k    78‰ q_obs   67‰ q_model   70‰ err 44‰
+  [fit-set pnorm-p2] k   211‰ q_obs  135‰ q_model  154‰ err 140‰
+  [fit-set pnorm-p2] k   938‰ q_obs  211‰ q_model  239‰ err 132‰
+  [fit-set pnorm-p2] k  3092‰ q_obs  239‰ q_model  247‰ err 33‰
+  [fit-set pnorm-p2] k  7719‰ q_obs  248‰ q_model  248‰ err 0‰
+  [family pre-selection] fit-set rel-SSE rational=34366 pnorm=44854 binding(r=true,p=false) -> selected=pnorm-p2 (Q3 feasible-domain rule; locked before holdout)
+  k    12‰ q_obs   12‰ q_model   11‰ err 83‰
+  k    25‰ q_obs   24‰ q_model   23‰ err 41‰
+  k    55‰ q_obs   50‰ q_model   46‰ err 80‰
+  k   132‰ q_obs  101‰ q_model   89‰ err 118‰
+  k   502‰ q_obs  184‰ q_model  176‰ err 43‰
+  k  1974‰ q_obs  231‰ q_model  238‰ err 30‰
+  k  5385‰ q_obs  245‰ q_model  258‰ err 53‰
+  k 12408‰ q_obs  250‰ q_model  265‰ err 60‰
+  bound violation: free estimate slope 1099‰ > 1000‰ -> topology verdict = FAIL (decision-4 clause 8; bound-fit is diagnostic only)
+  free-flow max err   =   83‰  (criterion <= 100‰)  PASS
+  transition max err  =  118‰  (criterion <= 250‰)  PASS
+  saturated max err   =   60‰  (criterion <= 250‰)  PASS
+  topology verdict [rational] = FAIL (binding=true free=83‰(n=3) trans=118‰(n=3) sat=60‰(n=2))
+  [family pnorm-p2] fit: q_max=248‰ k0=266‰ slope free=932‰ binding=false
+  [family pnorm-p2] free=83‰ (n=3) trans=190‰ (n=3) sat=12‰ (n=2) -> PASS
+  Set D outcome (selected family pnorm-p2) = PASS
+  [sensitivity back-half rational] free=83‰(n=3) trans=128‰(n=2) sat=68‰(n=3) binding=true -> FAIL
+  [sensitivity back-half pnorm-p2] free=83‰(n=3) trans=194‰(n=2) sat=60‰(n=3) binding=false -> PASS
+=== topology 32x32 (Set E seeds 0xc0ffee33330000+0..8) ===
+steady diagnostics: fit 1/8 steady, holdout 1/8 steady (dual criterion; unsteady ladders disclosed)
+fit: q_max=269‰ k_half=269‰ zero-density slope=1000‰ (free estimate 1092‰, bound binding: true)
+  [fit-set rational] k    10‰ q_obs    9‰ q_model   10‰ err 111‰
+  [fit-set rational] k    20‰ q_obs   20‰ q_model   19‰ err 50‰
+  [fit-set rational] k    45‰ q_obs   42‰ q_model   39‰ err 71‰
+  [fit-set rational] k   105‰ q_obs   85‰ q_model   76‰ err 105‰
+  [fit-set rational] k   357‰ q_obs  166‰ q_model  153‰ err 78‰
+  [fit-set rational] k  1737‰ q_obs  227‰ q_model  233‰ err 26‰
+  [fit-set rational] k  5258‰ q_obs  245‰ q_model  256‰ err 44‰
+  [fit-set rational] k 12595‰ q_obs  251‰ q_model  263‰ err 47‰
+  [fit-set pnorm-p2] k    10‰ q_obs    9‰ q_model    9‰ err 0‰
+  [fit-set pnorm-p2] k    20‰ q_obs   20‰ q_model   18‰ err 100‰
+  [fit-set pnorm-p2] k    45‰ q_obs   42‰ q_model   39‰ err 71‰
+  [fit-set pnorm-p2] k   105‰ q_obs   85‰ q_model   87‰ err 23‰
+  [fit-set pnorm-p2] k   357‰ q_obs  166‰ q_model  196‰ err 180‰
+  [fit-set pnorm-p2] k  1737‰ q_obs  227‰ q_model  248‰ err 92‰
+  [fit-set pnorm-p2] k  5258‰ q_obs  245‰ q_model  251‰ err 24‰
+  [fit-set pnorm-p2] k 12595‰ q_obs  251‰ q_model  251‰ err 0‰
+  [family pre-selection] fit-set rel-SSE rational=41792 pnorm=57010 binding(r=true,p=false) -> selected=pnorm-p2 (Q3 feasible-domain rule; locked before holdout)
+  k    15‰ q_obs   15‰ q_model   14‰ err 66‰
+  k    33‰ q_obs   31‰ q_model   29‰ err 64‰
+  k    72‰ q_obs   63‰ q_model   57‰ err 95‰
+  k   188‰ q_obs  127‰ q_model  111‰ err 125‰
+  k   951‰ q_obs  209‰ q_model  210‰ err 4‰
+  k  3457‰ q_obs  239‰ q_model  250‰ err 46‰
+  k  8906‰ q_obs  248‰ q_model  261‰ err 52‰
+  k 19989‰ q_obs  252‰ q_model  265‰ err 51‰
+  bound violation: free estimate slope 1092‰ > 1000‰ -> topology verdict = FAIL (decision-4 clause 8; bound-fit is diagnostic only)
+  free-flow max err   =   95‰  (criterion <= 100‰)  PASS
+  transition max err  =  125‰  (criterion <= 250‰)  PASS
+  saturated max err   =   52‰  (criterion <= 250‰)  PASS
+  topology verdict [rational] = FAIL (binding=true free=95‰(n=3) trans=125‰(n=2) sat=52‰(n=3))
+  [family pnorm-p2] fit: q_max=251‰ k0=286‰ slope free=877‰ binding=false
+  [family pnorm-p2] free=133‰ (n=3) trans=148‰ (n=2) sat=46‰ (n=3) -> FAIL
+  Set D outcome (selected family pnorm-p2) = FAIL
+  [sensitivity back-half rational] free=96‰(n=3) trans=134‰(n=2) sat=20‰(n=3) binding=true -> FAIL
+  [sensitivity back-half pnorm-p2] free=133‰(n=3) trans=152‰(n=2) sat=46‰(n=3) binding=false -> FAIL
+=== topology 64x64 (Set E seeds 0xc0ffee33330000+0..8) ===
+steady diagnostics: fit 1/8 steady, holdout 0/8 steady (dual criterion; unsteady ladders disclosed)
+fit: q_max=284‰ k_half=284‰ zero-density slope=1000‰ (free estimate 1092‰, bound binding: true)
+  [fit-set rational] k     4‰ q_obs    4‰ q_model    4‰ err 0‰
+  [fit-set rational] k     9‰ q_obs    9‰ q_model    9‰ err 0‰
+  [fit-set rational] k    20‰ q_obs   20‰ q_model   19‰ err 50‰
+  [fit-set rational] k    44‰ q_obs   41‰ q_model   38‰ err 73‰
+  [fit-set rational] k   101‰ q_obs   83‰ q_model   75‰ err 96‰
+  [fit-set rational] k   292‰ q_obs  157‰ q_model  144‰ err 82‰
+  [fit-set rational] k   989‰ q_obs  217‰ q_model  221‰ err 18‰
+  [fit-set rational] k  2704‰ q_obs  239‰ q_model  257‰ err 75‰
+  [fit-set pnorm-p2] k     4‰ q_obs    4‰ q_model    4‰ err 0‰
+  [fit-set pnorm-p2] k     9‰ q_obs    9‰ q_model    9‰ err 0‰
+  [fit-set pnorm-p2] k    20‰ q_obs   20‰ q_model   19‰ err 50‰
+  [fit-set pnorm-p2] k    44‰ q_obs   41‰ q_model   41‰ err 0‰
+  [fit-set pnorm-p2] k   101‰ q_obs   83‰ q_model   89‰ err 72‰
+  [fit-set pnorm-p2] k   292‰ q_obs  157‰ q_model  181‰ err 152‰
+  [fit-set pnorm-p2] k   989‰ q_obs  217‰ q_model  232‰ err 69‰
+  [fit-set pnorm-p2] k  2704‰ q_obs  239‰ q_model  239‰ err 0‰
+  [family pre-selection] fit-set rel-SSE rational=29718 pnorm=35549 binding(r=true,p=false) -> selected=pnorm-p2 (Q3 feasible-domain rule; locked before holdout)
+  k     7‰ q_obs    7‰ q_model    7‰ err 0‰
+  k    15‰ q_obs   14‰ q_model   14‰ err 0‰
+  k    33‰ q_obs   31‰ q_model   30‰ err 32‰
+  k    71‰ q_obs   62‰ q_model   57‰ err 80‰
+  k   179‰ q_obs  124‰ q_model  110‰ err 112‰
+  k   606‰ q_obs  199‰ q_model  193‰ err 30‰
+  k  1826‰ q_obs  233‰ q_model  246‰ err 55‰
+  k  4491‰ q_obs  245‰ q_model  267‰ err 89‰
+  bound violation: free estimate slope 1092‰ > 1000‰ -> topology verdict = FAIL (decision-4 clause 8; bound-fit is diagnostic only)
+  free-flow max err   =   80‰  (criterion <= 100‰)  PASS
+  transition max err  =  112‰  (criterion <= 250‰)  PASS
+  saturated max err   =   89‰  (criterion <= 250‰)  PASS
+  topology verdict [rational] = FAIL (binding=true free=80‰(n=4) trans=112‰(n=3) sat=89‰(n=1))
+  [family pnorm-p2] fit: q_max=240‰ k0=254‰ slope free=944‰ binding=false
+  [family pnorm-p2] free=48‰ (n=4) trans=120‰ (n=3) sat=20‰ (n=1) -> PASS
+  Set D outcome (selected family pnorm-p2) = PASS
+  [sensitivity back-half rational] free=80‰(n=4) trans=112‰(n=3) sat=93‰(n=1) binding=true -> FAIL
+  [sensitivity back-half pnorm-p2] free=66‰(n=4) trans=120‰(n=3) sat=20‰(n=1) binding=false -> PASS

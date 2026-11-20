@@ -249,7 +249,7 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         family_verdict(p_binding, &rp)
     ));
     emit(format!(
-        "  Set D outcome (selected family {}) = {}",
+        "  Set E outcome (selected family {}) = {}",
         selected.unwrap_or("NONE"),
         match selected {
             Some("pnorm-p2") => family_verdict(p_binding, &rp),
