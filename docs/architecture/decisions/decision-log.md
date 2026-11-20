@@ -426,6 +426,15 @@ mfd_coupling 断言聚合一致；workspace 全绿（0 失败，1 ignore=有意�
 **待投票确认三项**（转 C 回滚确认/pnorm-p2 族入 ADR-25 决策 1/族预选规则=物理可行域
 内拟合集 SSE）。审计通过前 MFD→降级用途冻结。
 
+## 决策5 落盘执行日志（Y1–Y4，2026-11-21）
+
+| 步骤 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| Y1 | 代码修复（决策5 共识收口条件）：family_verdict 合一判定核（补转折硬判据+空区 FAIL+各区 n 披露）、选族前置锁定（拟合集 rel-SSE、binding 过滤、holdout 前锁定）、q≤k 断言下沉 detailed 拟合器入口、fold_digest 补 last_step_population、isqrt 舍入黄金（含 floor 偏差披露）、预算截断归因（truncated 让步计 quota_yield_count）、mfd3a/tbench1 口径统一、back-half 补 pnorm | 已完成（2026-11-21） | fix(stage2c): Y1（359d2d8）+Y1 补遗（c0f94ba） |
+| Y2 | Set E 确认轮：预注册 fixture（新种子段 0x00C0_FFEE_3333_0000、fit/holdout 种子不共用 +0..7/+8..15、第三拓扑 32x32、族与选族规则继承冻结实现）先落盘后取数 | 预注册已完成（9a73ee0）；取数进行中 | feat(stage2c): Y2 预注册（9a73ee0） |
+| Y3 | 决策5 裁决入账（Q1 回滚确认 11:0/Q2 pnorm-p2 默认族 有条件/Q3 预选规则 11:0）+按 Set E 结果处置 #31 | 待开始 | - |
+| Y4 | issue #26 回贴+终验 | 待开始 | - |
+
 ## 变更历史
 
 | 日期 | 事件 |
