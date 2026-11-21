@@ -1,12 +1,12 @@
-//! Set D 复测（债务 #31 核销条件；ADR-NEW-25 3a 决策4 判据修订 (c)）。
+//! Set E 确认轮（债务 #31；ADR-NEW-25 3a 决策4 判据修订 (c)）。
 //! Set E 确认轮（决策5 收口条件）：新种子段 0x00C0_FFEE_3333_0000、
 //! fit/holdout 种子不共用（fit +0..7 / holdout +8..15）、第三拓扑 32x32、
 //! 族集合与选族规则已于 c0f94ba 冻结——本文件先落盘后取数（预注册）。
 //!
-//! 预注册 fixture（**运行前声明，先于 Set D 数据**）：
-//! - Set D 种子段=0x00C0_FFEE_2222_0000 + i（i=0..8），与 V1 的 A/B/C 段
-//!   （0x00C0_FFEE_1234_5678+i）不相交；
-//! - 拓扑：主 40×40 + 第二拓扑 64×64（判据修订要求）；
+//! 预注册 fixture（**运行前声明，先于 Set E 数据**）：
+//! - Set E 种子段=0x00C0_FFEE_3333_0000 + i（i=0..8），与 V1 的 A/B/C 段
+//!   （0x00C0_FFEE_1234_5678+i）及 Set D 段（0x2222）不相交；
+//! - 拓扑：40×40 + 第三拓扑 32×32 + 64×64（判据修订要求）；
 //! - 密度阶梯：拟合集 2→256 倍增 8 档；留出集 3→384 倍增 8 档（交错不相交）；
 //! - 每档 260 tick，末 60 tick 窗口均值；稳态判据=窗口前后半 q 差 ≤2‰；
 //! - 每档 8 种子平均；分区边界=ZoneBands::SET_D 预注册绝对带（k<100 / 100..2000 /
@@ -194,13 +194,16 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         "  [family pre-selection] fit-set rel-SSE rational={sse_r} pnorm={sse_p} binding(r={binding},p={p_binding}) -> selected={} (Q3 feasible-domain rule; locked before holdout)",
         selected.unwrap_or("NONE (all binding)")
     ));
-    // 留出集逐点表（证据展示；选族已锁定，不再影响 selected）
+    // 留出集逐点表（双族并列归档——决策6 共识：选中族亦须逐行可复核；
+    // 选族已锁定，不再影响 selected）
     for s in &holdout {
-        let qm = q_rational_permille(&fit, s.k_permille);
-        let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000 / (s.q_permille.max(1) as u128);
+        let q_r = q_rational_permille(&fit, s.k_permille);
+        let q_p = q_pnorm_permille(&pfit, s.k_permille);
+        let err_r = (q_r as u128).abs_diff(s.q_permille as u128) * 1000 / (s.q_permille.max(1) as u128);
+        let err_p = (q_p as u128).abs_diff(s.q_permille as u128) * 1000 / (s.q_permille.max(1) as u128);
         emit(format!(
-            "  k {:>5}‰ q_obs {:>4}‰ q_model {:>4}‰ err {}‰",
-            s.k_permille, s.q_permille, qm, err
+            "  k {:>5}‰ q_obs {:>4}‰ | rational q {:>4}‰ err {:>4}‰ | pnorm-p2 q {:>4}‰ err {:>4}‰",
+            s.k_permille, s.q_permille, q_r, err_r, q_p, err_p
         ));
     }
     let r = evaluate_rational_fit(&fit, &holdout, &ZoneBands::SET_D);
@@ -257,14 +260,15 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
             None => "FAIL (no feasible family: all binding)",
         }
     ));
-    // 稳态敏感性（审计修复 2026-11-20）：窗口后半单独采样复算三区指标，
-    // 若与全窗结论一致则"稳态仅披露"升级为"已验证稳健"。
+    // 稳态敏感性（审计修复 2026-11-20；决策6 Z2 种子修复 2026-11-22）：窗口后半
+    // 单独采样复算三区指标。种子改独立段（back_fit=+16..24 / back_hold=+24..32）——
+    // 原实现误用 holdout 段（+8..16）且与主 holdout 同运行，非独立复现（Claude 评审发现）。
     let back_fit: Vec<MfdSample> = FIT_LADDER
         .iter()
         .map(|&inj| {
             let (mut k, mut q) = (0u64, 0u64);
             for i in 0..N_SEEDS {
-                let (k1, q1) = run_density_seed_back_half(w, h, inj, SETD_SEED_BASE + 8 + i);
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SETD_SEED_BASE + 16 + i);
                 k += k1;
                 q += q1;
             }
@@ -276,7 +280,7 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         .map(|&inj| {
             let (mut k, mut q) = (0u64, 0u64);
             for i in 0..N_SEEDS {
-                let (k1, q1) = run_density_seed_back_half(w, h, inj, SETD_SEED_BASE + 8 + i);
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SETD_SEED_BASE + 24 + i);
                 k += k1;
                 q += q1;
             }
@@ -308,7 +312,7 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
 
 fn main() {
     let mut out: Vec<String> = Vec::new();
-    out.push("Set D re-verification (debt #31; pre-registered fixture, disjoint seeds)".to_string());
+    out.push("Set E confirmation round (debt #31; pre-registered fixture, disjoint seeds)".to_string());
     // 证据-源码同源标注（审计修复 2026-11-20）：证据文件自带生成它的 commit hash
     // （编译期捕获：运行前设 SETD_COMMIT=$(git rev-parse HEAD) 并重编译）。
     out.push(format!(

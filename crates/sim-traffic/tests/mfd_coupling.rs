@@ -67,6 +67,9 @@ fn run_scenario(threads: usize, chaos_seed: u64, parallel: bool) -> [u8; 32] {
         }],
         DegradationThresholds::default(),
     );
+    // 决策6 Z2 护栏：需求通道默认冻结——耦合测试显式解冻（本测试即 ADR-NEW-26
+    // 通道的专用耦合证据；生产代码须待 ADR-NEW-26 解冻裁决后才允许调用）。
+    reg.unfreeze_demand_channel();
     let mut g = GlobalDigest::new();
     for t in 0..TICKS {
         gt.inject(2 + t % 3);

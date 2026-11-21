@@ -100,6 +100,10 @@ pub struct BudgetRegistry {
     last_demand_bp: u32,
     /// 连续高需求 tick 计数（与 over_streak 同门限语义）。
     demand_streak: u32,
+    /// 需求通道冻结开关（**默认冻结**——决策6 Z2 代码护栏 2026-11-22：MFD→降级
+    /// 用途冻结不只停在 ADR 文案；冻结时 note_demand_pressure 为 no-op，解冻须显式
+    /// unfreeze_demand_channel()（ADR-NEW-26 解冻裁决时启用）。冻结状态属配置不入档）。
+    demand_channel_frozen: bool,
     pub level: DegradationLevel,
     thresholds: DegradationThresholds,
 }
@@ -116,6 +120,7 @@ impl BudgetRegistry {
             demand_bp: 0,
             last_demand_bp: 0,
             demand_streak: 0,
+            demand_channel_frozen: true,
             level: DegradationLevel::Normal,
             thresholds,
         }
@@ -142,9 +147,24 @@ impl BudgetRegistry {
 
     /// 记录本 tick 外部需求压力（万分比；确定性定点，来自权威状态导出——
     /// 如 sim-traffic 密度/k_c 比值。ADR-NEW-26 草案通道；每 tick 末清零）。
+    /// **通道默认冻结**（决策6 Z2 护栏）：冻结期间本方法为 no-op，须显式
+    /// unfreeze_demand_channel() 后才生效——防误接权威降级路径。
     pub fn note_demand_pressure(&mut self, pressure_bp: u32) {
+        if self.demand_channel_frozen {
+            return;
+        }
         self.demand_bp = pressure_bp.min(10_000);
         self.last_demand_bp = self.demand_bp;
+    }
+
+    /// 解冻需求通道（ADR-NEW-26 解冻裁决通过后由生产代码显式调用）。
+    pub fn unfreeze_demand_channel(&mut self) {
+        self.demand_channel_frozen = false;
+    }
+
+    /// 需求通道是否处于冻结状态（默认 true）。
+    pub fn demand_channel_frozen(&self) -> bool {
+        self.demand_channel_frozen
     }
 
     /// tick 边界：按确定性工作量单位更新降级等级，重置每 tick 计量。
@@ -393,6 +413,7 @@ mod tests {
         // MFD→降级通道（ADR-NEW-26 草案）：需求压力参与触发/恢复门（effective=max），
         // 单独触发封顶 L1；恢复需需求与工作量同时回落。
         let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.unfreeze_demand_channel();
         r.note_demand_pressure(10_000);
         assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 tick：触发门未到
         r.note_demand_pressure(10_000);
@@ -408,6 +429,7 @@ mod tests {
         // 需求压力单独触发封顶 L1（债务 #31 未裁决前限制影响面）；
         // 工作量压力仍可推 L2/L3。
         let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.unfreeze_demand_channel();
         for _ in 0..2 {
             r.note_demand_pressure(10_000);
             assert_ne!(r.end_tick(), DegradationLevel::L2);
@@ -425,6 +447,7 @@ mod tests {
         // 需求通道状态入档/入摘要（G3）：demand_bp 敏感。
         let mk = |demand: u32| {
             let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+            r.unfreeze_demand_channel();
             r.note_demand_pressure(demand);
             let mut w = CanonicalWriter::new("sim-core", "BudgetState");
             r.encode_state(&mut w);
@@ -440,6 +463,7 @@ mod tests {
         let decls = vec![BudgetDecl { system_id: 1, unit: WorkUnit::NodeExpansions, per_tick_cap: 1000, overflow: OverflowBehavior::YieldToNextTick }];
         let mk = |demand: u32| {
             let mut r = BudgetRegistry::new(decls.clone(), DegradationThresholds::default());
+            r.unfreeze_demand_channel();
             r.note_demand_pressure(demand);
             r.end_tick(); // 清零 demand_bp 后归档
             let mut w = CanonicalWriter::new("sim-core", "Budget");
@@ -447,5 +471,23 @@ mod tests {
             w.into_bytes()
         };
         assert_ne!(mk(0), mk(10_000), "last_demand_bp must survive end_tick");
+    }
+
+    #[test]
+    fn demand_channel_frozen_by_default() {
+        // 决策6 Z2 护栏（2026-11-22）：通道默认冻结，note_demand_pressure 为
+        // no-op；解冻须显式 unfreeze_demand_channel()（ADR-NEW-26 解冻裁决时启用）。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        assert!(r.demand_channel_frozen());
+        for _ in 0..4 {
+            r.note_demand_pressure(10_000);
+            assert_eq!(r.end_tick(), DegradationLevel::Normal, "frozen channel must not degrade");
+        }
+        r.unfreeze_demand_channel();
+        assert!(!r.demand_channel_frozen());
+        r.note_demand_pressure(10_000);
+        r.end_tick();
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::L1, "unfrozen channel must work");
     }
 }
