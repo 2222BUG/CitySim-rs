@@ -152,7 +152,7 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         HOLDOUT_LADDER.len() - unsteady_hold,
         HOLDOUT_LADDER.len()
     ));
-    let (fit, free_slope, binding) = fit_rational_saturation_detailed(&fit_samples);
+    let (fit, free_slope, binding) = fit_rational_saturation_detailed(&fit_samples, &ZoneBands::SET_D);
     emit(format!(
         "fit: q_max={}‰ k_half={}‰ zero-density slope={}‰ (free estimate {}‰, bound binding: {})",
         fit.q_max_permille,
@@ -163,7 +163,7 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
     ));
     // ===== 决策5 Y1：选族前置（Q3 实装）——先辨识两族、只用拟合集选族并锁定，
     // 之后才生成留出表与评估（计算与打印顺序一致，防"先见留出"误读，Kimi）。
-    let (pfit, p_slope, p_binding) = fit_pnorm_concave_detailed(&fit_samples);
+    let (pfit, p_slope, p_binding) = fit_pnorm_concave_detailed(&fit_samples, &ZoneBands::SET_D);
     // 拟合集逐点归档（决策5 MiniMax/豆包 R5：预选所依据的 rel-SSE 须可复核）。
     let qf_tab: Vec<(&str, QModelFn<'_>)> = vec![
         ("rational", Box::new(|k: u64| q_rational_permille(&fit, k))),
@@ -287,7 +287,7 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
             MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
         })
         .collect();
-    let (fit_b, _, binding_b) = fit_rational_saturation_detailed(&back_fit);
+    let (fit_b, _, binding_b) = fit_rational_saturation_detailed(&back_fit, &ZoneBands::SET_D);
     let r_b = evaluate_rational_fit(&fit_b, &back_hold, &ZoneBands::SET_D);
     emit(format!(
         "  [sensitivity back-half rational] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
@@ -298,7 +298,7 @@ fn report_topology(w: u32, h: u32, emit: &mut dyn FnMut(String)) {
         family_verdict(binding_b, &r_b)
     ));
     // 决策5 共识收口条件：pnorm back-half 敏感性（此前只测 rational）。
-    let (pfit_b, _, p_binding_b) = fit_pnorm_concave_detailed(&back_fit);
+    let (pfit_b, _, p_binding_b) = fit_pnorm_concave_detailed(&back_fit, &ZoneBands::SET_D);
     let rp_b = evaluate_pnorm_fit(&pfit_b, &back_hold, &ZoneBands::SET_D);
     emit(format!(
         "  [sensitivity back-half pnorm-p2] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",

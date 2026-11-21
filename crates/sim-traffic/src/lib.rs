@@ -308,6 +308,7 @@ pub fn q_rational_permille(fit: &RationalSaturationFit, k_permille: u64) -> u64 
 /// 返回 (拟合, 自由估计零密度斜率‰, 约束是否绑定)。
 pub fn fit_rational_saturation_detailed(
     samples: &[MfdSample],
+    bands: &ZoneBands,
 ) -> (RationalSaturationFit, u64, bool) {
     assert!(!samples.is_empty(), "no samples");
     // q≤k 不变量下沉到拟合器入口（决策5 豆包 R3）：示例外的任何调用方
@@ -318,25 +319,19 @@ pub fn fit_rational_saturation_detailed(
     );
     let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
     let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
-    let mut best_free: Option<(u128, u64, u64)> = None;
-    let mut best_feasible: Option<(u128, u64, u64)> = None;
+    let mut best_free: Option<(u64, u64, u64)> = None;
+    let mut best_feasible: Option<(u64, u64, u64)> = None;
     for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
         for k_half in 1..=k_max.saturating_mul(4).max(1) {
             let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
-            let mut sse: u128 = 0;
-            for s in samples {
-                // 目标=相对误差平方和（‰口径）——审计修复 2026-11-20（豆包 c）：
-                // 旧绝对 SSE 与判据的分区相对误差不同构（自由流区权重≈0），
-                // 目标与判据同构后自由流点获得应有权重。
-                let e = q_rational_permille(&fit, s.k_permille) as i128 - s.q_permille as i128;
-                let er = (e * 1000) / (s.q_permille.max(1) as i128);
-                sse += (er * er) as u128;
+            // 目标=判据归一化分区最大相对误差（②′ 修测，2026-11-22）——
+            // 估计目标与判据同构（旧绝对 SSE/rel-SSE 均不同构，废）。
+            let loss = criterion_aligned_loss(|k| q_rational_permille(&fit, k), samples, bands);
+            if best_free.is_none_or(|(b, _, _)| loss < b) {
+                best_free = Some((loss, q_max, k_half));
             }
-            if best_free.is_none_or(|(b, _, _)| sse < b) {
-                best_free = Some((sse, q_max, k_half));
-            }
-            if k_half >= q_max && best_feasible.is_none_or(|(b, _, _)| sse < b) {
-                best_feasible = Some((sse, q_max, k_half));
+            if k_half >= q_max && best_feasible.is_none_or(|(b, _, _)| loss < b) {
+                best_feasible = Some((loss, q_max, k_half));
             }
         }
     }
@@ -355,8 +350,8 @@ pub fn fit_rational_saturation_detailed(
 }
 
 /// 便捷入口=详细版第 1 返回值（物理可行拟合）。
-pub fn fit_rational_saturation(samples: &[MfdSample]) -> RationalSaturationFit {
-    fit_rational_saturation_detailed(samples).0
+pub fn fit_rational_saturation(samples: &[MfdSample], bands: &ZoneBands) -> RationalSaturationFit {
+    fit_rational_saturation_detailed(samples, bands).0
 }
 
 /// 广义凹形族（p-norm p=2）：q(k) = q_max·k / sqrt(k² + k0²)。
@@ -394,6 +389,7 @@ pub fn q_pnorm_permille(fit: &PNormConcaveFit, k_permille: u64) -> u64 {
 /// q_max 候选域=观测最大值至 4 倍+16；k0 候选域=1..4·k_max；可行域 k0≥q_max。
 pub fn fit_pnorm_concave_detailed(
     samples: &[MfdSample],
+    bands: &ZoneBands,
 ) -> (PNormConcaveFit, u64, bool) {
     assert!(!samples.is_empty(), "no samples");
     // q≤k 不变量下沉到拟合器入口（决策5 豆包 R3）：示例外的任何调用方
@@ -404,22 +400,18 @@ pub fn fit_pnorm_concave_detailed(
     );
     let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
     let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
-    let mut best_free: Option<(u128, u64, u64)> = None;
-    let mut best_feasible: Option<(u128, u64, u64)> = None;
+    let mut best_free: Option<(u64, u64, u64)> = None;
+    let mut best_feasible: Option<(u64, u64, u64)> = None;
     for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
         for k0 in 1..=k_max.saturating_mul(4).max(1) {
             let fit = PNormConcaveFit { q_max_permille: q_max, k0_permille: k0 };
-            let mut sse: u128 = 0;
-            for s in samples {
-                let e = q_pnorm_permille(&fit, s.k_permille) as i128 - s.q_permille as i128;
-                let er = (e * 1000) / (s.q_permille.max(1) as i128);
-                sse += (er * er) as u128;
+            // 目标=判据归一化分区最大相对误差（②′ 修测，2026-11-22，同有理族）。
+            let loss = criterion_aligned_loss(|k| q_pnorm_permille(&fit, k), samples, bands);
+            if best_free.is_none_or(|(b, _, _)| loss < b) {
+                best_free = Some((loss, q_max, k0));
             }
-            if best_free.is_none_or(|(b, _, _)| sse < b) {
-                best_free = Some((sse, q_max, k0));
-            }
-            if k0 >= q_max && best_feasible.is_none_or(|(b, _, _)| sse < b) {
-                best_feasible = Some((sse, q_max, k0));
+            if k0 >= q_max && best_feasible.is_none_or(|(b, _, _)| loss < b) {
+                best_feasible = Some((loss, q_max, k0));
             }
         }
     }
@@ -433,8 +425,8 @@ pub fn fit_pnorm_concave_detailed(
 }
 
 /// 便捷入口=详细版第 1 返回值。
-pub fn fit_pnorm_concave(samples: &[MfdSample]) -> PNormConcaveFit {
-    fit_pnorm_concave_detailed(samples).0
+pub fn fit_pnorm_concave(samples: &[MfdSample], bands: &ZoneBands) -> PNormConcaveFit {
+    fit_pnorm_concave_detailed(samples, bands).0
 }
 
 /// 分区带（审计修复 2026-11-20：判定边界须为**预注册固定 fixture**，禁止由
@@ -493,6 +485,44 @@ pub fn evaluate_q_fn(
         trans_n,
         sat_n,
     }
+}
+
+/// 判据归一化损失（②′ 确认轮预注册拟合目标，2026-11-22 决策6 Z3）：
+/// loss = max over 非空区 (区最大相对误差‰ × 1000 / 区判据‰)。
+/// **估计目标与判据同构**——杜绝"估计目标≠判据"第三次（决策4 绝对 SSE、
+/// 决策5 rel-SSE 均与分区判据不同构，反事实复算显示仅换目标即翻转判定）。
+/// 空区跳过；判定阈值=1000（即 100% 判据边界）。
+pub fn criterion_aligned_loss(
+    q: impl Fn(u64) -> u64,
+    samples: &[MfdSample],
+    bands: &ZoneBands,
+) -> u64 {
+    let r = evaluate_q_fn(q, samples, bands);
+    let mut loss = 0u64;
+    if r.free_n > 0 {
+        loss = loss.max(r.free_flow_max_err_permille * 1000 / FREE_FLOW_CRIT_PERMILLE);
+    }
+    if r.trans_n > 0 {
+        loss = loss.max(r.transition_max_err_permille * 1000 / TRANSITION_CRIT_PERMILLE);
+    }
+    if r.sat_n > 0 {
+        loss = loss.max(r.saturated_max_err_permille * 1000 / SATURATED_CRIT_PERMILLE);
+    }
+    loss
+}
+
+/// 每点分辨率下限（②′ 修测四项，MiMo/Claude 口径）：判据×q_obs ≥ 2 个采样
+/// 单位（‰ 量化）——相对判据在该点的绝对容差必须超过 ±2‰ 取整噪声；
+/// 不满足→该点"分辨率受限"，以绝对误差 |Δq|≤2‰ 复核并在证据中披露。
+pub fn point_resolution_ok(q_obs_permille: u64, crit_permille: u64) -> bool {
+    crit_permille.saturating_mul(q_obs_permille) >= 2 * 1000
+}
+
+/// 稳态判据（②′ 稳态硬门；文档与实现口径统一=双口径任一）：
+/// 窗口前后半 q 差 ≤2‰ **或** ≤15 辆。非稳态档位不得静默——单独报告
+/// （稳态率目标：自由流区 ≥50%，DeepSeek 口径）。
+pub fn steady_window(back_half_delta_permille: u64, back_half_delta_vehicles: u64) -> bool {
+    back_half_delta_permille <= 2 || back_half_delta_vehicles <= 15
 }
 
 /// 有理饱和族评估（evaluate_q_fn 委托）。
@@ -831,7 +861,7 @@ mod tests {
     fn synthetic_rational_is_recovered() {
         // 人工合成精确有理饱和图（q_max=200‰、k_half=150‰）→辨识恢复。
         let ks: Vec<u64> = (1..=40).map(|i| i * 25).collect();
-        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
         assert_eq!(fit.q_max_permille, 200);
         assert_eq!(fit.k_half_permille, 250);
     }
@@ -839,15 +869,15 @@ mod tests {
     #[test]
     fn rational_identification_is_deterministic() {
         let ks: Vec<u64> = (1..=30).map(|i| i * 17).collect();
-        let a = fit_rational_saturation(&rational_samples(200, 250, &ks));
-        let b = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        let a = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        let b = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
         assert_eq!(a, b);
     }
 
     #[test]
     fn rational_zero_density_slope_is_bounded() {
         let ks: Vec<u64> = (1..=30).map(|i| i * 33).collect();
-        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
         assert!(fit.zero_density_slope_permille() <= 1000);
     }
 
@@ -858,7 +888,7 @@ mod tests {
         // 样本取 k≥500 保证 q≤k（采样不变量断言下合法），模型越界仍成立。
         let ks: Vec<u64> = vec![500, 1000, 2000];
         let (fit, free_slope, binding) =
-            fit_rational_saturation_detailed(&rational_samples(500, 50, &ks));
+            fit_rational_saturation_detailed(&rational_samples(500, 50, &ks), &ZoneBands::SET_D);
         assert!(binding, "bound must bind");
         assert_eq!(free_slope, 10_000, "violation magnitude must be disclosed");
         assert!(fit.zero_density_slope_permille() <= 1000);
@@ -868,7 +898,7 @@ mod tests {
     fn rational_holdout_meets_criteria_on_synthetic() {
         // 合成数据留出评估：三区判据应全过（常量单一来源）。
         let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
-        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks));
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
         let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
         let r = evaluate_rational_fit(&fit, &rational_samples(200, 250, &holdout), &ZoneBands::SET_D);
         assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
@@ -888,7 +918,7 @@ mod tests {
     #[test]
     fn synthetic_pnorm_is_recovered() {
         let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
-        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(200, 250, &ks));
+        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(200, 250, &ks), &ZoneBands::SET_D);
         assert_eq!(fit, PNormConcaveFit { q_max_permille: 200, k0_permille: 250 });
         assert_eq!(free_slope, 800);
         assert!(!binding);
@@ -898,7 +928,7 @@ mod tests {
     fn pnorm_identification_is_deterministic() {
         let ks: Vec<u64> = (1..=16).map(|i| i * 40).collect();
         let s = pnorm_samples(300, 400, &ks);
-        assert_eq!(fit_pnorm_concave_detailed(&s), fit_pnorm_concave_detailed(&s));
+        assert_eq!(fit_pnorm_concave_detailed(&s, &ZoneBands::SET_D), fit_pnorm_concave_detailed(&s, &ZoneBands::SET_D));
     }
 
     #[test]
@@ -906,7 +936,7 @@ mod tests {
         // 自由估计斜率超界（500/50=10000‰）→binding=true 即失败信号；
         // 可行解回退仅诊断，zero_density_slope≤1000‰。样本 k≥500 保证 q≤k。
         let ks: Vec<u64> = vec![500, 1000, 2000];
-        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(500, 50, &ks));
+        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(500, 50, &ks), &ZoneBands::SET_D);
         assert!(binding);
         assert!(free_slope > 1000);
         assert!(fit.zero_density_slope_permille() <= 1000);
@@ -915,7 +945,7 @@ mod tests {
     #[test]
     fn pnorm_holdout_meets_criteria_on_synthetic() {
         let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
-        let fit = fit_pnorm_concave(&pnorm_samples(200, 250, &ks));
+        let fit = fit_pnorm_concave(&pnorm_samples(200, 250, &ks), &ZoneBands::SET_D);
         let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
         let r = evaluate_pnorm_fit(&fit, &pnorm_samples(200, 250, &holdout), &ZoneBands::SET_D);
         assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
@@ -937,5 +967,39 @@ mod tests {
         assert_eq!(q_pnorm_permille(&f, 1000), 194);
         // k=2500：真值 198.03‰，定点→199（isqrt floor 偏差）
         assert_eq!(q_pnorm_permille(&f, 2500), 199);
+    }
+
+    #[test]
+    fn criterion_aligned_loss_is_zero_on_exact_fit() {
+        // ②′ 修测：拟合目标=判据归一化分区最大相对误差；精确参数合成数据下
+        // loss≈0（仅舍入级），且非精确参数 loss 严格更大（目标可辨识）。
+        let ks: Vec<u64> = (1..=24).map(|i| i * 40).collect();
+        let s = rational_samples(200, 250, &ks);
+        let exact = RationalSaturationFit { q_max_permille: 200, k_half_permille: 250 };
+        let loss_exact =
+            criterion_aligned_loss(|k| q_rational_permille(&exact, k), &s, &ZoneBands::SET_D);
+        let off = RationalSaturationFit { q_max_permille: 200, k_half_permille: 200 };
+        let loss_off =
+            criterion_aligned_loss(|k| q_rational_permille(&off, k), &s, &ZoneBands::SET_D);
+        assert!(loss_exact <= 10, "exact loss {}", loss_exact);
+        assert!(loss_off > loss_exact, "identifiability: {} vs {}", loss_off, loss_exact);
+    }
+
+    #[test]
+    fn point_resolution_floor_edges() {
+        // ②′ 修测：判据×q_obs ≥ 2000（即相对容差 ≥2‰ 采样单位）。
+        assert!(point_resolution_ok(20, 100)); // 20‰×100%=20‰… 100×20=2000 边界达标
+        assert!(!point_resolution_ok(19, 100)); // 1900<2000 分辨率受限
+        assert!(point_resolution_ok(8, 250)); // 250×8=2000 边界达标
+        assert!(!point_resolution_ok(7, 250)); // 1750<2000 分辨率受限
+    }
+
+    #[test]
+    fn steady_window_dual_criteria() {
+        // ②′ 稳态硬门：双口径任一（≤2‰ 或 ≤15 辆）。
+        assert!(steady_window(2, 100)); // ‰ 口径达标
+        assert!(steady_window(30, 15)); // 辆口径达标
+        assert!(!steady_window(30, 16)); // 双不达标
+        assert!(steady_window(2, 16)); // 边界
     }
 }
