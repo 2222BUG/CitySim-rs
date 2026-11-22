@@ -552,7 +552,7 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 | --- | --- | --- | --- |
 | S1 | Stage 3 任务清单重建（T0 债务 #28 重试前置 + T1 Agent 状态机（#7）→ {T2 回放 schema（#10）, T3 经济系统} → {T4 LOD 草案（#14）, T5 多世界 EC-10}）+主文档 L1038 悬空引用收口 | 已完成（2026-11-22） | docs(stage3): S1——Stage 3 任务清单重建 |
 | S2 | T0：债务 #28 tx_id 重试实装（沿用原 ID 重排入队、上限 3 转受阻+诊断 NET-0001，sim-network TxRetryQueue） | 已完成（2026-11-22） | feat(stage3): T0——tx_id 重试队列 |
-| S3 | T1-T5 按执行顺序实施：**T1 Agent 状态机已完成**（RFC + AgentLifecycle：Spawning/Active/Blocked{reason,since_tick,attempts}/Despawned、受阻上限自动退役、AGT-0001 诊断、转移序列 digest）；**T2 回放 schema 已完成**（crates/sim-replay：ReplayInput 四类事件、canonical 编码+版本化 RPL-0001、Recorder/Replayer、回放等价测试）；**T3 经济系统基础已完成**（crates/sim-economy：EconomyLedger 确定性循环、经济上限 10^12 溢出/下溢防护、event_u64 "economy" 派生流、EC-04 L2/L3 暂停语义、canonical+BLAKE3 摘要入 ADR-19 清单）；T4/T5 待开始 | 进行中 | feat(stage3): T1/T2/T3 |
+| S3 | T1-T5 按执行顺序实施：**T1 Agent 状态机已完成**（RFC + AgentLifecycle：Spawning/Active/Blocked{reason,since_tick,attempts}/Despawned、受阻上限自动退役、AGT-0001 诊断、转移序列 digest）；**T2 回放 schema 已完成**（crates/sim-replay：ReplayInput 四类事件、canonical 编码+版本化 RPL-0001、Recorder/Replayer、回放等价测试）；**T3 经济系统基础已完成**（crates/sim-economy：EconomyLedger 确定性循环、经济上限 10^12 溢出/下溢防护、event_u64 "economy" 派生流、EC-04 L2/L3 暂停语义、canonical+BLAKE3 摘要入 ADR-19 清单）；**T4 LOD 草案已完成**（rfc-lod-draft.md：L0/L1/L2 命名与更新频率、确定性切换信号白名单、LodSwitch 入档入回放、简化模型合法性约束、验证计划；阈值数值留待定）；T5 待开始 | 进行中 | feat(stage3): T1/T2/T3/T4 |
 | S4 | 退出核对（6 条）+终验 | 待开始 | - |
 
 ## 变更历史
