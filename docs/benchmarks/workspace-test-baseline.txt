@@ -1,0 +1,517 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.21s
+     Running unittests src\lib.rs (target\debug\build\dep-verify/a162370ecac59860\out\dep_verify-a162370ecac59860.exe)
+
+running 2 tests
+test tests::baseline_strings_match_spec ... ok
+test tests::key_apis_are_usable ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src\lib.rs (target\debug\build\network-tx-spike/c5fca6c498e164b6\out\network_tx_spike-c5fca6c498e164b6.exe)
+
+running 8 tests
+test tests::stale_legality_check ... ok
+test tests::stale_aggregation_rule ... ok
+test tests::query_consistency_and_accept ... ok
+test tests::walk_policy_comparison ... ok
+test tests::forward_progress_under_churn ... ok
+test tests::atomic_publish_and_versioning ... ok
+test tests::interleaved_publish_query_threads ... ok
+test tests::perf_smoke ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running unittests src\lib.rs (target\debug\build\rng-spike/c1c7fe1fdb20fb55\out\rng_spike-c1c7fe1fdb20fb55.exe)
+
+running 9 tests
+test tests::algo_smoke_and_stability ... ok
+test tests::reproducibility_golden ... ok
+test tests::save_restore_and_state_footprint ... ok
+test tests::schedule_order_independence ... ok
+test tests::print_goldens ... ok
+test tests::protocol_version_pinned ... ok
+test tests::agent_stream_isolation ... ok
+test tests::system_stream_isolation ... ok
+test bench::bench_all ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+     Running unittests src\lib.rs (target\debug\build\save-restore-spike/61a83e458a2290a1\out\save_restore_spike-61a83e458a2290a1.exe)
+
+running 9 tests
+test tests::save_rejects_non_tick_boundary ... ok
+test tests::id_high_water_prevents_reuse ... ok
+test tests::strong_readback_equivalence ... ok
+test tests::tampered_save_is_rejected ... ok
+test tests::unknown_schema_is_diagnosable ... ok
+test tests::stateful_rng_roundtrip ... ok
+test tests::trailing_bytes_rejected ... ok
+test tests::save_set_covers_ec03_categories ... ok
+test tests::weak_form_equivalence ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-agent/b7f00da339cd599e\out\sim_agent-b7f00da339cd599e.exe)
+
+running 8 tests
+test tests::agent_ids_are_monotonic_u64 ... ok
+test tests::high_water_must_not_go_backwards - should panic ... ok
+test tests::registry_iteration_is_stable_by_id ... ok
+test lifecycle_tests::transition_sequence_digest_is_reproducible ... ok
+test tests::role_is_pinned ... ok
+test lifecycle_tests::transition_table_coverage ... ok
+test lifecycle_tests::blocked_enters_and_exits_with_limit ... ok
+test tests::restored_high_water_prevents_id_reuse ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-codec/d7401e57e5826c6b\out\sim_codec-d7401e57e5826c6b.exe)
+
+running 4 tests
+test tests::encoding_is_deterministic ... ok
+test tests::no_float_entry_points ... ok
+test tests::integer_layout_is_little_endian_fixed_width ... ok
+test tests::domain_header_and_varlen_prefix ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-core/9993fc4cf35f276d\out\sim_core-9993fc4cf35f276d.exe)
+
+running 20 tests
+test budget::tests::degradation_levels_follow_workload_only ... ok
+test budget::tests::demand_alone_cannot_reach_l2_l3 ... ok
+test budget::tests::demand_archival_survives_end_tick ... ok
+test budget::tests::spend_and_overflow_flag ... ok
+test budget::tests::trigger_and_recover_need_consecutive_ticks ... ok
+test tests::command_carries_effective_tick_and_id ... ok
+test tests::past_effective_tick_is_rejected ... ok
+test budget::tests::threshold_boundaries_are_closed_open ... ok
+test budget::tests::single_system_saturation_is_not_diluted ... ok
+test budget::tests::demand_state_is_covered_by_encode ... ok
+test tests::clock_advances_by_one_at_tick_boundary ... ok
+test budget::tests::unknown_system_spend_panics ... ok
+test budget::tests::role_is_pinned ... ok
+test tests::due_order_is_stable_regardless_of_storage_order ... ok
+test budget::tests::demand_channel_frozen_by_default ... ok
+test budget::tests::demand_pressure_triggers_l1_only_with_hysteresis ... ok
+test budget::tests::state_encoding_is_deterministic ... ok
+test tests::id_high_water_prevents_reuse ... ok
+test tests::role_is_pinned ... ok
+test tests::high_water_must_not_go_backwards - should panic ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-digest/1336adaf7c4214c6\out\sim_digest-1336adaf7c4214c6.exe)
+
+running 9 tests
+test tests::payload_sensitivity ... ok
+test tests::digest_version_pinned ... ok
+test tests::golden_vectors ... ok
+test tests::global_digest_order_independent ... ok
+test tests::domain_separation ... ok
+test tests::print_goldens ... ok
+test tests::global_digest_module_sensitivity ... ok
+test tests::same_input_same_digest ... ok
+test tests::empty_global_digest_is_stable ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-economy/e811dd85b0853649\out\sim_economy-e811dd85b0853649.exe)
+
+running 4 tests
+test tests::treasury_bounds_are_enforced ... ok
+test tests::role_is_pinned ... ok
+test tests::two_runs_digest_equal ... ok
+test tests::pause_resume_semantics ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-error/ddd1d10c0aa758dc\out\sim_error-ddd1d10c0aa758dc.exe)
+
+running 5 tests
+test tests::context_fields ... ok
+test tests::three_classes_exist ... ok
+test tests::registered_codes_are_unique ... ok
+test tests::error_code_format ... ok
+test tests::diagnostic_sink_is_ordered_and_drains ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-network/63ebe3f11fffa7d0\out\sim_network-63ebe3f11fffa7d0.exe)
+
+running 16 tests
+test tests::stale_legality_missing_edge ... ok
+test tests::stale_check_two_phase ... ok
+test tests::cost_tx_updates_in_place ... ok
+test tests::csr_adjacency_order_is_deterministic ... ok
+test txlimiter_tests::rejected_tx_consumes_nothing_and_reset_rearms ... ok
+test txlimiter_tests::topology_and_cost_budgets_are_separate ... ok
+test txlimiter_tests::oversized_single_tx_is_rejected ... ok
+test tests::topology_tx_is_atomic ... ok
+test tests::digest_is_stable_and_sensitive ... ok
+test txretry_tests::limiter_rejection_feeds_retry_queue ... ok
+test txretry_tests::retry_keeps_tx_id_and_due_is_full_order ... ok
+test txlimiter_tests::mixed_tx_counts_as_topology ... ok
+test txretry_tests::retry_limit_blocks_and_emits_diagnostic ... ok
+test tests::stale_aggregation_is_stable ... ok
+test tests::region_ops ... ok
+test tests::role_is_pinned ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-parallel/a8b0d44bce7b81ed\out\sim_parallel-a8b0d44bce7b81ed.exe)
+
+running 6 tests
+test tests::role_is_pinned ... ok
+test tests::empty_and_single_task ... ok
+test tests::commit_order_is_stable_key_order ... ok
+test tests::submission_order_independence ... ok
+test tests::chaos_injection_does_not_affect_result ... ok
+test tests::thread_count_independence ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\thread_independence.rs (target\debug\build\sim-parallel/5cb73e118ca289ff\out\thread_independence-5cb73e118ca289ff.exe)
+
+running 4 tests
+test parallel_matches_serial_reference ... ok
+test submission_order_independence_scenario ... ok
+test chaos_injection_does_not_change_result ... ok
+test thread_count_independence_1_2_8 ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src\lib.rs (target\debug\build\sim-pathfinding/f58f55ed20dca1d9\out\sim_pathfinding-f58f55ed20dca1d9.exe)
+
+running 13 tests
+test tests::overflow_saturates_deterministically ... ok
+test tests::parallel_edge_reconstruction_is_exact ... ok
+test tests::unreachable_terminates_as_blocked ... ok
+test tests::tie_break_is_deterministic ... ok
+test tests::unreachable_expansion_is_charged_to_budget ... ok
+test tests::role_is_pinned ... ok
+test tests::counters_are_separate ... ok
+test tests::budget_yield_respects_analytic_bound ... ok
+test tests::astar_matches_dijkstra ... ok
+test tests::astar_is_unique ... ok
+test tests::yield_then_fresh_budget_completes ... ok
+test tests::global_budget_caps_total_expansions_per_tick ... ok
+test tests::quota_yield_does_not_pollute_switch_criterion ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\astar_edge_cases.rs (target\debug\build\sim-pathfinding/da06b91070f1bc0b\out\astar_edge_cases-da06b91070f1bc0b.exe)
+
+running 5 tests
+test h_consistency_invariant_tracks_cost_lower_bound ... ok
+test equal_cost_paths_keep_first_discovered_predecessor ... ok
+test reopen_recovers_optimal_when_heuristic_inconsistent ... ok
+test shuffled_edge_insertion_preserves_optimal_cost_and_determinism ... ok
+test csr_offsets_survive_beyond_u16_edge_count ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running tests\concurrent_queue_stress.rs (target\debug\build\sim-pathfinding/be7ef4e8ea8349d2\out\concurrent_queue_stress-be7ef4e8ea8349d2.exe)
+
+running 2 tests
+test budget_and_stale_counters_are_separate ... ok
+test concurrent_queue_thread_and_chaos_independence ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running unittests src\lib.rs (target\debug\build\sim-replay/e3c4c5cc6cb36644\out\sim_replay-e3c4c5cc6cb36644.exe)
+
+running 5 tests
+test tests::recorder_enforces_tick_order ... ok
+test tests::unsupported_version_is_diagnosable ... ok
+test tests::trailing_bytes_and_truncation_are_rejected ... ok
+test tests::record_replay_digest_equivalence ... ok
+test tests::encode_decode_roundtrip_is_stable ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-rng/5139621ae3b98e77\out\sim_rng-5139621ae3b98e77.exe)
+
+running 12 tests
+test tests::print_goldens ... ok
+test tests::save_restore_and_state_footprint ... ok
+test tests::registry_real_hashes_are_distinct_for_samples ... ok
+test tests::registry_idempotent_and_distinct ... ok
+test tests::registry_rejects_constructed_collision ... ok
+test tests::reproducibility_golden ... ok
+test tests::schedule_order_independence ... ok
+test tests::algo_smoke_and_stability ... ok
+test tests::protocol_version_pinned ... ok
+test tests::agent_stream_isolation ... ok
+test tests::system_stream_isolation ... ok
+test bench::bench_all ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-save/f22fbcdfcaa81b93\out\sim_save-f22fbcdfcaa81b93.exe)
+
+running 11 tests
+test tests::save_set_covers_ec03_categories ... ok
+test tests::yield_and_stale_counters_are_separate ... ok
+test tests::save_rejects_non_tick_boundary ... ok
+test tests::stateful_rng_roundtrip ... ok
+test tests::weak_form_equivalence ... ok
+test tests::trailing_bytes_rejected ... ok
+test tests::tampered_save_is_rejected ... ok
+test tests::unknown_schema_is_diagnosable ... ok
+test tests::strong_readback_equivalence ... ok
+test tests::yield_state_strong_readback ... ok
+test tests::id_high_water_prevents_reuse ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\r2_scenario.rs (target\debug\build\sim-save/f3920b7549e27bae\out\r2_scenario-f3920b7549e27bae.exe)
+
+running 4 tests
+test r2_fixture_smoke_runs_deterministically ... ok
+test r2_same_seed_two_runs_agree ... ok
+test r2_strong_readback_via_harness ... ok
+test r2_weak_form_available ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-test-support/c280cf786845ff4b\out\sim_test_support-c280cf786845ff4b.exe)
+
+running 11 tests
+test chaos::tests::chaos_keys_produce_distinct_order ... ok
+test deterministic::tests::strong_readback_template_works_on_mock ... ok
+test deterministic::tests::weak_form_template_works_on_mock ... ok
+test assertions::tests::digest_mismatch_panics - should panic ... ok
+test assertions::tests::assertions_pass_on_valid_state ... ok
+test benchmark::tests::report_line_contains_required_fields ... ok
+test property::tests::invariants_hold_on_valid_inputs ... ok
+test deterministic::tests::repeat_run_is_deterministic_on_mock ... ok
+test fixtures::tests::grid_edges_count_and_stability ... ok
+test chaos::tests::chaos_is_deterministic_and_seed_zero_is_noop ... ok
+test fixtures::tests::node_coord_matches_spacing ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-traffic/145e5b01fcf8b690\out\sim_traffic-145e5b01fcf8b690.exe)
+
+running 24 tests
+test tests::simulation_holdout_free_flow_is_accurate ... ignored, 债务 #31 审计退回（2026-11-20）：保持 ignore，直至口径修复后 Set D 复测通过并经负责人追认（FAIL 翻转则按重投裁决处置）
+test tests::synthetic_holdout_meets_adr25_criteria ... ok
+test tests::fold_digest_covers_goal_and_next_id ... ok
+test tests::point_resolution_floor_edges ... ok
+test tests::explicit_id_injection_is_order_independent ... ok
+test tests::role_is_pinned ... ok
+test tests::pnorm_isqrt_rounding_golden ... ok
+test tests::synthetic_triangle_is_recovered ... ok
+test tests::criterion_aligned_loss_is_zero_on_exact_fit ... ok
+test tests::steady_window_dual_criteria ... ok
+test tests::tbench_same_seed_two_runs_agree ... ok
+test tests::triangle_fit_is_deterministic ... ok
+test tests::mfd_shape_basic ... ok
+test tests::free_flow_slope_is_physically_bounded ... ok
+test tests::monotone_saturation_reports_no_descending_branch ... ok
+test tests::rational_holdout_meets_criteria_on_synthetic ... ok
+test tests::rational_identification_is_deterministic ... ok
+test tests::rational_bound_violation_is_disclosed_and_constrained ... ok
+test tests::rational_zero_density_slope_is_bounded ... ok
+test tests::synthetic_rational_is_recovered ... ok
+test tests::pnorm_holdout_meets_criteria_on_synthetic ... ok
+test tests::synthetic_pnorm_is_recovered ... ok
+test tests::pnorm_bound_violation_is_disclosed_and_constrained ... ok
+test tests::pnorm_identification_is_deterministic ... ok
+
+test result: ok. 23 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.90s
+
+     Running tests\mfd_coupling.rs (target\debug\build\sim-traffic/110fd777a28d2d52\out\mfd_coupling-110fd777a28d2d52.exe)
+
+running 3 tests
+test mfd_degradation_coupling_matches_serial_reference ... ok
+test mfd_degradation_coupling_is_chaos_independent ... ok
+test mfd_degradation_coupling_is_thread_independent ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src\lib.rs (target\debug\build\sim-view/8962ff9c3f2474dd\out\sim_view-8962ff9c3f2474dd.exe)
+
+running 1 test
+test tests::role_is_pinned ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\sim-world/1446ff3ec0cf9dbe\out\sim_world-1446ff3ec0cf9dbe.exe)
+
+running 3 tests
+test tests::context_digest_separates_worlds ... ok
+test tests::role_is_pinned ... ok
+test tests::world_ids_are_unique_and_high_water_recovers ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\build\simscalar/99e8b5bcb253c14b\out\simscalar-99e8b5bcb253c14b.exe)
+
+running 12 tests
+test step2_tests::drift_golden_30tps ... ok
+test tests::digest_is_stable ... ok
+test step2_tests::map_16km_and_1mm_fit ... ok
+test tests::div_rounding_and_zero ... ok
+test step2_tests::intermediate_width_fits_i128 ... ok
+test tests::constants_and_ratio ... ok
+test tests::mul_ties_round_away_from_zero ... ok
+test tests::overflow_is_explicit ... ok
+test step2_tests::dt_30hz_from_ratio_golden ... ok
+test tests::mul_properties_over_random_inputs ... ok
+test tests::drift_golden_20tps ... ok
+test step2_tests::perf_smoke_mul ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running unittests src\lib.rs (target\debug\build\simscalar-spike/9f197fa07e16646e\out\simscalar_spike-9f197fa07e16646e.exe)
+
+running 12 tests
+test tests::constants_and_ratio ... ok
+test tests::overflow_is_explicit ... ok
+test step2_tests::drift_golden_30tps ... ok
+test tests::digest_is_stable ... ok
+test tests::mul_ties_round_away_from_zero ... ok
+test tests::div_rounding_and_zero ... ok
+test step2_tests::dt_30hz_from_ratio_golden ... ok
+test step2_tests::intermediate_width_fits_i128 ... ok
+test step2_tests::map_16km_and_1mm_fit ... ok
+test tests::mul_properties_over_random_inputs ... ok
+test tests::drift_golden_20tps ... ok
+test step2_tests::perf_smoke_mul ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+   Doc-tests dep_verify
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests network_tx_spike
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rng_spike
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests save_restore_spike
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_agent
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_codec
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_digest
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_economy
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_error
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_network
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_parallel
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_pathfinding
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_replay
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_rng
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_save
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_test_support
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_traffic
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_view
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sim_world
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests simscalar
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests simscalar_spike
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
