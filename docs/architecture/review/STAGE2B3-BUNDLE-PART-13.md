@@ -1,0 +1,714 @@
+# STAGE2B3-BUNDLE PART 13（本卷文件：crates/sim-core/src/budget.rs, docs/benchmarks/globaldigest-golden-vectors.txt, .github/workflows/ci.yml, .github/scripts/dep_graph_check.py）
+<!-- commit 0bd384ab7874d9180273c7e0c87106b6e7d723e3；与 ZIP 同源；粘贴时请整卷一条消息发送 -->
+
+
+===== FILE: crates/sim-core/src/budget.rs =====
+
+//! 预算注册表与确定性降级（ADR-NEW-14 C2 细化，Stage 2C C3a）。
+//!
+//! - 契约即代码：每系统在注册表声明计量单位/每 tick 上限/超限行为。
+//! - 降级触发只依赖确定性工作量单位（预算消耗比例），禁止墙钟/负载/帧率。
+//! - 降级等级与滚动预算是权威状态：入存档、入 GlobalDigest（G3 口径）。
+
+use sim_codec::CanonicalWriter;
+use sim_error::{ErrorCode, ErrorClass, SimError, SimErrorContext};
+
+/// 计量单位（确定性工作量单位，ADR-NEW-14）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkUnit {
+    /// A* 节点展开数（sim-pathfinding）。
+    NodeExpansions,
+    /// 事务应用数（sim-network）。
+    TxApplies,
+    /// 本 tick 更新实体数（sim-traffic 等）。
+    EntityUpdates,
+    /// 摘要/存档条目数（sim-save）。
+    DigestEntries,
+}
+
+/// 超限行为。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowBehavior {
+    /// 让步到下 tick 续算（寻路）。
+    YieldToNextTick,
+    /// 排队到下 tick（事务）。
+    QueueToNextTick,
+    /// 分片让步（实体更新）。
+    ShardYield,
+    /// Fatal：存档不可信（SAV-0003）。
+    FatalSaveCorrupt,
+}
+
+/// 单个系统的预算声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BudgetDecl {
+    pub system_id: u32,
+    pub unit: WorkUnit,
+    pub per_tick_cap: u64,
+    pub overflow: OverflowBehavior,
+}
+
+/// 降级等级（EC-04 L1/L2/L3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DegradationLevel {
+    Normal,
+    L1,
+    L2,
+    L3,
+}
+
+/// 降级阈值（候选占位：70/90/100 万分比 + 恢复 5000bp；ADR-NEW-14 C2 待负责人确认）。
+/// 2026-11-19 投票修复（Claude）：触发/恢复加连续 tick 要求，防单 tick 突发误触发/误恢复。
+#[derive(Debug, Clone, Copy)]
+pub struct DegradationThresholds {
+    /// 预算消耗比例 ≥ 此值触发（万分比：7000=70%）。触发比较为闭区间（>=）。
+    pub l1_bp: u32,
+    pub l2_bp: u32,
+    pub l3_bp: u32,
+    /// 恢复迟滞（万分比：5000=50%）。恢复比较为开区间（<）。
+    pub recover_bp: u32,
+    /// 进入降级所需连续超阈 tick 数（候选占位=2；单 tick 突发不触发）。
+    pub trigger_ticks: u32,
+    /// 恢复 Normal 所需连续低于 recover_bp 的 tick 数（候选占位=2）。
+    pub recover_ticks: u32,
+}
+
+impl Default for DegradationThresholds {
+    fn default() -> Self {
+        Self {
+            l1_bp: 7000,
+            l2_bp: 9000,
+            l3_bp: 10000,
+            recover_bp: 5000,
+            trigger_ticks: 2,
+            recover_ticks: 2,
+        }
+    }
+}
+
+/// 预算注册表 + 降级状态机。全部状态确定性、可入档。
+#[derive(Debug, Clone)]
+pub struct BudgetRegistry {
+    decls: Vec<BudgetDecl>,
+    /// 本 tick 各系统实耗（索引与 decls 对齐）。
+    spent: Vec<u64>,
+    /// 本 tick 各系统预算占比的最大值（万分比）。2026-11-19 投票修复（MiniMax/GPT-6）：
+    /// 聚合口径=逐系统比例取最严（旧口径按 cap 加权总和，单系统饱和会被空闲系统稀释）。
+    rolling_used_bp: u32,
+    /// 连续超阈 tick 计数（触发门）。
+    over_streak: u32,
+    /// 连续低于恢复线 tick 计数（恢复门）。
+    under_streak: u32,
+    /// 本 tick 外部需求压力（万分比，0..=10000；MFD→降级信号通道，ADR-NEW-26 草案）。
+    demand_bp: u32,
+    /// 本 tick 需求压力的归档口径（X5 审计修复：demand_bp 在 end_tick 清零，
+    /// 直接入档恒 0——last_demand_bp 跨 end_tick 保留供 encode_state 归档）。
+    last_demand_bp: u32,
+    /// 连续高需求 tick 计数（与 over_streak 同门限语义）。
+    demand_streak: u32,
+    /// 需求通道冻结开关（**默认冻结**——决策6 Z2 代码护栏 2026-11-22：MFD→降级
+    /// 用途冻结不只停在 ADR 文案；冻结时 note_demand_pressure 为 no-op，解冻须显式
+    /// unfreeze_demand_channel()（ADR-NEW-26 解冻裁决时启用）。冻结状态属配置不入档）。
+    demand_channel_frozen: bool,
+    pub level: DegradationLevel,
+    thresholds: DegradationThresholds,
+}
+
+impl BudgetRegistry {
+    pub fn new(decls: Vec<BudgetDecl>, thresholds: DegradationThresholds) -> Self {
+        let spent = vec![0; decls.len()];
+        Self {
+            decls,
+            spent,
+            rolling_used_bp: 0,
+            over_streak: 0,
+            under_streak: 0,
+            demand_bp: 0,
+            last_demand_bp: 0,
+            demand_streak: 0,
+            demand_channel_frozen: true,
+            level: DegradationLevel::Normal,
+            thresholds,
+        }
+    }
+
+    pub fn decls(&self) -> &[BudgetDecl] {
+        &self.decls
+    }
+
+    pub fn level(&self) -> DegradationLevel {
+        self.level
+    }
+
+    /// 记录实耗；返回是否超该系统每 tick 上限。
+    pub fn spend(&mut self, system_id: u32, amount: u64) -> bool {
+        let idx = self
+            .decls
+            .iter()
+            .position(|d| d.system_id == system_id)
+            .expect("undeclared system");
+        self.spent[idx] = self.spent[idx].saturating_add(amount);
+        self.spent[idx] > self.decls[idx].per_tick_cap
+    }
+
+    /// 记录本 tick 外部需求压力（万分比；确定性定点，来自权威状态导出——
+    /// 如 sim-traffic 密度/k_c 比值。ADR-NEW-26 草案通道；每 tick 末清零）。
+    /// **通道默认冻结**（决策6 Z2 护栏）：冻结期间本方法为 no-op，须显式
+    /// unfreeze_demand_channel() 后才生效——防误接权威降级路径。
+    pub fn note_demand_pressure(&mut self, pressure_bp: u32) {
+        if self.demand_channel_frozen {
+            return;
+        }
+        self.demand_bp = pressure_bp.min(10_000);
+        self.last_demand_bp = self.demand_bp;
+    }
+
+    /// 解冻需求通道（ADR-NEW-26 解冻裁决通过后由生产代码显式调用）。
+    pub fn unfreeze_demand_channel(&mut self) {
+        self.demand_channel_frozen = false;
+    }
+
+    /// 需求通道是否处于冻结状态（默认 true）。
+    pub fn demand_channel_frozen(&self) -> bool {
+        self.demand_channel_frozen
+    }
+
+    /// tick 边界：按确定性工作量单位更新降级等级，重置每 tick 计量。
+    /// 返回新等级。触发/恢复只依赖 spent/cap 比例（工作量单位），无墙钟。
+    ///
+    /// 2026-11-19 投票修复：
+    /// - 聚合口径=逐系统比例取最严（max_i spent_i/cap_i），单系统饱和不被稀释；
+    /// - 触发（Normal→降级）需连续 trigger_ticks 个超阈 tick（触发比较闭区间 >=）；
+    /// - 恢复（→Normal）需连续 recover_ticks 个低于 recover_bp 的 tick（开区间 <）；
+    /// - 升级（L1→L2→L3）保持即时（安全方向不加延迟）。
+    pub fn end_tick(&mut self) -> DegradationLevel {
+        let used_bp: u32 = self
+            .decls
+            .iter()
+            .zip(self.spent.iter())
+            .map(|(d, s)| {
+                if d.per_tick_cap == 0 {
+                    if *s > 0 { 10_000u32 } else { 0 }
+                } else {
+                    ((*s as u128).saturating_mul(10_000) / d.per_tick_cap as u128).min(10_000) as u32
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        self.rolling_used_bp = used_bp;
+        let t = self.thresholds;
+        // 触发/恢复连续计数（确定性派生状态）：有效压力 = max(工作量占比, 外部需求压力)。
+        // 需求压力参与触发/恢复门，但单独触发时降级封顶 L1（模型形式未裁决=债务 #31，
+        // 限制影响面；工作量压力仍可推 L2/L3）。
+        let effective_bp = used_bp.max(self.demand_bp);
+        if effective_bp >= t.l1_bp {
+            self.over_streak = self.over_streak.saturating_add(1);
+            self.demand_streak = if self.demand_bp >= t.l1_bp {
+                self.demand_streak.saturating_add(1)
+            } else {
+                0
+            };
+        } else {
+            self.over_streak = 0;
+            self.demand_streak = 0;
+        }
+        if effective_bp < t.recover_bp {
+            self.under_streak = self.under_streak.saturating_add(1);
+        } else {
+            self.under_streak = 0;
+        }
+        let triggered = self.over_streak >= t.trigger_ticks;
+        let demand_only_trigger = triggered
+            && used_bp < t.l1_bp
+            && self.demand_streak >= t.trigger_ticks;
+        let recovered = self.under_streak >= t.recover_ticks;
+        self.level = match self.level {
+            DegradationLevel::Normal => {
+                if !triggered {
+                    DegradationLevel::Normal
+                } else if demand_only_trigger {
+                    DegradationLevel::L1
+                } else if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if used_bp >= t.l2_bp {
+                    DegradationLevel::L2
+                } else {
+                    DegradationLevel::L1
+                }
+            }
+            DegradationLevel::L1 => {
+                if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if used_bp >= t.l2_bp {
+                    DegradationLevel::L2
+                } else if recovered {
+                    DegradationLevel::Normal
+                } else {
+                    DegradationLevel::L1
+                }
+            }
+            DegradationLevel::L2 => {
+                if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if recovered {
+                    DegradationLevel::Normal
+                } else {
+                    DegradationLevel::L2
+                }
+            }
+            DegradationLevel::L3 => {
+                if recovered {
+                    DegradationLevel::Normal
+                } else {
+                    DegradationLevel::L3
+                }
+            }
+        };
+        self.spent.iter_mut().for_each(|s| *s = 0);
+        self.demand_bp = 0;
+        self.level
+    }
+
+    /// 编码入档/入摘要（字段序即 canonical 序，G3 口径）。
+    pub fn encode_state(&self, w: &mut CanonicalWriter) {
+        w.u32(self.rolling_used_bp);
+        w.u32(self.over_streak);
+        w.u32(self.under_streak);
+        w.u32(self.last_demand_bp);
+        w.u32(self.demand_streak);
+        w.u8(match self.level {
+            DegradationLevel::Normal => 0,
+            DegradationLevel::L1 => 1,
+            DegradationLevel::L2 => 2,
+            DegradationLevel::L3 => 3,
+        });
+    }
+
+    /// 超限错误（供 FatalSaveCorrupt 类超限使用）。
+    /// system_id 经 ctx.system/调用方日志定位（message 为 &'static str 无法插值）。
+    pub fn overflow_error(&self, _system_id: u32, ctx: SimErrorContext) -> SimError {
+        SimError {
+            class: ErrorClass::Fatal,
+            code: ErrorCode { module: "SAV", number: 3 },
+            message: "digest entries exceeded per-tick cap; save untrustworthy",
+            context: ctx,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decls() -> Vec<BudgetDecl> {
+        vec![
+            BudgetDecl {
+                system_id: 1,
+                unit: WorkUnit::NodeExpansions,
+                per_tick_cap: 100,
+                overflow: OverflowBehavior::YieldToNextTick,
+            },
+            BudgetDecl {
+                system_id: 2,
+                unit: WorkUnit::TxApplies,
+                per_tick_cap: 10,
+                overflow: OverflowBehavior::QueueToNextTick,
+            },
+        ]
+    }
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(crate::authoritative());
+    }
+
+    #[test]
+    fn spend_and_overflow_flag() {
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        assert!(!r.spend(1, 100));
+        assert!(r.spend(1, 1)); // 101 > 100
+        assert!(!r.spend(2, 10));
+        assert!(r.spend(2, 1));
+    }
+
+    #[test]
+    fn degradation_levels_follow_workload_only() {
+        // trigger_ticks=1：纯比例路径（旧口径测试迁移）
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        // 逐系统取最严：系统 1 消耗 77/100 → 7700bp ≥7000 → L1
+        r.spend(1, 77);
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        // 重置后无消耗 → 恢复 Normal（< 5000bp）
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+        // 系统 1 消耗 110 → 10000bp → L3
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        // 迟滞：60/100=6000bp ≥5000 → 保持 L3
+        r.spend(1, 60);
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        // 30/100=3000bp < 5000 → 恢复
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+    }
+
+    #[test]
+    fn single_system_saturation_is_not_diluted() {
+        // 2026-11-19 投票修复（MiniMax/GPT-6）回归：旧 cap 加权口径下
+        // 系统 2（cap=10）打满只贡献 10/110≈9%→永不触发；新口径取最严必须触发。
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        r.spend(2, 10); // 系统 2 满负荷 10000bp，系统 1 空闲
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+    }
+
+    #[test]
+    fn threshold_boundaries_are_closed_open() {
+        // GPT-6 边界要求：恰 70/90/100 触发（闭区间 >=），恰 50 不恢复（开区间 <）。
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        r.spend(1, 70); // 7000bp 恰= l1
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        r.spend(1, 90); // 9000bp 恰= l2
+        assert_eq!(r.end_tick(), DegradationLevel::L2);
+        r.spend(1, 100); // 10000bp 恰= l3
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        r.spend(1, 50); // 5000bp 恰= recover → 不恢复（开区间）
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        r.spend(1, 49); // 4900bp < 5000 → 恢复
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+    }
+
+    #[test]
+    fn trigger_and_recover_need_consecutive_ticks() {
+        // Claude：单 tick 突发不触发/不恢复（默认 trigger_ticks=recover_ticks=2）。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 个超阈 tick：不触发
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::L3); // 第 2 个：触发
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::L3); // 第 1 个低消耗 tick：不恢复
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 2 个：恢复
+    }
+
+    #[test]
+    fn state_encoding_is_deterministic() {
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.spend(1, 90);
+        r.end_tick();
+        let mut w1 = CanonicalWriter::new("sim-core", "BudgetState");
+        r.encode_state(&mut w1);
+        let mut w2 = CanonicalWriter::new("sim-core", "BudgetState");
+        r.encode_state(&mut w2);
+        assert_eq!(w1.into_bytes(), w2.into_bytes());
+    }
+
+    #[test]
+    fn unknown_system_spend_panics() {
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            r.spend(99, 1);
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn demand_pressure_triggers_l1_only_with_hysteresis() {
+        // MFD→降级通道（ADR-NEW-26 草案）：需求压力参与触发/恢复门（effective=max），
+        // 单独触发封顶 L1；恢复需需求与工作量同时回落。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.unfreeze_demand_channel();
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 tick：触发门未到
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        r.note_demand_pressure(0);
+        assert_eq!(r.end_tick(), DegradationLevel::L1); // 第 1 个低需求 tick：不恢复
+        r.note_demand_pressure(0);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 2 个：恢复
+    }
+
+    #[test]
+    fn demand_alone_cannot_reach_l2_l3() {
+        // 需求压力单独触发封顶 L1（债务 #31 未裁决前限制影响面）；
+        // 工作量压力仍可推 L2/L3。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.unfreeze_demand_channel();
+        for _ in 0..2 {
+            r.note_demand_pressure(10_000);
+            assert_ne!(r.end_tick(), DegradationLevel::L2);
+        }
+        assert_eq!(r.level(), DegradationLevel::L1);
+        for _ in 0..2 {
+            r.spend(1, 2000);
+            r.end_tick();
+        }
+        assert_eq!(r.level(), DegradationLevel::L3);
+    }
+
+    #[test]
+    fn demand_state_is_covered_by_encode() {
+        // 需求通道状态入档/入摘要（G3）：demand_bp 敏感。
+        let mk = |demand: u32| {
+            let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+            r.unfreeze_demand_channel();
+            r.note_demand_pressure(demand);
+            let mut w = CanonicalWriter::new("sim-core", "BudgetState");
+            r.encode_state(&mut w);
+            w.into_bytes()
+        };
+        assert_ne!(mk(0), mk(10_000), "demand_bp must be covered");
+    }
+
+    #[test]
+    fn demand_archival_survives_end_tick() {
+        // X5 审计修复：encode_state 归档 last_demand_bp（end_tick 清零 demand_bp
+        // 后仍可归档——旧口径入档恒 0）。
+        let decls = vec![BudgetDecl { system_id: 1, unit: WorkUnit::NodeExpansions, per_tick_cap: 1000, overflow: OverflowBehavior::YieldToNextTick }];
+        let mk = |demand: u32| {
+            let mut r = BudgetRegistry::new(decls.clone(), DegradationThresholds::default());
+            r.unfreeze_demand_channel();
+            r.note_demand_pressure(demand);
+            r.end_tick(); // 清零 demand_bp 后归档
+            let mut w = CanonicalWriter::new("sim-core", "Budget");
+            r.encode_state(&mut w);
+            w.into_bytes()
+        };
+        assert_ne!(mk(0), mk(10_000), "last_demand_bp must survive end_tick");
+    }
+
+    #[test]
+    fn demand_channel_frozen_by_default() {
+        // 决策6 Z2 护栏（2026-11-22）：通道默认冻结，note_demand_pressure 为
+        // no-op；解冻须显式 unfreeze_demand_channel()（ADR-NEW-26 解冻裁决时启用）。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        assert!(r.demand_channel_frozen());
+        for _ in 0..4 {
+            r.note_demand_pressure(10_000);
+            assert_eq!(r.end_tick(), DegradationLevel::Normal, "frozen channel must not degrade");
+        }
+        r.unfreeze_demand_channel();
+        assert!(!r.demand_channel_frozen());
+        r.note_demand_pressure(10_000);
+        r.end_tick();
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::L1, "unfrozen channel must work");
+    }
+}
+
+
+===== FILE: docs/benchmarks/globaldigest-golden-vectors.txt =====
+
+# GlobalDigest 黄金向量（digest_version = 1）
+
+- 日期：2026-11-19（Stage 1 T6）
+- 协议：ADR-NEW-19（BLAKE3-256 + sim-codec canonical 信封 + digest_version u16）
+- 生成：`cargo test -p sim-digest print_goldens -- --nocapture`，固化于
+  `crates/sim-digest/src/lib.rs::tests::golden_vectors`
+- 用途：跨构建/跨平台位级一致性基准（R2 oracle 基础；aarch64 复验挂 R4，
+  条件核销清单未决项）
+
+## 向量
+
+| # | 输入 | 摘要（hex） |
+| --- | --- | --- |
+| 1 | digest("sim-agent", "Agents", b"golden-1") | 64ec5fc5c6062bc58af4df5050df8920e8f79201bfbe15d61ac1ef2287d15b2f |
+| 2 | digest("sim-digest", "GlobalDigest", b"") | 0f677f5692aaf571f6d440c1f931722ff5de1d99965baaec48472389f5091bb5 |
+| 3 | GlobalDigest{("sim-agent","Agents",b"a1"), ("sim-network","Network",b"n1")}.finalize() | 11d8b5e30bed8a3b9f1bb17c0d5ebb71f513b0d73a794d0c6e2f970d39f1d1d5 |
+
+## 信封定义（向量 1/2 口径）
+
+```
+blake3( CSIMCOD1 | module(len-prefixed) | kind(len-prefixed)
+        | digest_version u16 LE | payload(u64 长度前缀 + 原始字节) )
+```
+
+总摘要（向量 3 口径）：条目按 (module, kind) BTreeMap 键序，记录顺序无关。
+
+## 纳入范围（NEW-19 条件③）
+
+全部权威状态由调用方 `record(module, kind, payload)` 喂入，模块清单随
+T7（存档接入）/T9（R2 场景）补全，须含预算队列与让步状态（budget_yield_count、
+stale_recompute_count、等待 tick、优先级）。
+
+
+===== FILE: .github/workflows/ci.yml =====
+
+name: CI
+
+# Stage 0 Step 7：基础 CI 骨架（EC-11 R0/R1 门禁 + EC-12 契约即代码）。
+# R2 确定性场景门禁为占位（if: false）——模拟核心与 GlobalDigest（ADR-NEW-19）就绪后启用。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  r0-unit:
+    name: "R0/R1: cargo test (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - crates/sim-test-support
+          - spikes/simscalar-spike
+          - spikes/rng-spike
+          - spikes/network-tx-spike
+          - spikes/save-restore-spike
+          - crates/sim-core
+          - crates/sim-agent
+          - crates/sim-network
+          - crates/sim-pathfinding
+          - crates/sim-replay
+          - crates/sim-world
+          - crates/sim-traffic
+          - crates/sim-economy
+          - crates/sim-view
+          - crates/simscalar
+          - crates/sim-rng
+          - crates/sim-codec
+          - crates/sim-digest
+          - crates/sim-error
+          - crates/sim-save
+          - crates/sim-parallel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+      - name: cargo test
+        run: cargo test --manifest-path ${{ matrix.crate }}/Cargo.toml
+
+  ec12-lint:
+    name: "EC-12: clippy 分层门禁 (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - spikes/simscalar-spike
+          - spikes/rng-spike
+          - spikes/network-tx-spike
+          - spikes/save-restore-spike
+          - crates/sim-core
+          - crates/sim-agent
+          - crates/sim-network
+          - crates/sim-pathfinding
+          - crates/sim-replay
+          - crates/sim-world
+          - crates/sim-traffic
+          - crates/sim-economy
+          - crates/simscalar
+          - crates/sim-rng
+          - crates/sim-codec
+          - crates/sim-digest
+          - crates/sim-error
+          - crates/sim-save
+          - crates/sim-parallel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: clippy
+      # 各权威 crate 包根自带 clippy.toml（disallowed-types/methods，见
+      # docs/benchmarks/clippy-layering-REPORT.md）；sim-test-support 为非权威侧不参与。
+      - name: cargo clippy (-D warnings)
+        run: cargo clippy --manifest-path ${{ matrix.crate }}/Cargo.toml --all-targets -- -D warnings
+
+  msrv-check:
+    name: "MSRV: cargo check @ 1.89（2.1 基线）"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89"
+      # Rust 1.89 = Bevy 0.18.1 MSRV（Step 8 实测）；依赖闭包须保持 1.89 可编译
+      # （ordered-float 由 Cargo.lock 钉 ≤5.4.0，见 decision-log 债务 #22）。
+      - name: cargo check (MSRV)
+        run: cargo check --workspace --all-targets
+
+  dep-graph:
+    name: "依赖方向检查（2.2 分层 / 债务 #15）"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 约束清单 docs/architecture/crate-authority-list.md（规则 1-5）
+      - name: dep_graph_check
+        run: python3 .github/scripts/dep_graph_check.py
+
+  r2-deterministic:
+    name: "R2: 确定性场景门禁（占位）"
+    if: false # 启用条件：模拟核心 + GlobalDigest（ADR-NEW-19）+ R2 场景 fixture 就绪
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: placeholder
+        run: echo "R2: 固定场景（10,000 Agent x 1,000 Tick）+ 读档等价 + 摘要比对，见 EC-11"
+
+
+===== FILE: .github/scripts/dep_graph_check.py =====
+
+# -*- coding: utf-8 -*-
+"""依赖方向检查（Stage 1 T1，债务 #15 约束执行）。
+规则见 docs/architecture/crate-authority-list.md：
+ 1. sim-core 仅可依赖基础设施 crate（sim-codec、sim-error），不得依赖其他 crate；
+ 2. 权威 crate 不依赖非权威 crate；
+ 3. 任何 crate 不依赖 sim-view；
+ 4. crates/ 不依赖 spikes/；
+ 5. sim-test-support 只出现在 dev-dependencies。
+exit 0 = 全部通过。
+"""
+import sys, os, tomllib
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+AUTHORITATIVE = {'sim-core', 'sim-agent', 'sim-network', 'sim-pathfinding',
+                 'sim-traffic', 'sim-economy', 'sim-error', 'sim-codec',
+                 'sim-digest', 'sim-rng', 'simscalar', 'sim-save'}
+NON_AUTHORITATIVE = {'sim-view', 'sim-test-support', 'dep-verify'}
+SPIKES = {'simscalar-spike', 'rng-spike', 'network-tx-spike', 'save-restore-spike'}
+
+errors = []
+
+def members():
+    with open(os.path.join(ROOT, 'Cargo.toml'), 'rb') as f:
+        ws = tomllib.load(f)['workspace']
+    for rel in ws['members']:
+        manifest = os.path.join(ROOT, rel, 'Cargo.toml')
+        with open(manifest, 'rb') as f:
+            data = tomllib.load(f)
+        yield data['package']['name'], data
+
+for name, data in members():
+    deps = set(data.get('dependencies', {}).keys())
+    dev_deps = set(data.get('dev-dependencies', {}).keys())
+
+    if name == 'sim-core' and deps - {'sim-codec', 'sim-error'}:
+        errors.append(f'规则1：sim-core 仅可依赖 sim-codec/sim-error，实际 {sorted(deps)}')
+    if name in AUTHORITATIVE:
+        # 运行时依赖禁止指向非权威；sim-test-support 仅允许出现在 dev-dependencies（规则 5）
+        bad = deps & NON_AUTHORITATIVE
+        if bad:
+            errors.append(f'规则2：权威 {name} 运行时依赖非权威 {sorted(bad)}')
+    if name != 'sim-view' and 'sim-view' in deps | dev_deps:
+        errors.append(f'规则3：{name} 不得依赖 sim-view')
+    if not name.endswith('-spike') and (deps | dev_deps) & SPIKES:
+        errors.append(f'规则4：{name} 不得依赖 spikes（{sorted((deps | dev_deps) & SPIKES)}）')
+    if 'sim-test-support' in deps:
+        errors.append(f'规则5：{name} 的 sim-test-support 必须仅在 dev-dependencies')
+
+if errors:
+    print('依赖方向检查 FAILED：')
+    for e in errors:
+        print(' -', e)
+    sys.exit(1)
+print('依赖方向检查 PASS（规则 1-5）')

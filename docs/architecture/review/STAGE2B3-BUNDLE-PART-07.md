@@ -1,0 +1,111 @@
+# STAGE2B3-BUNDLE PART 07（本卷文件：crates/sim-world/src/lib.rs）
+<!-- commit 0bd384ab7874d9180273c7e0c87106b6e7d723e3；与 ZIP 同源；粘贴时请整卷一条消息发送 -->
+
+
+===== FILE: crates/sim-world/src/lib.rs =====
+
+//! 多世界上下文：WorldId 与 SimulationContext 最小预留（主文档 EC-10）。
+//! 权威 crate（2.9 确定性边界内）。
+//!
+//! EC-10：预留 SimulationContext 与 WorldId，不要求实现第二套 ECS；用途=并行测试、
+//! 规划预览、对比模拟、多城市、服务器端多会话。本 crate 只提供身份与上下文原语；
+//! 世界间状态隔离由各权威状态类型以 world_id 分区（随模拟引擎集成）。
+//! 依赖方向约束见 docs/architecture/crate-authority-list.md。
+
+/// 所属架构层（依赖方向检查与文档用）。
+pub const LAYER: &str = "多世界上下文";
+/// 是否权威 crate（2.9 确定性边界内）。
+pub const AUTHORITATIVE: bool = true;
+
+/// 供调用方与测试以函数调用读取权威标记。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+/// 世界标识（EC-10）。u64 newtype；跨世界摘要天然不同（含于摘要信封）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WorldId(pub u64);
+
+/// WorldId 分配器（单调；restore 拒绝回退——与 AgentId/请求 ID 高水位同口径，ADR-NEW-20）。
+#[derive(Clone, Debug, Default)]
+pub struct WorldIdAllocator {
+    high_water: u64,
+}
+
+impl WorldIdAllocator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn allocate(&mut self) -> WorldId {
+        self.high_water += 1;
+        WorldId(self.high_water)
+    }
+
+    pub fn high_water(&self) -> u64 {
+        self.high_water
+    }
+
+    /// 读档恢复高水位；回退拒绝（防止 WorldId 复用→摘要域串世界）。
+    pub fn restore_high_water(&mut self, high_water: u64) -> Result<(), &'static str> {
+        if high_water < self.high_water {
+            return Err("WorldId 高水位回退会导致世界标识复用");
+        }
+        self.high_water = high_water;
+        Ok(())
+    }
+}
+
+/// 模拟上下文（EC-10 最小预留）：世界身份+全局种子。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimulationContext {
+    pub world_id: WorldId,
+    pub seed: u64,
+}
+
+impl SimulationContext {
+    pub fn new(world_id: WorldId, seed: u64) -> Self {
+        Self { world_id, seed }
+    }
+
+    /// 上下文摘要（世界身份进摘要域；canonical+BLAKE3，ADR-NEW-19）。
+    pub fn digest(&self) -> sim_digest::Digest256 {
+        let mut w = sim_codec::CanonicalWriter::new("sim-world", "SimulationContext");
+        w.u64(self.world_id.0);
+        w.u64(self.seed);
+        sim_digest::digest("sim-world", "SimulationContext", w.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(authoritative());
+        assert!(!LAYER.is_empty());
+    }
+
+    #[test]
+    fn world_ids_are_unique_and_high_water_recovers() {
+        let mut alloc = WorldIdAllocator::new();
+        let a = alloc.allocate();
+        let b = alloc.allocate();
+        assert_ne!(a, b);
+        assert_eq!(alloc.high_water(), 2);
+        assert!(alloc.restore_high_water(5).is_ok());
+        assert_eq!(alloc.allocate(), WorldId(6));
+        assert_eq!(alloc.restore_high_water(1).unwrap_err(), "WorldId 高水位回退会导致世界标识复用");
+    }
+
+    #[test]
+    fn context_digest_separates_worlds() {
+        // 同种子不同世界 → 摘要不同；同世界同种子 → 相等（回放等价基础）
+        let c1 = SimulationContext::new(WorldId(1), 42);
+        let c2 = SimulationContext::new(WorldId(2), 42);
+        let c1b = SimulationContext::new(WorldId(1), 42);
+        assert_ne!(c1.digest(), c2.digest());
+        assert_eq!(c1.digest(), c1b.digest());
+    }
+}

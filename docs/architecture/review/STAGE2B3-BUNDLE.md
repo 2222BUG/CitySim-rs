@@ -1,5 +1,5 @@
-# CitySim-rs STAGE2B3 AUDIT BUNDLE（单文本包，与 ZIP 逐字节同源）
-<!-- commit 1db87d20a832504dd06264d6af54789d1a71806a -->
+# CitySim-rs STAGE2B3 AUDIT BUNDLE v2（单文本包，与 ZIP 逐字节同源）
+<!-- commit 0bd384ab7874d9180273c7e0c87106b6e7d723e3 -->
 
 
 ===== FILE: docs/architecture/review/AI-REVIEW-BRIEF-STAGE2B3.md =====
@@ -4730,6 +4730,512 @@ pub mod fixtures;
 pub mod property;
 
 
+===== FILE: crates/sim-test-support/src/chaos.rs =====
+
+//! 确定性注入（EC-11 R3 线程数无关性测试的注入钩子预留）。
+//!
+//! 口径（eng-audit 裁定）："注入延迟"必须确定性——用忙等次数替代 sleep，
+//! 乱序以任务 ID + chaos_seed 派生的键驱动，禁止墙钟/线程 sleep，
+//! 否则测试自身违反 2.9 确定性边界。
+//!
+//! 用法：调度器/任务执行器在执行任务前调用 [`chaos_spin`]，在收集提交
+//! 结果处用 [`chaos_sort_key`] 对提交顺序做种子化扰动；chaos_seed = 0 时
+//! 无扰动（正常路径）。
+
+/// 确定性忙等次数（替代 sleep 的注入延迟）。
+///
+/// 由 (task_id, chaos_seed) 派生；同输入必同输出（可复现）。
+/// 返回值为忙等迭代次数，调用方在非权威测试路径执行。
+pub fn chaos_spin(task_id: u64, chaos_seed: u64) -> u64 {
+    if chaos_seed == 0 {
+        return 0;
+    }
+    let mut x = task_id ^ chaos_seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    // splitmix64 finalizer：打散低位相关性
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    x % 1_024
+}
+
+/// 确定性乱序键：按 (chaos_sort_key(task_id, seed), task_id) 排序即得
+/// 种子化扰动的稳定顺序（同 seed 同顺序，跨线程可复现）。
+pub fn chaos_sort_key(task_id: u64, chaos_seed: u64) -> u64 {
+    if chaos_seed == 0 {
+        return task_id; // 正常路径：按稳定键原序
+    }
+    chaos_spin(task_id, chaos_seed)
+        .wrapping_mul(0x0001_0000_0001_F11D)
+        .wrapping_add(task_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chaos_is_deterministic_and_seed_zero_is_noop() {
+        assert_eq!(chaos_spin(42, 7), chaos_spin(42, 7), "same input, same delay");
+        assert_eq!(chaos_spin(42, 0), 0, "seed 0 must disable injection");
+        assert_eq!(chaos_sort_key(42, 0), 42);
+    }
+
+    #[test]
+    fn chaos_keys_produce_distinct_order() {
+        let mut ids: Vec<u64> = (0..64).collect();
+        let mut keyed: Vec<(u64, u64)> = ids.iter().map(|&i| (chaos_sort_key(i, 123), i)).collect();
+        keyed.sort_unstable();
+        let shuffled: Vec<u64> = keyed.into_iter().map(|(_, i)| i).collect();
+        assert_ne!(ids, shuffled, "chaos seed should perturb order");
+        // 稳定性：再排一次同结果
+        let mut again: Vec<(u64, u64)> = ids.iter().map(|&i| (chaos_sort_key(i, 123), i)).collect();
+        again.sort_unstable();
+        let shuffled2: Vec<u64> = again.into_iter().map(|(_, i)| i).collect();
+        assert_eq!(shuffled, shuffled2);
+        ids.clear();
+    }
+}
+
+
+===== FILE: crates/sim-test-support/src/fixtures.rs =====
+
+//! 测试数据和场景（EC-07 fixtures）。
+//!
+//! 全部确定性：无墙钟、无随机，场景即参数。网格单位与主文档一致
+//! （1 mm 整数网格，见 ADR-NEW-23；坐标范围见 2.10 参数基线）。
+
+/// 场景参数。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fixture {
+    pub name: &'static str,
+    pub seed: u64,
+    pub agent_count: u64,
+    pub tick_count: u64,
+    pub grid_nodes_x: u64,
+    pub grid_nodes_y: u64,
+    pub spacing_mm: u64,
+}
+
+impl Fixture {
+    /// 参考场景（2.10 已定案）：100,000 Agent × 1,000 Tick，200×200 网格。
+    pub fn reference() -> Fixture {
+        Fixture {
+            name: "reference-100k",
+            seed: 0xC517_5EED,
+            agent_count: 100_000,
+            tick_count: 1_000,
+            grid_nodes_x: 200,
+            grid_nodes_y: 200,
+            spacing_mm: 1_000,
+        }
+    }
+
+    /// R2 门禁场景（2.10 已定案）：10,000 Agent × 1,000 Tick，200×200 网格。
+    pub fn r2_gate() -> Fixture {
+        Fixture {
+            name: "r2-gate-10k",
+            seed: 0x2026_1118,
+            agent_count: 10_000,
+            tick_count: 1_000,
+            grid_nodes_x: 200,
+            grid_nodes_y: 200,
+            spacing_mm: 1_000,
+        }
+    }
+
+    /// 冒烟场景（PR 过渡期缩小场景）：1,000 Agent × 200 Tick。
+    pub fn smoke() -> Fixture {
+        Fixture {
+            name: "smoke-1k",
+            seed: 0x0005_A17E,
+            agent_count: 1_000,
+            tick_count: 200,
+            grid_nodes_x: 32,
+            grid_nodes_y: 32,
+            spacing_mm: 1_000,
+        }
+    }
+}
+
+/// 确定性网格路网边表：(from, to, cost_mm)。行优先遍历，输出即稳定序
+/// （2.9 条 4：不得依赖容器迭代顺序，边表应按稳定键排序）。
+///
+/// 边集合：每个节点向右、向下各连一条（边界除外），cost = spacing_mm。
+pub fn grid_edges(f: &Fixture) -> Vec<(u64, u64, u64)> {
+    let mut edges = Vec::new();
+    let nx = f.grid_nodes_x;
+    let ny = f.grid_nodes_y;
+    for y in 0..ny {
+        for x in 0..nx {
+            let id = y * nx + x;
+            if x + 1 < nx {
+                edges.push((id, id + 1, f.spacing_mm)); // 向右
+            }
+            if y + 1 < ny {
+                edges.push((id, id + nx, f.spacing_mm)); // 向下
+            }
+        }
+    }
+    edges
+}
+
+/// 节点坐标（1 mm 网格）：(x_mm, y_mm)。
+pub fn node_coord(f: &Fixture, node: u64) -> (u64, u64) {
+    (node % f.grid_nodes_x * f.spacing_mm, node / f.grid_nodes_x * f.spacing_mm)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_edges_count_and_stability() {
+        let f = Fixture::smoke();
+        let e1 = grid_edges(&f);
+        let e2 = grid_edges(&f);
+        // 32×32 网格：水平 32*31 + 垂直 31*32 = 1984
+        assert_eq!(e1.len(), 1984);
+        assert_eq!(e1, e2, "edge order must be deterministic");
+        // 稳定序：按 (from, to) 严格递增
+        for w in e1.windows(2) {
+            assert!(w[0].0 < w[1].0 || (w[0].0 == w[1].0 && w[0].1 < w[1].1));
+        }
+    }
+
+    #[test]
+    fn node_coord_matches_spacing() {
+        let f = Fixture::smoke();
+        assert_eq!(node_coord(&f, 0), (0, 0));
+        assert_eq!(node_coord(&f, 33), (1_000, 1_000));
+    }
+}
+
+
+===== FILE: crates/sim-test-support/src/deterministic.rs =====
+
+//! 确定性黄金测试 + 读档等价测试模板（EC-07 deterministic）。
+//!
+//! 模板来源：docs/benchmarks/SaveRestore-Validation-REPORT.md（Step 5 已实证
+//! 强/弱两种形式）。任何实现 [`SimHarness`] 的模拟核心都可直接套用。
+//!
+//! 确定性测试口径（EC-07）：固定输入和种子，重复运行并比较摘要；
+//! 覆盖线程数无关性（R3 每日构建）与读档等价性（R2 门禁，强形式）。
+
+/// 模拟器测试接口。
+pub trait SimHarness {
+    /// 运行到指定 tick，返回该 tick 的状态摘要。
+    fn run_to(&mut self, tick: u64) -> u64;
+    /// 存档（仅 tick 边界语义由实现保证，EC-03）。
+    fn save(&self) -> Vec<u8>;
+    /// 读档。
+    fn load(&mut self, blob: &[u8]);
+}
+
+/// 强读档等价（R2 强形式，EC-11）：
+/// - run_a：直接跑到 M，取摘要 d_a；
+/// - run_b：跑到 N（N < M）并存档；
+/// - run_c：新实例载入同一存档，跑到 M，取摘要 d_c；
+/// - 断言由调用方完成：d_a == d_c。
+///
+/// 依赖在途任务"保存并恢复"语义（ADR-NEW-16 定案）；若政策改为
+/// "丢弃并重新入队"，必须改用 [`weak_form_digests`] 并另行 ADR 修订。
+pub fn strong_readback_digests<H: SimHarness>(
+    make: impl Fn() -> H,
+    n: u64,
+    m: u64,
+) -> (u64, u64) {
+    assert!(n < m, "save point N must precede target tick M");
+    let mut a = make();
+    let d_a = a.run_to(m);
+    let mut b = make();
+    b.run_to(n);
+    let blob = b.save();
+    let mut c = make();
+    c.load(&blob);
+    let d_c = c.run_to(m);
+    (d_a, d_c)
+}
+
+/// 弱形式等价（政策改"丢弃并重新入队"时的降级口径）：
+/// 两次独立的 save/load 运行之间摘要一致。
+pub fn weak_form_digests<H: SimHarness>(make: impl Fn() -> H, n: u64, m: u64) -> (u64, u64) {
+    assert!(n < m, "save point N must precede target tick M");
+    let run = |fresh: bool| -> u64 {
+        let mut b = make();
+        b.run_to(n);
+        let blob = b.save();
+        let mut c = make();
+        c.load(&blob);
+        let _ = fresh;
+        c.run_to(m)
+    };
+    (run(true), run(false))
+}
+
+/// 黄金值断言辅助：固定输入重复运行两次，摘要必须一致。
+pub fn repeat_run_digests<H: SimHarness>(make: impl Fn() -> H, m: u64) -> (u64, u64) {
+    let mut a = make();
+    let d1 = a.run_to(m);
+    let mut b = make();
+    let d2 = b.run_to(m);
+    (d1, d2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 玩具计数器模拟器：演示模板自检（非真实模拟核心）。
+    struct CounterSim {
+        tick: u64,
+        acc: u64,
+    }
+
+    const MULT: u64 = 6_364_136_223_846_793_005;
+    const INC: u64 = 1_442_695_040_888_963_407;
+
+    impl CounterSim {
+        fn new() -> CounterSim {
+            CounterSim { tick: 0, acc: 0x5EED }
+        }
+    }
+
+    impl SimHarness for CounterSim {
+        fn run_to(&mut self, tick: u64) -> u64 {
+            while self.tick < tick {
+                self.tick += 1;
+                self.acc = self.acc.wrapping_mul(MULT).wrapping_add(INC ^ self.tick);
+            }
+            self.acc ^ self.tick
+        }
+        fn save(&self) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.extend_from_slice(&self.tick.to_le_bytes());
+            v.extend_from_slice(&self.acc.to_le_bytes());
+            v
+        }
+        fn load(&mut self, blob: &[u8]) {
+            assert_eq!(blob.len(), 16, "toy save must be 16 bytes");
+            self.tick = u64::from_le_bytes(blob[0..8].try_into().unwrap());
+            self.acc = u64::from_le_bytes(blob[8..16].try_into().unwrap());
+        }
+    }
+
+    #[test]
+    fn strong_readback_template_works_on_mock() {
+        let (d_a, d_c) = strong_readback_digests(CounterSim::new, 40, 100);
+        assert_eq!(d_a, d_c, "strong readback equivalence must hold on mock");
+    }
+
+    #[test]
+    fn weak_form_template_works_on_mock() {
+        let (d1, d2) = weak_form_digests(CounterSim::new, 40, 100);
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn repeat_run_is_deterministic_on_mock() {
+        let (d1, d2) = repeat_run_digests(CounterSim::new, 77);
+        assert_eq!(d1, d2);
+    }
+}
+
+
+===== FILE: crates/sim-test-support/src/property.rs =====
+
+//! 属性测试不变量助手（EC-07 property）。
+//!
+//! 对应 EC-07 不变量清单：
+//! 1. 路网边引用合法；
+//! 2. Agent 身份不重复；
+//! 3. 事务发布前后状态有效；
+//! 4. 数值运算遵守预期边界；
+//! 5. 过期寻路结果的重算次数不超过上限。
+//!
+//! 本模块只提供不变量判定函数；随机输入由调用方以固定种子生成
+//! （确定性属性测试，2.9 口径）。
+
+/// 不变量 1：路网边引用合法（端点 < node_count，cost 为正）。
+pub fn edges_reference_valid_nodes(edges: &[(u64, u64, u64)], node_count: u64) -> bool {
+    edges.iter().all(|&(a, b, cost)| a < node_count && b < node_count && a != b && cost > 0)
+}
+
+/// 不变量 2：身份不重复（AgentId / 请求 ID / 事务 ID 通用）。
+pub fn ids_unique(ids: &[u64]) -> bool {
+    let mut sorted = ids.to_vec();
+    sorted.sort_unstable();
+    sorted.windows(2).all(|w| w[0] != w[1])
+}
+
+/// 不变量 3：事务发布前后状态有效——版本严格单调递增且只前进一格
+/// （原子发布，ADR-NEW-17；失败不得改版本，Spike C 已实证）。
+pub fn tx_publish_valid(before_version: u64, after_version: u64, publish_ok: bool) -> bool {
+    if publish_ok {
+        after_version == before_version + 1
+    } else {
+        after_version == before_version
+    }
+}
+
+/// 不变量 4：数值运算遵守预期边界（SimScalar / 中间值位宽，ADR-NEW-21）。
+pub fn within_bounds(value: i128, min: i128, max: i128) -> bool {
+    value >= min && value <= max
+}
+
+/// 不变量 5：过期寻路结果的重算次数不超过上限（ADR-NEW-17 / ADR-NEW-23：
+/// recompute_limit，超限进入兜底而非继续重算）。
+pub fn recompute_within_limit(count: u64, limit: u64) -> bool {
+    count <= limit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invariants_hold_on_valid_inputs() {
+        assert!(edges_reference_valid_nodes(&[(0, 1, 100), (1, 2, 100)], 3));
+        assert!(!edges_reference_valid_nodes(&[(0, 1, 100), (1, 9, 100)], 3), "dangling node");
+        assert!(!edges_reference_valid_nodes(&[(0, 1, 0)], 2), "zero cost");
+
+        assert!(ids_unique(&[3, 1, 2]));
+        assert!(!ids_unique(&[1, 1]));
+
+        assert!(tx_publish_valid(7, 8, true));
+        assert!(!tx_publish_valid(7, 9, true), "version must advance by one");
+        assert!(tx_publish_valid(7, 7, false), "failed tx must not change version");
+
+        assert!(within_bounds(0, i64::MIN as i128, i64::MAX as i128));
+        assert!(!within_bounds(i64::MAX as i128 + 1, i64::MIN as i128, i64::MAX as i128));
+
+        assert!(recompute_within_limit(3, 3));
+        assert!(!recompute_within_limit(4, 3));
+    }
+}
+
+
+===== FILE: crates/sim-test-support/src/benchmark.rs =====
+
+//! 基准测试模板（EC-07 benchmark）：固定场景、硬件、构建模式和 Tick 数，
+//! 记录运行耗时与内存占用。
+//!
+//! 口径：本模块属测试/遥测侧，允许墙钟（2.9 只约束权威模拟系统）；
+//! 正式基准记录统一存 docs/benchmarks/（证据纪律）。
+
+/// 一次基准运行的记录。
+#[derive(Clone, Debug, PartialEq)]
+pub struct BenchRecord {
+    pub scenario: String,
+    pub hardware_note: String,
+    pub build_mode: String,
+    pub ticks: u64,
+    pub wall_ms: f64,
+    pub memory_note: String,
+}
+
+impl BenchRecord {
+    /// 汇报行（供 docs/benchmarks/ 归档）。
+    pub fn to_report_line(&self) -> String {
+        format!(
+            "{} | {} | {} | {} ticks | {:.3} ms | {}",
+            self.scenario, self.hardware_note, self.build_mode, self.ticks, self.wall_ms,
+            self.memory_note
+        )
+    }
+}
+
+/// 构造一条基准记录。
+pub fn record(
+    scenario: &str,
+    hardware_note: &str,
+    build_mode: &str,
+    ticks: u64,
+    wall_ms: f64,
+    memory_note: &str,
+) -> BenchRecord {
+    BenchRecord {
+        scenario: scenario.to_string(),
+        hardware_note: hardware_note.to_string(),
+        build_mode: build_mode.to_string(),
+        ticks,
+        wall_ms,
+        memory_note: memory_note.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_line_contains_required_fields() {
+        let r = record("r2-gate-10k", "win-x86_64 rustc1.100", "release", 1_000, 1234.5, "n/a");
+        let line = r.to_report_line();
+        assert!(line.contains("r2-gate-10k"));
+        assert!(line.contains("release"));
+        assert!(line.contains("1000 ticks"));
+        assert!(line.contains("1234.500 ms"));
+    }
+}
+
+
+===== FILE: crates/sim-test-support/src/assertions.rs =====
+
+//! 模拟状态断言（EC-07 assertions）。
+
+/// 断言：摘要一致（确定性回归 / 读档等价通用）。
+#[track_caller]
+pub fn assert_digest_eq(context: &str, d1: u64, d2: u64) {
+    assert_eq!(d1, d2, "digest mismatch in {}: {:#018x} != {:#018x}", context, d1, d2);
+}
+
+/// 断言：序列按稳定键升序（2.9 条 4——并行提交/查询结果按稳定键排序）。
+#[track_caller]
+pub fn assert_sorted_by_key(keys: &[u64]) {
+    for w in keys.windows(2) {
+        assert!(w[0] <= w[1], "keys not in stable order: {} > {}", w[0], w[1]);
+    }
+}
+
+/// 断言：读档后高水位不得回退（ID 不复用，ADR-NEW-20 / EC-03 身份类）。
+#[track_caller]
+pub fn assert_high_water_non_decreasing(context: &str, before: u64, after: u64) {
+    assert!(after >= before, "high water regressed in {}: {} -> {}", context, before, after);
+}
+
+/// 断言：tick 边界语义（存档/预算调整/命令生效仅发生在 tick 边界）。
+#[track_caller]
+pub fn assert_tick_boundary(context: &str, current_tick: u64, boundary_tick: u64) {
+    assert_eq!(
+        current_tick, boundary_tick,
+        "{} must occur at a tick boundary: current {} != boundary {}",
+        context, current_tick, boundary_tick
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assertions_pass_on_valid_state() {
+        assert_digest_eq("mock", 1, 1);
+        assert_sorted_by_key(&[1, 1, 2, 3]);
+        assert_high_water_non_decreasing("alloc", 5, 5);
+        assert_high_water_non_decreasing("alloc", 5, 6);
+        assert_tick_boundary("save", 40, 40);
+    }
+
+    #[test]
+    #[should_panic(expected = "digest mismatch")]
+    fn digest_mismatch_panics() {
+        assert_digest_eq("mock", 1, 2);
+    }
+}
+
+
 ===== FILE: crates/sim-error/src/lib.rs =====
 
 //! CitySim-rs sim-error（Stage 1 T8）：错误分层骨架（EC-08）。
@@ -5301,6 +5807,283 @@ mod tests {
 }
 
 
+===== FILE: crates/sim-core/src/lib.rs =====
+
+//! 模拟核心：管理模拟状态和 Tick 推进（主文档 2.2 架构分层）。
+//! 权威crate。
+//!
+//! Stage 1 T1 骨架（2026-11-19 建立）——任务清单见 docs/architecture/Stage-1-Task-List.md。
+//! 依赖方向约束见 docs/architecture/crate-authority-list.md 与 .github/scripts/dep_graph_check.py。
+//!
+//! Stage 1 T3（2026-11-19）：权威时间与玩家命令日志——
+//! u64 tick（2.9 条 7：不读系统时钟）、命令带生效 tick 并记录供回放（2.9 条 8）。
+//! 命令 ID 分配器为 u64 单调高水位口径（ADR-NEW-20：高水位入存档防 ID 复用）。
+//! Stage 2C C3a（2026-11-19）：预算注册表与确定性降级（budget 模块，ADR-NEW-14 C2 细化）。
+
+pub mod budget;
+
+/// 所属架构层（依赖方向检查与文档用）。
+pub const LAYER: &str = "模拟核心";
+/// 是否权威 crate（2.9 确定性边界内；权威 crate 置严格 clippy.toml）。
+pub const AUTHORITATIVE: bool = true;
+
+/// 供调用方与测试以函数调用读取权威标记（clippy 允许的运行时读取点）。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+/// 权威时间：u64 tick（2.9 条 7）。存档点、命令生效点、预算调整、LOD 切换
+/// 共同以 tick 边界为界（2.8）。本类型不含任何时钟读取路径。
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SimClock {
+    tick: u64,
+}
+
+impl SimClock {
+    pub const fn new() -> Self {
+        Self { tick: 0 }
+    }
+
+    pub const fn tick(self) -> u64 {
+        self.tick
+    }
+
+    /// tick 边界推进（单 tick 递增；唯一的时间前进入口）。
+    pub fn advance(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+    }
+}
+
+/// 命令 ID 分配器：u64 单调递增，高水位入存档（ADR-NEW-20）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandIdAllocator {
+    high_water: u64,
+}
+
+impl CommandIdAllocator {
+    pub const fn new() -> Self {
+        Self { high_water: 0 }
+    }
+
+    /// 分配下一个命令 ID（单调递增，不复用）。
+    pub fn alloc(&mut self) -> u64 {
+        self.high_water += 1;
+        self.high_water
+    }
+
+    /// 已分配的最大 ID（=存档最小集中的高水位字段）。
+    pub const fn high_water(self) -> u64 {
+        self.high_water
+    }
+
+    /// 读档恢复高水位（必须 ≥ 当前值，防 ID 复用——EC-03/ADR-NEW-20）。
+    pub fn restore(&mut self, high_water: u64) {
+        assert!(
+            high_water >= self.high_water,
+            "高水位回退会导致命令 ID 复用"
+        );
+        self.high_water = high_water;
+    }
+}
+
+/// 玩家命令载荷（权威侧整数坐标：1mm 网格，2.10 定案口径；无浮点）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CommandPayload {
+    /// 移动到坐标（网格单位 1mm）。
+    MoveTo { x: i64, y: i64 },
+    /// 前往路网节点。
+    SetDestination { node: u64 },
+    /// 取消在途寻路请求。
+    CancelRequest { request_id: u64 },
+}
+
+/// 玩家命令：带生效 tick 并完整记录供回放（2.9 条 8）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PlayerCommand {
+    pub command_id: u64,
+    /// 生效 tick（不得早于提交时的当前 tick）。
+    pub effective_tick: u64,
+    pub agent_id: u64,
+    pub payload: CommandPayload,
+}
+
+/// 提交命令的校验错误。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SubmitError {
+    /// 生效 tick 早于当前 tick：命令不得在"过去"生效。
+    EffectiveTickInPast,
+}
+
+/// 命令日志：确定性存储 + 回放输入（EC-03 最小集/2.9 条 8）。
+/// 到期查询输出全序 = (effective_tick, command_id)（2.9 条 4：不依赖到达顺序）。
+#[derive(Clone, Debug, Default)]
+pub struct CommandLog {
+    commands: Vec<PlayerCommand>,
+    alloc: CommandIdAllocator,
+}
+
+impl CommandLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 提交命令：分配 ID、校验生效 tick、记录。
+    pub fn submit(
+        &mut self,
+        agent_id: u64,
+        effective_tick: u64,
+        current_tick: u64,
+        payload: CommandPayload,
+    ) -> Result<u64, SubmitError> {
+        if effective_tick < current_tick {
+            return Err(SubmitError::EffectiveTickInPast);
+        }
+        let command_id = self.alloc.alloc();
+        self.commands.push(PlayerCommand {
+            command_id,
+            effective_tick,
+            agent_id,
+            payload,
+        });
+        Ok(command_id)
+    }
+
+    /// 截至 tick 已生效的命令，按 (effective_tick, command_id) 全序返回
+    /// （确定性：与提交到达顺序无关）。
+    pub fn due_commands(&self, tick: u64) -> Vec<PlayerCommand> {
+        let mut due: Vec<PlayerCommand> = self
+            .commands
+            .iter()
+            .copied()
+            .filter(|c| c.effective_tick <= tick)
+            .collect();
+        due.sort_by_key(|c| (c.effective_tick, c.command_id));
+        due
+    }
+
+    pub fn len(&self) -> usize {
+        self.commands.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
+    }
+
+    /// 命令 ID 高水位（入存档字段）。
+    pub const fn id_high_water(&self) -> u64 {
+        self.alloc.high_water
+    }
+
+    /// 读档/回放重建入口：从已记录命令与 ID 高水位重建日志（EC-03 保存并恢复）。
+    pub fn from_parts(commands: Vec<PlayerCommand>, id_high_water: u64) -> Self {
+        Self {
+            commands,
+            alloc: CommandIdAllocator {
+                high_water: id_high_water,
+            },
+        }
+    }
+
+    /// 读档恢复高水位（防 ID 复用）。
+    pub fn restore_id_high_water(&mut self, high_water: u64) {
+        self.alloc.restore(high_water);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(authoritative());
+        assert!(!LAYER.is_empty());
+    }
+
+    /// 权威时间：单 tick 推进，确定性。
+    #[test]
+    fn clock_advances_by_one_at_tick_boundary() {
+        let mut clock = SimClock::new();
+        assert_eq!(clock.tick(), 0);
+        clock.advance();
+        clock.advance();
+        assert_eq!(clock.tick(), 2);
+    }
+
+    /// 命令带生效 tick（2.9 条 8）：字段完整。
+    #[test]
+    fn command_carries_effective_tick_and_id() {
+        let mut log = CommandLog::new();
+        let id = log
+            .submit(7, 10, 5, CommandPayload::MoveTo { x: 1000, y: -2000 })
+            .unwrap();
+        let due = log.due_commands(10);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].command_id, id);
+        assert_eq!(due[0].effective_tick, 10);
+        assert_eq!(due[0].agent_id, 7);
+    }
+
+    /// 生效 tick 不得在过去。
+    #[test]
+    fn past_effective_tick_is_rejected() {
+        let mut log = CommandLog::new();
+        assert_eq!(
+            log.submit(1, 3, 4, CommandPayload::SetDestination { node: 9 }),
+            Err(SubmitError::EffectiveTickInPast)
+        );
+        assert!(log.is_empty());
+    }
+
+    /// 到期全序=(effective_tick, command_id)：同一命令集（含相同 ID）无论物理
+    /// 存储顺序如何，输出一致（2.9 条 4：不依赖到达/迭代顺序）。
+    #[test]
+    fn due_order_is_stable_regardless_of_storage_order() {
+        let mk = |id, tick, agent| PlayerCommand {
+            command_id: id,
+            effective_tick: tick,
+            agent_id: agent,
+            payload: CommandPayload::MoveTo { x: 0, y: 0 },
+        };
+        let cmds = vec![mk(1, 5, 1), mk(2, 6, 2), mk(3, 5, 3)];
+        let mut reversed = cmds.clone();
+        reversed.reverse();
+        let a = CommandLog::from_parts(cmds, 3);
+        let b = CommandLog::from_parts(reversed, 3);
+        let da = a.due_commands(6);
+        let db = b.due_commands(6);
+        assert_eq!(da, db);
+        let keys: Vec<(u64, u64)> = da.iter().map(|c| (c.effective_tick, c.command_id)).collect();
+        assert_eq!(keys, vec![(5, 1), (5, 3), (6, 2)]);
+    }
+
+    /// 命令 ID 单调不复用；高水位恢复防复用（ADR-NEW-20）。
+    #[test]
+    fn id_high_water_prevents_reuse() {
+        let mut log = CommandLog::new();
+        let id1 = log.submit(1, 1, 0, CommandPayload::MoveTo { x: 0, y: 0 }).unwrap();
+        let id2 = log.submit(1, 1, 0, CommandPayload::MoveTo { x: 0, y: 0 }).unwrap();
+        assert_eq!((id1, id2), (1, 2));
+        assert_eq!(log.id_high_water(), 2);
+        // 模拟读档：新日志恢复高水位后，新分配从 3 起。
+        let mut restored = CommandLog::new();
+        restored.restore_id_high_water(log.id_high_water());
+        let id3 = restored.submit(1, 1, 0, CommandPayload::MoveTo { x: 0, y: 0 }).unwrap();
+        assert_eq!(id3, 3);
+    }
+
+    /// 高水位回退=ID 复用风险，必须拒绝（panic 路径）。
+    #[test]
+    #[should_panic(expected = "高水位回退会导致命令 ID 复用")]
+    fn high_water_must_not_go_backwards() {
+        let mut alloc = CommandIdAllocator::new();
+        alloc.alloc();
+        alloc.alloc();
+        alloc.restore(1);
+    }
+}
+
+
 ===== FILE: crates/sim-core/src/budget.rs =====
 
 //! 预算注册表与确定性降级（ADR-NEW-14 C2 细化，Stage 2C C3a）。
@@ -5798,6 +6581,41 @@ mod tests {
 }
 
 
+===== FILE: docs/benchmarks/globaldigest-golden-vectors.txt =====
+
+# GlobalDigest 黄金向量（digest_version = 1）
+
+- 日期：2026-11-19（Stage 1 T6）
+- 协议：ADR-NEW-19（BLAKE3-256 + sim-codec canonical 信封 + digest_version u16）
+- 生成：`cargo test -p sim-digest print_goldens -- --nocapture`，固化于
+  `crates/sim-digest/src/lib.rs::tests::golden_vectors`
+- 用途：跨构建/跨平台位级一致性基准（R2 oracle 基础；aarch64 复验挂 R4，
+  条件核销清单未决项）
+
+## 向量
+
+| # | 输入 | 摘要（hex） |
+| --- | --- | --- |
+| 1 | digest("sim-agent", "Agents", b"golden-1") | 64ec5fc5c6062bc58af4df5050df8920e8f79201bfbe15d61ac1ef2287d15b2f |
+| 2 | digest("sim-digest", "GlobalDigest", b"") | 0f677f5692aaf571f6d440c1f931722ff5de1d99965baaec48472389f5091bb5 |
+| 3 | GlobalDigest{("sim-agent","Agents",b"a1"), ("sim-network","Network",b"n1")}.finalize() | 11d8b5e30bed8a3b9f1bb17c0d5ebb71f513b0d73a794d0c6e2f970d39f1d1d5 |
+
+## 信封定义（向量 1/2 口径）
+
+```
+blake3( CSIMCOD1 | module(len-prefixed) | kind(len-prefixed)
+        | digest_version u16 LE | payload(u64 长度前缀 + 原始字节) )
+```
+
+总摘要（向量 3 口径）：条目按 (module, kind) BTreeMap 键序，记录顺序无关。
+
+## 纳入范围（NEW-19 条件③）
+
+全部权威状态由调用方 `record(module, kind, payload)` 喂入，模块清单随
+T7（存档接入）/T9（R2 场景）补全，须含预算队列与让步状态（budget_yield_count、
+stale_recompute_count、等待 tick、优先级）。
+
+
 ===== FILE: .github/workflows/ci.yml =====
 
 name: CI
@@ -6258,6 +7076,102 @@ f32/f64、Instant::now/SystemTime::now——详见 clippy-layering-REPORT.md。
 3. 任何 crate 不得依赖 sim-view（工具层不可被模拟依赖；2.2"工具层不能成为模拟状态的唯一管理者"）。
 4. crates/ 与权威层不得依赖 spikes/（验证件不得成为正式依赖）。
 5. sim-test-support 仅作为 dev-dependency 被引用（测试基建不入运行时）。
+
+
+===== FILE: docs/benchmarks/Stage-2B-Exit-CHECKLIST.md =====
+
+# Stage 2B 退出条件核对（2026-11-19）
+
+范围：主文档"### Stage 2B：并行分片与确定性验证"（L980-1003）四条退出条件 + 第二轮评审（ADR-NEW-24）硬门禁。
+环境：Windows x86_64、rustc 1.100.0（R4 跨平台未验）。
+
+## 退出条件（主文档四条）
+
+| # | 退出条件 | 判定 | 证据 |
+| --- | --- | --- | --- |
+| 1 | 执行顺序确定性得到验证 | ✅ | sim-parallel `commit_order_is_stable_key_order`、`submission_order_independence`；场景级 `submission_order_independence_scenario`（crates/sim-parallel/tests/thread_independence.rs） |
+| 2 | 线程数无关性测试通过（1、2、8 线程摘要一致） | ✅ | `thread_count_independence_1_2_8`；`concurrent_queue_thread_and_chaos_independence`；压测 1/2/8+混沌 digest 全一致（docs/benchmarks/Stage2B-concurrent-stress.txt） |
+| 3 | 任务提交顺序有明确契约 | ✅ | 契约=稳定键 (phase_id, task_key) 全序 + 主线程串行提交（sim-parallel `run_parallel`；与 ADR-NEW-15 P1-02 全序键口径一致） |
+| 4 | 并行与单线程结果能够按照设计规则对比 | ✅ | `parallel_matches_serial_reference`（同纯函数同排序，仅执行并发度不同）+ `chaos_injection_does_not_change_result` |
+
+## 第二轮评审硬门禁（ADR-NEW-24 条件）
+
+| # | 门禁 | 判定 | 证据 |
+| --- | --- | --- | --- |
+| 1 | 让步路径强读档等价专项 | ✅ | sim-save `yield_state_strong_readback`（降级期让步计数>0 的存档点强读档等价成立） |
+| 2 | 并发队列压测 | ✅ | crates/sim-pathfinding/tests/concurrent_queue_stress.rs（QUOTA=200 强制让步路径）+ examples/concurrent_stress.rs（200×200/500 请求/churn）；会计恒等式=终态事件数==请求数+重算数 |
+| 3 | R3 线程无关（1、2、8 线程 + 注入延迟） | ✅ | chaos_spin 确定性忙等注入（禁 sleep/墙钟，符合 2.9 条 7）；1/2/8 + chaos42 四组摘要一致 |
+| — | R4 跨平台摘要一致性 | ⛔ 移交 | 不属 Stage 2B 范围；保留为 R4 发布前门禁（债务台账既有条目） |
+
+## 压测关键数据（release）
+
+- 场景：200×200 双向网格（40k 节点 / 79.6k 边）、500 请求、churn 每 8 tick 删 4 边（单向删口径）、Q=65536/tick
+- 结果：ticks=22、completed=502（=500 请求 + 2 笔过期重算再终态）、unreachable=0、yield_events=857、stale_recomputes=2、stale sweeps=9643、pending_left=0
+- 墙钟：1 线程 341.5ms / 2 线程 283.5ms / 8 线程 236.3ms（并行扫描段加速 1.45×；串行权威段占比大，符合 Amdahl 预期）
+- 摘要：`ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c`，1/2/8 线程与混沌注入四组完全一致
+
+## 限定与遗留
+
+- 单平台（Win x86_64）单工具链（1.100.0）实测；R4 跨平台保留为发布门禁。
+- 规则网格幸存者偏差（GEMINI 风险条目）：迷宫/非均匀代价/reopen 触发场景随债务 #30 细则补遗测试补齐。
+- 债务 #27（机制 B→A 切换阈值）数值仍待定，本压测 dup_rate 与耗时数据为其定案输入之一。
+- Q=65536 **已定案**（2026-11-19 决策3 投票 1a，9:1；2026-11-20 X5 单一来源 `sim-pathfinding::TICK_QUOTA` 钉死，本行原"占位待回填"口径作废）。
+
+## 结论
+
+Stage 2B 退出条件 **4/4 达成**；硬门禁 Stage 2B 范围内 **3/3 达成**（R4 移交）。**Stage 2B 关闭**（2026-11-19）。
+
+
+===== FILE: docs/benchmarks/Stage-3-Exit-CHECKLIST.md =====
+
+# Stage 3 退出条件核对（2026-11-22，S4）
+
+依据：docs/architecture/Stage-3-Task-List.md（退出条件，2026-11-22 重建清单）。
+核对口径：证据指向提交/测试/文档，未达成项如实标注。
+
+## 退出条件逐条核对
+
+| # | 条件 | 结果 | 证据 |
+| --- | --- | --- | --- |
+| 1 | T0 债务 #28 重试队列实装（沿用原 tx_id、上限 3、超限受阻+诊断） | ✅ | crates/sim-network TxRetryQueue + 3 测试（16/16）；NET-0001 登记；提交 55a439f |
+| 2 | T1 Agent 状态机：状态集+转移表+受阻语义+确定性 | ✅ | docs/architecture/rfc-agent-state-machine.md + sim-agent AgentLifecycle（8/8）；AGT-0001；提交 67ad3c2 |
+| 3 | T2 回放输入/模拟配置 schema 定义且可回放验证 | ✅ | docs/architecture/replay-schema.md + crates/sim-replay（5/5，录制 digest==回放 digest）；RPL-0001；提交 5e193bb |
+| 4 | T3 经济基础：独立整数上限、确定性派生流、摘要纳入、暂停语义 | ✅ | crates/sim-economy（4/4：两跑 digest 相等、10^12 溢出/下溢防护、EC-04 L2/L3 暂停）；提交 b8df1af |
+| 5 | T4 LOD 草案：命名/切换条件/更新频率+确定性信号+记录入档入回放 | ✅ | docs/architecture/rfc-lod-draft.md（阈值数值=待定，属草案范围外声明）；提交 bc69b2e |
+| 6 | T5 多世界最小预留（EC-10 WorldId/上下文） | ✅ | crates/sim-world（3/3：世界摘要隔离、高水位拒绝回退）；提交 876ced7 |
+
+**结论：6/6 达成，Stage 3 清单任务全部完成。**
+
+## 限定与移交
+
+1. T1/T2/T3/T5 为**基础原语**，与模拟主循环的集成（run_tick 统一驱动）属后续阶段；
+   AgentRegistry 旧粗粒度与 AgentLifecycle 并存待集成期合并（rfc-agent-state-machine.md §5）。
+2. T4 阈值数值（各层距离/频率）待定，随实测与 2.10 体系定案；
+   LOD 与降级联动策略未定（草案 §5）。
+3. 遗留债务移交后续：#20 预算滚动状态生命周期、#23 联动组 G4、#27 阈值定案
+   （审计保持候选）、R4 跨平台（发布门禁）、E 议题三件（独立立项）。
+4. 全部新 crate 已进 CI 双矩阵与依赖方向检查（规则 1-5 PASS）。
+
+
+===== FILE: docs/benchmarks/Stage2B-concurrent-stress.txt =====
+
+   Compiling sim-parallel v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-parallel)
+   Compiling sim-rng v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-rng)
+   Compiling sim-test-support v0.0.1 (D:\AIWORK\CITYSIM\crates\sim-test-support)
+   Compiling sim-pathfinding v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-pathfinding)
+    Finished `release` profile [optimized] target(s) in 1.07s
+     Running `target\release\examples\concurrent_stress.exe`
+== Stage 2B 并发队列压测（200x200, 500 请求, churn 每 8 tick 删 4 边, Q=65536/tick）==
+口径：budget_yield_count=累计让步事件；stale_recomputes=路网轴重算（两轴分离）；recompute 分母=stale 查询总数
+threads=1 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=341.5ms
+  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
+threads=2 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=283.5ms
+  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
+threads=8 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=236.3ms
+  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
+threads=4 chaos=42: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=243.4ms
+  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
+线程无关（1/2/8）+混沌无关（4）摘要一致：PASS
 
 
 ===== FILE: docs/architecture/decisions/decision-log.md =====
@@ -6875,111 +7789,90 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 - Spike A 原型：spikes/simscalar-spike/（SimScalar Q32.32 定点原型 + 7 项黄金测试；rustc 1.100.0 实测 7/7，文档基线 1.89 待收敛——见二轮 P7）。
 
 
-===== FILE: docs/benchmarks/Stage-2B-Exit-CHECKLIST.md =====
+===== FILE: README.md =====
 
-# Stage 2B 退出条件核对（2026-11-19）
+# CitySim-rs
 
-范围：主文档"### Stage 2B：并行分片与确定性验证"（L980-1003）四条退出条件 + 第二轮评审（ADR-NEW-24）硬门禁。
-环境：Windows x86_64、rustc 1.100.0（R4 跨平台未验）。
+**基于 Rust + Bevy 的开源城市模拟引擎——确定性优先，文档驱动开发。**
 
-## 退出条件（主文档四条）
+[![CI](https://github.com/2222BUG/CitySim-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/2222BUG/CitySim-rs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#许可证)
+[![Rust](https://img.shields.io/badge/Rust-1.100.0-orange.svg)](rust-toolchain.toml)
+![Tests](https://img.shields.io/badge/tests-124%20passed-brightgreen.svg)
 
-| # | 退出条件 | 判定 | 证据 |
-| --- | --- | --- | --- |
-| 1 | 执行顺序确定性得到验证 | ✅ | sim-parallel `commit_order_is_stable_key_order`、`submission_order_independence`；场景级 `submission_order_independence_scenario`（crates/sim-parallel/tests/thread_independence.rs） |
-| 2 | 线程数无关性测试通过（1、2、8 线程摘要一致） | ✅ | `thread_count_independence_1_2_8`；`concurrent_queue_thread_and_chaos_independence`；压测 1/2/8+混沌 digest 全一致（docs/benchmarks/Stage2B-concurrent-stress.txt） |
-| 3 | 任务提交顺序有明确契约 | ✅ | 契约=稳定键 (phase_id, task_key) 全序 + 主线程串行提交（sim-parallel `run_parallel`；与 ADR-NEW-15 P1-02 全序键口径一致） |
-| 4 | 并行与单线程结果能够按照设计规则对比 | ✅ | `parallel_matches_serial_reference`（同纯函数同排序，仅执行并发度不同）+ `chaos_injection_does_not_change_result` |
+> [English](README.en.md) | 简体中文
 
-## 第二轮评审硬门禁（ADR-NEW-24 条件）
+**为什么与众不同**：同种子两次运行摘要一致、存档-读档后继续模拟与直接模拟**逐位相等**（强读档等价）、权威状态零浮点零时钟——这些不是愿景，是**挂着测试的承诺**。整个设计过程由 ADR + 决策债务台账 + 证据纪律驱动，历经六家独立 AI 评审共识裁决，全部可追溯。
 
-| # | 门禁 | 判定 | 证据 |
-| --- | --- | --- | --- |
-| 1 | 让步路径强读档等价专项 | ✅ | sim-save `yield_state_strong_readback`（降级期让步计数>0 的存档点强读档等价成立） |
-| 2 | 并发队列压测 | ✅ | crates/sim-pathfinding/tests/concurrent_queue_stress.rs（QUOTA=200 强制让步路径）+ examples/concurrent_stress.rs（200×200/500 请求/churn）；会计恒等式=终态事件数==请求数+重算数 |
-| 3 | R3 线程无关（1、2、8 线程 + 注入延迟） | ✅ | chaos_spin 确定性忙等注入（禁 sleep/墙钟，符合 2.9 条 7）；1/2/8 + chaos42 四组摘要一致 |
-| — | R4 跨平台摘要一致性 | ⛔ 移交 | 不属 Stage 2B 范围；保留为 R4 发布前门禁（债务台账既有条目） |
+## 项目状态
 
-## 压测关键数据（release）
+| 层 | 状态 |
+| --- | --- |
+| 设计 | [技术方案 V1.9.3](docs/architecture/CitySim-rs-Technical-Spec-V1.9.3.md)（唯一现行主文档）；10 份 ADR（NEW-14~23）已正式裁决（Accepted，附条件）；[26 项决策债务](docs/architecture/decisions/decision-log.md)台账管理 |
+| Stage 0 | ✅ 关闭（2026-11-19，[退出核对 6/6](docs/benchmarks/Stage-0-Exit-CHECKLIST.md)）：参数基线定案、5 个 Spike 验证、依赖五件套、CI 骨架 |
+| Stage 1 | ✅ 完成（2026-11-19，[退出核对 6/6](docs/benchmarks/Stage-1-Exit-CHECKLIST.md)）：分层 crate 骨架、SimScalar、RNG 协议、GlobalDigest、存档/读档、错误分层 |
+| Stage 2 | ✅ 完成（2A 路网/A*、2B 并行确定性、2C 交通与降级；[2A](docs/benchmarks/Stage-2A-Exit-CHECKLIST.md)/[2B](docs/benchmarks/Stage-2B-Exit-CHECKLIST.md)/[2C](docs/benchmarks/Stage-2C-Exit-CHECKLIST.md) 退出核对） |
+| 游戏本体 | 尚无——当前是引擎地基与可验证文档；欢迎一起设计 |
 
-- 场景：200×200 双向网格（40k 节点 / 79.6k 边）、500 请求、churn 每 8 tick 删 4 边（单向删口径）、Q=65536/tick
-- 结果：ticks=22、completed=502（=500 请求 + 2 笔过期重算再终态）、unreachable=0、yield_events=857、stale_recomputes=2、stale sweeps=9643、pending_left=0
-- 墙钟：1 线程 341.5ms / 2 线程 283.5ms / 8 线程 236.3ms（并行扫描段加速 1.45×；串行权威段占比大，符合 Amdahl 预期）
-- 摘要：`ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c`，1/2/8 线程与混沌注入四组完全一致
+## 快速开始
 
-## 限定与遗留
+```bash
+git clone https://github.com/2222BUG/CitySim-rs.git
+cd CitySim-rs
+cargo test --workspace        # 124 测试全绿（Rust 1.100.0，rust-toolchain.toml 已锁定）
+cargo test -p sim-save        # 强读档等价：存档读档跑至 M == 直接跑至 M
+```
 
-- 单平台（Win x86_64）单工具链（1.100.0）实测；R4 跨平台保留为发布门禁。
-- 规则网格幸存者偏差（GEMINI 风险条目）：迷宫/非均匀代价/reopen 触发场景随债务 #30 细则补遗测试补齐。
-- 债务 #27（机制 B→A 切换阈值）数值仍待定，本压测 dup_rate 与耗时数据为其定案输入之一。
-- Q=65536 **已定案**（2026-11-19 决策3 投票 1a，9:1；2026-11-20 X5 单一来源 `sim-pathfinding::TICK_QUOTA` 钉死，本行原"占位待回填"口径作废）。
+无任何外部依赖要求；`cargo +1.89 check`（Bevy 0.18.1 MSRV 参考线）亦须通过（CI 门禁）。
 
-## 结论
+## 你可以参与什么
 
-Stage 2B 退出条件 **4/4 达成**；硬门禁 Stage 2B 范围内 **3/3 达成**（R4 移交）。**Stage 2B 关闭**（2026-11-19）。
+- 🟢 **[good first issue](https://github.com/2222BUG/CitySim-rs/labels/good%20first%20issue)**——从小任务开始：统计测试、基准、翻译、设计 RFC
+- 💬 **ADR 评审与设计讨论**——[Issues](https://github.com/2222BUG/CitySim-rs/issues) 与 [Discussions](https://github.com/2222BUG/CitySim-rs/discussions)：很多决策**尚未定案**，提出意见即贡献
+- 📐 **架构设计**——26 项决策债务（Agent 状态机、回放 schema、LOD……）都开放认领，见 [decision-log](docs/architecture/decisions/decision-log.md)
+- 详见 [CONTRIBUTING.md](CONTRIBUTING.md)
 
+## 文档导航
 
-===== FILE: docs/benchmarks/Stage-3-Exit-CHECKLIST.md =====
+| 想了解 | 去哪读 |
+| --- | --- |
+| 整体设计 | [技术方案 V1.9.3](docs/architecture/CitySim-rs-Technical-Spec-V1.9.3.md) |
+| 决策如何产生、哪些还悬着 | [decision-log](docs/architecture/decisions/decision-log.md)（裁决记录 + 26 项债务 + 条件核销清单） |
+| 单项架构决策 | [`docs/architecture/adr/`](docs/architecture/adr/)（ADR-NEW-14 ~ 23，含正式裁决节） |
+| 确定性承诺的证据 | [determinism-evidence.md](docs/architecture/determinism-evidence.md)、[benchmarks/](docs/benchmarks/)（黄金向量、实验脚本、退出核对） |
+| 参与评审 | [AI-REVIEW-BRIEF](docs/architecture/review/AI-REVIEW-BRIEF.md)、[REVIEW-INVITE](docs/architecture/review/REVIEW-INVITE.md) |
 
-# Stage 3 退出条件核对（2026-11-22，S4）
+## 仓库结构
 
-依据：docs/architecture/Stage-3-Task-List.md（退出条件，2026-11-22 重建清单）。
-核对口径：证据指向提交/测试/文档，未达成项如实标注。
+```
+crates/                     # 正式 crate（2.2 分层；权威/非权威见 crate-authority-list.md）
+├─ sim-core / sim-agent / sim-network / sim-pathfinding / sim-traffic / sim-economy   # 权威模拟层
+├─ simscalar / sim-rng / sim-codec / sim-digest / sim-error / sim-save               # 权威基础层
+└─ sim-view / sim-test-support / dep-verify                                          # 非权威工具层
+spikes/                     # Spike 验证件（Stage 0 证据，保留可复现）
+docs/
+├─ architecture/            # 主文档、ADR、decision-log、任务清单、评审资料
+└─ benchmarks/              # 可复现实验脚本、黄金向量、基准与退出核对
+```
 
-## 退出条件逐条核对
+依赖方向由 CI 强制（`dep_graph_check`）：模拟核心不依赖 UI、权威层不依赖工具层、验证件不进入正式依赖。
 
-| # | 条件 | 结果 | 证据 |
-| --- | --- | --- | --- |
-| 1 | T0 债务 #28 重试队列实装（沿用原 tx_id、上限 3、超限受阻+诊断） | ✅ | crates/sim-network TxRetryQueue + 3 测试（16/16）；NET-0001 登记；提交 55a439f |
-| 2 | T1 Agent 状态机：状态集+转移表+受阻语义+确定性 | ✅ | docs/architecture/rfc-agent-state-machine.md + sim-agent AgentLifecycle（8/8）；AGT-0001；提交 67ad3c2 |
-| 3 | T2 回放输入/模拟配置 schema 定义且可回放验证 | ✅ | docs/architecture/replay-schema.md + crates/sim-replay（5/5，录制 digest==回放 digest）；RPL-0001；提交 5e193bb |
-| 4 | T3 经济基础：独立整数上限、确定性派生流、摘要纳入、暂停语义 | ✅ | crates/sim-economy（4/4：两跑 digest 相等、10^12 溢出/下溢防护、EC-04 L2/L3 暂停）；提交 b8df1af |
-| 5 | T4 LOD 草案：命名/切换条件/更新频率+确定性信号+记录入档入回放 | ✅ | docs/architecture/rfc-lod-draft.md（阈值数值=待定，属草案范围外声明）；提交 bc69b2e |
-| 6 | T5 多世界最小预留（EC-10 WorldId/上下文） | ✅ | crates/sim-world（3/3：世界摘要隔离、高水位拒绝回退）；提交 876ced7 |
+## 许可证
 
-**结论：6/6 达成，Stage 3 清单任务全部完成。**
-
-## 限定与移交
-
-1. T1/T2/T3/T5 为**基础原语**，与模拟主循环的集成（run_tick 统一驱动）属后续阶段；
-   AgentRegistry 旧粗粒度与 AgentLifecycle 并存待集成期合并（rfc-agent-state-machine.md §5）。
-2. T4 阈值数值（各层距离/频率）待定，随实测与 2.10 体系定案；
-   LOD 与降级联动策略未定（草案 §5）。
-3. 遗留债务移交后续：#20 预算滚动状态生命周期、#23 联动组 G4、#27 阈值定案
-   （审计保持候选）、R4 跨平台（发布门禁）、E 议题三件（独立立项）。
-4. 全部新 crate 已进 CI 双矩阵与依赖方向检查（规则 1-5 PASS）。
-
-
-===== FILE: docs/benchmarks/Stage2B-concurrent-stress.txt =====
-
-   Compiling sim-parallel v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-parallel)
-   Compiling sim-rng v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-rng)
-   Compiling sim-test-support v0.0.1 (D:\AIWORK\CITYSIM\crates\sim-test-support)
-   Compiling sim-pathfinding v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-pathfinding)
-    Finished `release` profile [optimized] target(s) in 1.07s
-     Running `target\release\examples\concurrent_stress.exe`
-== Stage 2B 并发队列压测（200x200, 500 请求, churn 每 8 tick 删 4 边, Q=65536/tick）==
-口径：budget_yield_count=累计让步事件；stale_recomputes=路网轴重算（两轴分离）；recompute 分母=stale 查询总数
-threads=1 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=341.5ms
-  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
-threads=2 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=283.5ms
-  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
-threads=8 chaos=0: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=236.3ms
-  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
-threads=4 chaos=42: digest=ca23d3951a5ced0a ticks=22 completed=502 unreachable=0 yields=857 recomputes=2 tx_ok=2 tx_rej=0 sweeps=9643 pending_left=0 wall=243.4ms
-  full digest: ca23d3951a5ced0a3658fc78bdb29c983e3c1f06777b62e6004d8d34254fc28c
-线程无关（1/2/8）+混沌无关（4）摘要一致：PASS
+MIT OR Apache-2.0 双许可，任选其一。详见 [LICENSE-MIT](LICENSE-MIT) 与 [LICENSE-APACHE](LICENSE-APACHE)。
 
 
 ===== FILE: docs/architecture/review/_manifest_stage2b3.txt =====
 
-MANIFEST — CitySim-rs STAGE2B3 AUDIT package
-基准 commit: 1db87d20a832504dd06264d6af54789d1a71806a（2026-11-22）
+MANIFEST — CitySim-rs STAGE2B3 AUDIT package (v2)
+基准 commit: 0bd384ab7874d9180273c7e0c87106b6e7d723e3（2026-11-22）
+v2 修订：补 v1 遗漏 9 文件（globaldigest-golden-vectors.txt、sim-test-support 六模块
+文件、sim-core/src/lib.rs）；v1 的 sim-traffic/lib.rs 与 mfd_prime.rs"截断"系传输
+（聊天粘贴超长被切尾）非包内缺失——v2 分卷包按文件边界切卷防截断。
 口径说明：
-1. 审计范围=从未外部审计的工程面（Stage 2B 并行确定性、Stage 3 T0-T5、②′ 修测原语）；
-   设计面 ADR-14~26 已多轮评审不在本轮。
-2. sim-pathfinding/src/lib.rs 内含 TickBudget/quota_yield_count 段（A 项）。
-3. sim-traffic/src/lib.rs 内 criterion_aligned_loss/point_resolution_ok/steady_window
-   为 #31 整改后修测原语（C 项）；mfd_prime.rs 为 ②′ 确认轮 fixture。
-4. 本包全部文本与仓库该 commit 逐字节同源；CRLF 差异不计。
-5. 测试基线：workspace 49 组 test result: ok、0 失败（2026-11-22 S4 终验）。
+1. 审计范围=从未外部审计的工程面（Stage 2B、Stage 3 T0-T5、②′ 修测原语）。
+2. sim-pathfinding/src/lib.rs 内含 TickBudget/quota_yield_count（A 项）。
+3. criterion_aligned_loss/point_resolution_ok/steady_window 在 sim-traffic/src/lib.rs
+   尾部（C 项）；mfd_prime.rs 为 ②′ fixture。
+4. 文本与仓库该 commit 逐字节同源；CRLF 差异不计。
+5. 测试基线：workspace 49 组 test result: ok、0 失败（S4 终验）。
