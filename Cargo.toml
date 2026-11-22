@@ -26,6 +26,7 @@ members = [
     "crates/sim-save",
     "crates/sim-parallel",
     "crates/sim-replay",
+    "crates/sim-world",
 ]
 
 [workspace.package]

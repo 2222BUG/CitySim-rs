@@ -25,6 +25,7 @@
 | crates/sim-save | 存档/读档（EC-03） | ✅ | 严格 | 保存并恢复语义 |
 | crates/sim-parallel | 确定性并行执行（2.9 条 6） | ✅ | 严格 | 快照只读+稳定键排序+串行提交 |
 | crates/sim-replay | 回放输入/模拟配置（2.9 条 8、债务 #10） | ✅ | 严格 | canonical 编码+Schema 版本化 |
+| crates/sim-world | 多世界上下文（EC-10 WorldId/SimulationContext 预留） | ✅ | 严格 | 世界身份入摘要域 |
 | crates/sim-test-support | 测试基建（EC-07） | ❌ | 无（不受限） | fixtures/harness/property/benchmark |
 | crates/dep-verify | 依赖验证件（Step 8） | ❌ | 无（不受限） | 五件套验证 |
 | spikes/*（4 个） | Spike 验证件 | ✅（验证口径） | 严格 | 保留至正式 crate 迁移完成；不得被 crates/ 依赖 |

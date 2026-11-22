@@ -28,6 +28,7 @@ jobs:
           - crates/sim-network
           - crates/sim-pathfinding
           - crates/sim-replay
+          - crates/sim-world
           - crates/sim-traffic
           - crates/sim-economy
           - crates/sim-view
@@ -62,6 +63,7 @@ jobs:
           - crates/sim-network
           - crates/sim-pathfinding
           - crates/sim-replay
+          - crates/sim-world
           - crates/sim-traffic
           - crates/sim-economy
           - crates/simscalar
