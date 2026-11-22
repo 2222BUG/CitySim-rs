@@ -26,7 +26,8 @@
 
 use sim_traffic::{
     criterion_aligned_loss, evaluate_pnorm_fit, evaluate_rational_fit,
-    fit_pnorm_concave_detailed, fit_rational_saturation_detailed, point_resolution_ok,
+    fit_pnorm_concave_detailed, fit_rational_saturation_detailed, limited_cap_ok,
+    point_resolution_ok,
     q_pnorm_permille, q_rational_permille, steady_window, FitErrorReport, GridTraffic, MfdSample,
     RationalSaturationFit, ZoneBands, FREE_FLOW_CRIT_PERMILLE,
     SATURATED_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE,
@@ -132,19 +133,26 @@ fn rel_sse(q: impl Fn(u64) -> u64, samples: &[MfdSample]) -> u128 {
     sse
 }
 
-/// 单一判定核（含转折硬判据+空区 FAIL；binding 即 FAIL=决策4 条件⑧）。
+/// 结构化判定核（审计3 C-1/C-2：判定由数据字段驱动，展示文本只是投影）。
+/// PASS 条件：非 binding（决策4 条件⑧）+ 三区逐点判定（含分辨率双分支复核，
+/// 经 FitErrorReport.free_pass/trans_pass/sat_pass）+ 分辨率受限占比 ≤1/18
+/// （豆包 R2 上限）。空区 pass 字段已为 false。
+fn family_pass(binding: bool, r: &FitErrorReport) -> bool {
+    !binding
+        && r.free_pass
+        && r.trans_pass
+        && r.sat_pass
+        && limited_cap_ok(
+            r.free_n_limited + r.trans_n_limited + r.sat_n_limited,
+            r.points_evaluated,
+        )
+}
+
 fn family_verdict(binding: bool, r: &FitErrorReport) -> &'static str {
-    if binding
-        || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
-        || r.transition_max_err_permille > TRANSITION_CRIT_PERMILLE
-        || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE
-        || r.free_n == 0
-        || r.trans_n == 0
-        || r.sat_n == 0
-    {
-        "FAIL"
-    } else {
+    if family_pass(binding, r) {
         "PASS"
+    } else {
+        "FAIL"
     }
 }
 
@@ -179,7 +187,7 @@ fn res_tag(k: u64, q_obs: u64, q_model: u64) -> String {
     }
 }
 
-fn report_topology(w: u32, h: u32, out: &mut Vec<String>) {
+fn report_topology(w: u32, h: u32, out: &mut Vec<String>) -> bool {
     let mut emit = |l: String| out.push(l);
     emit(format!("=== topology {w}x{h} (②′ seeds {SEED_BASE:#x}+0..{N_SEEDS}) ==="));
     let (mut fit_samples, fit_flags) = sample_ladder(w, h, &FIT_LADDER, 0);
@@ -302,14 +310,26 @@ fn report_topology(w: u32, h: u32, out: &mut Vec<String>) {
         p_binding,
         family_verdict(p_binding, &rp)
     ));
+    // 结构化裁决（审计3 C-2：布尔值是源，文本是投影——自动终止不得由文本驱动）。
+    let outcome_pass = match selected {
+        Some("pnorm-p2") => family_pass(p_binding, &rp),
+        Some(_) => family_pass(binding, &r),
+        None => false,
+    };
+    emit(format!(
+        "  resolution-limited points (holdout): free={} trans={} sat={} cap_ok={}",
+        r.free_n_limited,
+        r.trans_n_limited,
+        r.sat_n_limited,
+        limited_cap_ok(
+            r.free_n_limited + r.trans_n_limited + r.sat_n_limited,
+            r.points_evaluated
+        )
+    ));
     emit(format!(
         "  Prime outcome (selected family {}) = {}",
         selected.unwrap_or("NONE"),
-        match selected {
-            Some("pnorm-p2") => family_verdict(p_binding, &rp),
-            Some(_) => family_verdict(binding, &r),
-            None => "FAIL (no feasible family: all binding)",
-        }
+        if outcome_pass { "PASS" } else { "FAIL" }
     ));
 
     // ===== back-half 敏感性（独立种子段 +16..24 / +24..32）=====
@@ -423,6 +443,7 @@ fn report_topology(w: u32, h: u32, out: &mut Vec<String>) {
         bind_ob,
         free_ind = r_b.free_flow_max_err_permille
     ));
+    outcome_pass
 }
 
 fn main() {
@@ -439,13 +460,10 @@ fn main() {
         "criteria: free<={}‰ transition<={}‰ saturated<={}‰ (single source = sim-traffic consts); families frozen = {{rational, pnorm-p2}}",
         FREE_FLOW_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE, SATURATED_CRIT_PERMILLE
     ));
-    report_topology(40, 40, &mut out);
-    report_topology(32, 32, &mut out);
-    report_topology(64, 64, &mut out);
-    let failed = out.iter().any(|l| l.contains("outcome (selected family") && l.ends_with("FAIL"))
-        || out
-            .iter()
-            .any(|l| l.contains("outcome (selected family") && l.contains("= FAIL"));
+    // 结构化终止判定（审计3 C-2：由返回的布尔值驱动，不嗅探文本）。
+    let failed = !(report_topology(40, 40, &mut out)
+        & report_topology(32, 32, &mut out)
+        & report_topology(64, 64, &mut out));
     out.push(format!(
         "②′ AUTO-DISPOSITION: {}",
         if failed {

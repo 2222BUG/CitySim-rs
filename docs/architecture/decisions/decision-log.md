@@ -66,7 +66,7 @@
 | 28 | 寻路请求取消/冲突重试的 tx_id 语义（沿用原 ID 按全序重排 vs 新 ID 显式链接；重试上限衔接受阻状态） | ADR-NEW-24 取消/冲突、ADR-NEW-17、ADR-NEW-20 | 一般 | **待实装**（2026-11-20 审计更正：语义已定案（沿用原 ID 全序重排+上限 3 转受阻），但 crates 无 retry 实现，原"定案实装"表述不实；实装含 retry_count/上限/受阻终态/测试） |
 | 29 | 全局每 tick 寻路配额（B_k≤min(b·2^k,L,剩余配额)、多请求共享配额上界）——L=|V| 使单请求最坏展开=|V|，与 ADR-NEW-14 条 3 每 tick 工作量上限的关系待对齐 | ADR-NEW-24 决策 3、ADR-NEW-14、2.7 | 重要 | Stage 2B 前（2026-11-19 第二轮评审新增，Claude/QWEN） |
 | 30 | A* 细则补遗：h 一致性不变量（h(u)≤cost(u,v)+h(v)，动态代价更新后仍须成立）、L=|V|×reopen 上界重证（或一致性免 reopen）、open 集 g 相等先发现保留明文、CSR u32 容量边界（>u32::MAX 确定性失败）、node_id 整表重建前后稳定 | ADR-NEW-24 决策 2 | 重要 | Stage 2B 前（2026-11-19 第二轮评审新增，CHATGPT/Claude/QWEN） |
-| 31 | MFD 模型形式扩展（凹形自由流分支） | ADR-NEW-25 决策 1、3a | 重要 | **2026-11-22 核销（终局：转 C，②′ 确认轮自动落①）**：②′ 修测一轮（判据归一化损失目标+低密加密+分辨率下限+稳态硬门、种子段 0x4444 三段独立、三拓扑、族集冻结、判据 100/250/250 不变）实测 **40×40 PASS / 32×32 FAIL（free 111‰ > 100‰）/ 64×64 PASS**（证据 docs/benchmarks/mfd-3a-prime.txt，SETD_COMMIT 自标）——按预注册终止条款"任一拓扑任一区 FAIL→自动落①无须再投票"**执行：MFD 永久仅统计展示，不作降级/背压触发依据**。归因发现（如实记录）：估计目标敏感性仍主导（同数据 rel-SSE 控制目标 32×32 free=71‰ PASS vs 判据归一化目标 111‰ FAIL）+低密档稳态率不足（free 区稳态 4-6/18），测量基座仍是结构性弱点；但终止条款焊死，不得取数后改口径救场。E 议题三件独立立项解耦（不挂 #31） |
+| 31 | MFD 模型形式扩展（凹形自由流分支） | ADR-NEW-25 决策 1、3a | 重要 | **2026-11-22 核销（终局：转 C，②′ 确认轮自动落①）**：②′ 修测一轮（判据归一化损失目标+低密加密+分辨率下限+稳态硬门、种子段 0x4444 三段独立、三拓扑、族集冻结、判据 100/250/250 不变）实测 **40×40 PASS / 32×32 FAIL（free 111‰ > 100‰）/ 64×64 PASS**（证据 docs/benchmarks/mfd-3a-prime.txt，SETD_COMMIT 自标）——按预注册终止条款"任一拓扑任一区 FAIL→自动落①无须再投票"**执行：MFD 永久仅统计展示，不作降级/背压触发依据**。归因发现（如实记录）：估计目标敏感性仍主导（同数据 rel-SSE 控制目标 32×32 free=71‰ PASS vs 判据归一化目标 111‰ FAIL）+低密档稳态率不足（free 区稳态 4-6/18），测量基座仍是结构性弱点；但终止条款焊死，不得取数后改口径救场。E 议题三件独立立项解耦（不挂 #31）。**2026-11-22 审计3 P0 修复后复核（C-1 分辨率双分支判定/C-2 结构化裁决/C-3 目标判据同构）：仍 FAIL×3（40×40 free 142‰、32×32 free 111‰、64×64 数值全过但受限点 4/18 超预注册上限 1/18）→复裁定=维持核销转 C：审计质疑的口径缺陷修复后结论不变，终局确认** |
 
 ## 2026-11-18 首轮评审裁决记录（13 项建议）
 
@@ -554,6 +554,17 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 | S2 | T0：债务 #28 tx_id 重试实装（沿用原 ID 重排入队、上限 3 转受阻+诊断 NET-0001，sim-network TxRetryQueue） | 已完成（2026-11-22） | feat(stage3): T0——tx_id 重试队列 |
 | S3 | T1-T5 按执行顺序实施：**T1 Agent 状态机已完成**（RFC + AgentLifecycle：Spawning/Active/Blocked{reason,since_tick,attempts}/Despawned、受阻上限自动退役、AGT-0001 诊断、转移序列 digest）；**T2 回放 schema 已完成**（crates/sim-replay：ReplayInput 四类事件、canonical 编码+版本化 RPL-0001、Recorder/Replayer、回放等价测试）；**T3 经济系统基础已完成**（crates/sim-economy：EconomyLedger 确定性循环、经济上限 10^12 溢出/下溢防护、event_u64 "economy" 派生流、EC-04 L2/L3 暂停语义、canonical+BLAKE3 摘要入 ADR-19 清单）；**T4 LOD 草案已完成**（rfc-lod-draft.md：L0/L1/L2 命名与更新频率、确定性切换信号白名单、LodSwitch 入档入回放、简化模型合法性约束、验证计划；阈值数值留待定）；**T5 多世界已完成**（crates/sim-world：WorldId newtype+高水位分配器（restore 拒绝回退）、SimulationContext、世界身份入摘要域 digest；3 测试） | **已完成** | feat(stage3): T1~T5 |
 | S4 | 退出核对（6 条）+终验 | 已完成（2026-11-22：6/6，docs/benchmarks/Stage-3-Exit-CHECKLIST.md） | docs(stage3): S4——退出核对 6/6、Stage 3 清单收官 |
+
+## 审计3 整改执行日志（P0–P2，2026-11-22）
+
+| 步骤 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| P0-1/C-1+C-3 | 分辨率复核接入判定（point_passes 双分支、limited_cap ≤1/18 豆包 R2 上限）、criterion_aligned_loss 逐点同构重写 | 已完成 | fix(stage2b3): P0-1 |
+| P0-2/C-2 | 结构化裁决（family_pass 布尔=源、文本=投影；main 删 contains/ends_with 嗅探，自动落①由 report_topology 返回值驱动） | 已完成 | 并入 P0-1 提交 |
+| P0-3 | TxRetryQueue 重试计数生命周期（counts 独立于 pending、跨 due 保留、同 id 异内容 panic、诊断幂等去重）+运营路径测试 | 已完成 | fix(stage2b3): P0-3（7015fed） |
+| P0 复核 | 修复后重跑 ②′（同 fixture）：40×40 free 142‰ FAIL / 32×32 free 111‰ FAIL / 64×64 数值全过但受限点 4/18 超上限 FAIL → **复裁定=维持核销转 C（终局确认）** | 已完成 | 本批 |
+| P1 | dep 门禁三 crate 补齐+绕过向量 fail-closed、T1 attempts 跨 unblock、F 三项 ✅ 降级+"6/6 原语级"表述、C-4/C-5 披露 | 待开始 | - |
+| P2 | 错误码集中登记/canonical 金标准/键唯一断言+提交序测试/dep-verify 入矩阵/R2 启用评估/MANIFEST 对照 | 待开始 | - |
 
 ## 变更历史
 

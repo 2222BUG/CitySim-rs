@@ -126,17 +126,20 @@ q: impl Fn(u64) -> u64, samples: &[MfdSample]) -> u128 {
 /// 单一来源，**含转折区硬判据**（决策4(b)——决策5 五家行号命中的漏接线缺陷）；
 /// 空区即 FAIL（决策4(d) 样本数下限：防空区真空 PASS；<2 点区在输出行标 n 值披露）。
 fn family_verdict(binding: bool, r: &FitErrorReport) -> &'static str {
-    if binding
-        || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
-        || r.transition_max_err_permille > TRANSITION_CRIT_PERMILLE
-        || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE
-        || r.free_n == 0
-        || r.trans_n == 0
-        || r.sat_n == 0
+    // 结构化判定（审计3 C-1/C-2 同步整改）：三区逐点判定（含分辨率双分支）
+    // + 受限占比 ≤1/18 + 非 binding；文本仅为投影。
+    if !binding
+        && r.free_pass
+        && r.trans_pass
+        && r.sat_pass
+        && sim_traffic::limited_cap_ok(
+            r.free_n_limited + r.trans_n_limited + r.sat_n_limited,
+            r.points_evaluated,
+        )
     {
-        "FAIL"
-    } else {
         "PASS"
+    } else {
+        "FAIL"
     }
 }
 

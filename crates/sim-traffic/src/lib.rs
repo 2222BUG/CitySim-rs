@@ -222,6 +222,16 @@ pub struct FitErrorReport {
     pub free_n: usize,
     pub trans_n: usize,
     pub sat_n: usize,
+    /// 各区分辨率受限点数（审计3 C-1：披露 + 预注册上限 ≤1/18 全样本）。
+    pub free_n_limited: usize,
+    pub trans_n_limited: usize,
+    pub sat_n_limited: usize,
+    /// 各区逐点判定（审计3 C-1：分辨率复核**在判定路径内**——
+    /// 分辨率充足点按相对判据 err≤crit；受限点按绝对判据 |Δq|≤2‰；
+    /// 任一点不过=区不过；空区=false（真空 PASS 禁止））。
+    pub free_pass: bool,
+    pub trans_pass: bool,
+    pub sat_pass: bool,
 }
 
 /// 判据常量（单一来源，ADR-NEW-25 3a 判据与代码断言必须引用同一常量——
@@ -459,20 +469,29 @@ pub fn evaluate_q_fn(
     let mut trans_max = 0u64;
     let mut sat_max = 0u64;
     let (mut free_n, mut trans_n, mut sat_n) = (0usize, 0usize, 0usize);
+    let (mut free_lim, mut trans_lim, mut sat_lim) = (0usize, 0usize, 0usize);
+    let (mut free_pass, mut trans_pass, mut sat_pass) = (true, true, true);
     for s in holdout {
         let qm = q(s.k_permille);
         let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
             / (s.q_permille.max(1) as u128);
         let err = err as u64;
+        // 分区判据（单一来源常量）与逐点判定（审计3 C-1：分辨率复核在判定路径内）。
         if s.k_permille < bands.free_max_k {
             free_max = free_max.max(err);
             free_n += 1;
+            if !point_resolution_ok(s.q_permille, FREE_FLOW_CRIT_PERMILLE) { free_lim += 1; }
+            free_pass &= point_passes(err, s.q_permille, FREE_FLOW_CRIT_PERMILLE);
         } else if s.k_permille < bands.trans_max_k {
             trans_max = trans_max.max(err);
             trans_n += 1;
+            if !point_resolution_ok(s.q_permille, TRANSITION_CRIT_PERMILLE) { trans_lim += 1; }
+            trans_pass &= point_passes(err, s.q_permille, TRANSITION_CRIT_PERMILLE);
         } else {
             sat_max = sat_max.max(err);
             sat_n += 1;
+            if !point_resolution_ok(s.q_permille, SATURATED_CRIT_PERMILLE) { sat_lim += 1; }
+            sat_pass &= point_passes(err, s.q_permille, SATURATED_CRIT_PERMILLE);
         }
     }
     FitErrorReport {
@@ -484,29 +503,50 @@ pub fn evaluate_q_fn(
         free_n,
         trans_n,
         sat_n,
+        free_n_limited: free_lim,
+        trans_n_limited: trans_lim,
+        sat_n_limited: sat_lim,
+        free_pass: free_pass && free_n > 0,
+        trans_pass: trans_pass && trans_n > 0,
+        sat_pass: sat_pass && sat_n > 0,
     }
 }
 
 /// 判据归一化损失（②′ 确认轮预注册拟合目标，2026-11-22 决策6 Z3）：
-/// loss = max over 非空区 (区最大相对误差‰ × 1000 / 区判据‰)。
+/// loss = max over 点 (点归一化误差)，逐点双分支与 [`point_passes`] 同构
+/// （审计3 C-3：旧版只走相对分支，分支级不同构）：
+/// - 分辨率充足点：err‰ × 1000 / 区判据‰；
+/// - 分辨率受限点：|Δq|‰ × 1000 / 2（绝对口径归一化）。
+///
 /// **估计目标与判据同构**——杜绝"估计目标≠判据"第三次（决策4 绝对 SSE、
 /// 决策5 rel-SSE 均与分区判据不同构，反事实复算显示仅换目标即翻转判定）。
-/// 空区跳过；判定阈值=1000（即 100% 判据边界）。
+/// 判定阈值=1000（即 100% 判据边界）。
 pub fn criterion_aligned_loss(
     q: impl Fn(u64) -> u64,
     samples: &[MfdSample],
     bands: &ZoneBands,
 ) -> u64 {
-    let r = evaluate_q_fn(q, samples, bands);
+    assert!(!samples.is_empty(), "no samples");
     let mut loss = 0u64;
-    if r.free_n > 0 {
-        loss = loss.max(r.free_flow_max_err_permille * 1000 / FREE_FLOW_CRIT_PERMILLE);
-    }
-    if r.trans_n > 0 {
-        loss = loss.max(r.transition_max_err_permille * 1000 / TRANSITION_CRIT_PERMILLE);
-    }
-    if r.sat_n > 0 {
-        loss = loss.max(r.saturated_max_err_permille * 1000 / SATURATED_CRIT_PERMILLE);
+    for s in samples {
+        let qm = q(s.k_permille);
+        let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
+            / (s.q_permille.max(1) as u128);
+        let err = err as u64;
+        let (crit, limited) = if s.k_permille < bands.free_max_k {
+            (FREE_FLOW_CRIT_PERMILLE, !point_resolution_ok(s.q_permille, FREE_FLOW_CRIT_PERMILLE))
+        } else if s.k_permille < bands.trans_max_k {
+            (TRANSITION_CRIT_PERMILLE, !point_resolution_ok(s.q_permille, TRANSITION_CRIT_PERMILLE))
+        } else {
+            (SATURATED_CRIT_PERMILLE, !point_resolution_ok(s.q_permille, SATURATED_CRIT_PERMILLE))
+        };
+        let term = if limited {
+            let abs_deltaq = err as u128 * s.q_permille as u128 / 1000;
+            (abs_deltaq * 1000 / 2) as u64
+        } else {
+            err * 1000 / crit
+        };
+        loss = loss.max(term);
     }
     loss
 }
@@ -516,6 +556,25 @@ pub fn criterion_aligned_loss(
 /// 不满足→该点"分辨率受限"，以绝对误差 |Δq|≤2‰ 复核并在证据中披露。
 pub fn point_resolution_ok(q_obs_permille: u64, crit_permille: u64) -> bool {
     crit_permille.saturating_mul(q_obs_permille) >= 2 * 1000
+}
+
+/// 单点判定（审计3 C-1：分辨率复核必须在判定路径内，不得只打印）：
+/// - 分辨率充足（判据×q_obs ≥ 2 个采样单位）→ 相对判据 `err ≤ crit`；
+/// - 分辨率受限 → 绝对判据 |Δq| = err·q_obs/1000 ≤ 2‰（取整噪声带上），
+///   并由评估层计入 `n_limited` 披露（豆包：不得"受限点贡献 0"换 PASS）。
+pub fn point_passes(err_permille: u64, q_obs_permille: u64, crit_permille: u64) -> bool {
+    if point_resolution_ok(q_obs_permille, crit_permille) {
+        err_permille <= crit_permille
+    } else {
+        let abs_deltaq_permille = err_permille as u128 * q_obs_permille as u128 / 1000;
+        abs_deltaq_permille <= 2
+    }
+}
+
+/// 分辨率受限点占比预注册上限（审计3 豆包 R2：≤1/18 全样本，防"贡献 0"换 PASS）。
+/// 超限则判定无效（报告披露但整轮判 FAIL——fixture 须加密低密度点）。
+pub fn limited_cap_ok(n_limited_total: usize, points_evaluated: usize) -> bool {
+    (n_limited_total as u128) * 18 <= points_evaluated as u128
 }
 
 /// 稳态判据（②′ 稳态硬门；文档与实现口径统一=双口径任一）：

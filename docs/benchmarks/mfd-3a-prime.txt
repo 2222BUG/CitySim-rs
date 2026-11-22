@@ -1,43 +1,42 @@
-   Compiling sim-core v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-core)
    Compiling sim-traffic v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-traffic)
     Finished `release` profile [optimized] target(s) in 1.04s
      Running `target\release\examples\mfd_prime.exe`
 ②′ confirmation round (debt #31; pre-registered 7160955; one-shot termination: any FAIL -> disposition ① automatically)
-evidence commit: aa36d427d01bfe629a962dd4ec3cfc0da2e8edb0
+evidence commit: 7015fed027d078244dd0cb9834dd0f491828fafd
 criteria: free<=100‰ transition<=250‰ saturated<=250‰ (single source = sim-traffic consts); families frozen = {rational, pnorm-p2}
 === topology 40x40 (②′ seeds 0xc0ffee44440000+0..8) ===
 steady: fit 4/18 holdout 6/18 (dual criterion steady_window; unsteady ladders: fit [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128] holdout [2, 3, 5, 7, 9, 13, 18, 26, 36, 52, 72, 104])
-fit rational: q_max=286‰ k_half=287‰ slope=996‰ (free est 996‰ binding=false)
-fit pnorm-p2: q_max=251‰ k0=269‰ slope=933‰ (free est 933‰ binding=false)
+fit rational: q_max=306‰ k_half=306‰ slope=1000‰ (free est 1089‰ binding=true)
+fit pnorm-p2: q_max=251‰ k0=275‰ slope=912‰ (free est 912‰ binding=false)
   [fit-set rational] k     3‰ q_obs    3‰ q_model    3‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   [fit-set rational] k     7‰ q_obs    7‰ q_model    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
-  [fit-set rational] k    12‰ q_obs   11‰ q_model   11‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
+  [fit-set rational] k    12‰ q_obs   11‰ q_model   12‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   [fit-set rational] k    16‰ q_obs   16‰ q_model   15‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   [fit-set rational] k    25‰ q_obs   24‰ q_model   23‰ res=ok
   [fit-set rational] k    35‰ q_obs   33‰ q_model   31‰ res=ok
-  [fit-set rational] k    55‰ q_obs   50‰ q_model   46‰ res=ok
-  [fit-set rational] k    77‰ q_obs   67‰ q_model   61‰ res=ok
-  [fit-set rational] k   132‰ q_obs  101‰ q_model   90‰ res=ok
-  [fit-set rational] k   210‰ q_obs  134‰ q_model  121‰ res=ok
-  [fit-set rational] k   503‰ q_obs  184‰ q_model  182‰ res=ok
-  [fit-set rational] k   936‰ q_obs  210‰ q_model  219‰ res=ok
-  [fit-set rational] k  1975‰ q_obs  231‰ q_model  250‰ res=ok
-  [fit-set rational] k  3089‰ q_obs  238‰ q_model  262‰ res=ok
-  [fit-set rational] k  5387‰ q_obs  245‰ q_model  272‰ res=ok
-  [fit-set rational] k  7717‰ q_obs  248‰ q_model  276‰ res=ok
-  [fit-set rational] k 12412‰ q_obs  250‰ q_model  280‰ res=ok
-  [fit-set rational] k 17121‰ q_obs  251‰ q_model  281‰ res=ok
+  [fit-set rational] k    55‰ q_obs   50‰ q_model   47‰ res=ok
+  [fit-set rational] k    77‰ q_obs   67‰ q_model   62‰ res=ok
+  [fit-set rational] k   132‰ q_obs  101‰ q_model   92‰ res=ok
+  [fit-set rational] k   210‰ q_obs  134‰ q_model  125‰ res=ok
+  [fit-set rational] k   503‰ q_obs  184‰ q_model  190‰ res=ok
+  [fit-set rational] k   936‰ q_obs  210‰ q_model  231‰ res=ok
+  [fit-set rational] k  1975‰ q_obs  231‰ q_model  265‰ res=ok
+  [fit-set rational] k  3089‰ q_obs  238‰ q_model  278‰ res=ok
+  [fit-set rational] k  5387‰ q_obs  245‰ q_model  290‰ res=ok
+  [fit-set rational] k  7717‰ q_obs  248‰ q_model  294‰ res=ok
+  [fit-set rational] k 12412‰ q_obs  250‰ q_model  299‰ res=ok
+  [fit-set rational] k 17121‰ q_obs  251‰ q_model  301‰ res=ok
   [fit-set pnorm-p2] k     3‰ q_obs    3‰ q_model    3‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
-  [fit-set pnorm-p2] k     7‰ q_obs    7‰ q_model    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
+  [fit-set pnorm-p2] k     7‰ q_obs    7‰ q_model    6‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k    12‰ q_obs   11‰ q_model   11‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k    16‰ q_obs   16‰ q_model   15‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k    25‰ q_obs   24‰ q_model   23‰ res=ok
   [fit-set pnorm-p2] k    35‰ q_obs   33‰ q_model   32‰ res=ok
-  [fit-set pnorm-p2] k    55‰ q_obs   50‰ q_model   50‰ res=ok
-  [fit-set pnorm-p2] k    77‰ q_obs   67‰ q_model   69‰ res=ok
-  [fit-set pnorm-p2] k   132‰ q_obs  101‰ q_model  111‰ res=ok
-  [fit-set pnorm-p2] k   210‰ q_obs  134‰ q_model  155‰ res=ok
-  [fit-set pnorm-p2] k   503‰ q_obs  184‰ q_model  221‰ res=ok
+  [fit-set pnorm-p2] k    55‰ q_obs   50‰ q_model   49‰ res=ok
+  [fit-set pnorm-p2] k    77‰ q_obs   67‰ q_model   68‰ res=ok
+  [fit-set pnorm-p2] k   132‰ q_obs  101‰ q_model  109‰ res=ok
+  [fit-set pnorm-p2] k   210‰ q_obs  134‰ q_model  152‰ res=ok
+  [fit-set pnorm-p2] k   503‰ q_obs  184‰ q_model  220‰ res=ok
   [fit-set pnorm-p2] k   936‰ q_obs  210‰ q_model  241‰ res=ok
   [fit-set pnorm-p2] k  1975‰ q_obs  231‰ q_model  249‰ res=ok
   [fit-set pnorm-p2] k  3089‰ q_obs  238‰ q_model  250‰ res=ok
@@ -45,69 +44,70 @@ fit pnorm-p2: q_max=251‰ k0=269‰ slope=933‰ (free est 933‰ binding=false
   [fit-set pnorm-p2] k  7717‰ q_obs  248‰ q_model  251‰ res=ok
   [fit-set pnorm-p2] k 12412‰ q_obs  250‰ q_model  251‰ res=ok
   [fit-set pnorm-p2] k 17121‰ q_obs  251‰ q_model  251‰ res=ok
-  [family pre-selection] criterion-loss rational=890 pnorm=804 (rel-SSE disclosure r=116312 p=112578) binding(r=false,p=false) -> selected=pnorm-p2 (Q3 feasible-domain criterion-loss rule; locked before holdout)
-  k     7‰ q_obs    7‰ | rational q    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
-  k    12‰ q_obs   12‰ | rational q   11‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q   11‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
-  k    21‰ q_obs   20‰ | rational q   20‰ res=ok | pnorm-p2 q   20‰ res=ok
-  k    30‰ q_obs   28‰ | rational q   27‰ res=ok | pnorm-p2 q   28‰ res=ok
-  k    40‰ q_obs   37‰ | rational q   35‰ res=ok | pnorm-p2 q   37‰ res=ok
-  k    61‰ q_obs   54‰ | rational q   50‰ res=ok | pnorm-p2 q   56‰ res=ok
-  k    89‰ q_obs   75‰ | rational q   68‰ res=ok | pnorm-p2 q   79‰ res=ok
-  k   148‰ q_obs  109‰ | rational q   97‰ res=ok | pnorm-p2 q  121‰ res=ok
-  k   265‰ q_obs  150‰ | rational q  137‰ res=ok | pnorm-p2 q  176‰ res=ok
-  k   603‰ q_obs  193‰ | rational q  194‰ res=ok | pnorm-p2 q  229‰ res=ok
-  k  1183‰ q_obs  218‰ | rational q  230‰ res=ok | pnorm-p2 q  245‰ res=ok
-  k  2250‰ q_obs  234‰ | rational q  254‰ res=ok | pnorm-p2 q  249‰ res=ok
-  k  3659‰ q_obs  241‰ | rational q  265‰ res=ok | pnorm-p2 q  250‰ res=ok
-  k  5969‰ q_obs  246‰ | rational q  273‰ res=ok | pnorm-p2 q  251‰ res=ok
-  k  8889‰ q_obs  249‰ | rational q  277‰ res=ok | pnorm-p2 q  251‰ res=ok
-  k 13588‰ q_obs  251‰ | rational q  280‰ res=ok | pnorm-p2 q  251‰ res=ok
-  k 19478‰ q_obs  252‰ | rational q  282‰ res=ok | pnorm-p2 q  251‰ res=ok
-  k 26554‰ q_obs  253‰ | rational q  283‰ res=ok | pnorm-p2 q  251‰ res=ok
-  [rational] free=93‰(n=7) trans=110‰(n=4) sat=119‰(n=7) binding=false -> PASS
-  [pnorm-p2] free=83‰(n=7) trans=186‰(n=4) sat=64‰(n=7) binding=false -> PASS
-  Prime outcome (selected family pnorm-p2) = PASS
-  [back-half rational] free=105‰(n=7) trans=100‰(n=4) sat=123‰(n=7) binding=false -> FAIL
-  [back-half pnorm-p2] free=90‰(n=7) trans=196‰(n=4) sat=68‰(n=7) binding=false -> PASS
+  [family pre-selection] criterion-loss rational=796 pnorm=780 (rel-SSE disclosure r=245299 p=120181) binding(r=true,p=false) -> selected=pnorm-p2 (Q3 feasible-domain criterion-loss rule; locked before holdout)
+  k     7‰ q_obs    7‰ | rational q    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q    6‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
+  k    12‰ q_obs   12‰ | rational q   12‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q   11‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
+  k    21‰ q_obs   20‰ | rational q   20‰ res=ok | pnorm-p2 q   19‰ res=ok
+  k    30‰ q_obs   28‰ | rational q   27‰ res=ok | pnorm-p2 q   27‰ res=ok
+  k    40‰ q_obs   37‰ | rational q   35‰ res=ok | pnorm-p2 q   36‰ res=ok
+  k    61‰ q_obs   54‰ | rational q   51‰ res=ok | pnorm-p2 q   54‰ res=ok
+  k    89‰ q_obs   75‰ | rational q   69‰ res=ok | pnorm-p2 q   77‰ res=ok
+  k   148‰ q_obs  109‰ | rational q  100‰ res=ok | pnorm-p2 q  119‰ res=ok
+  k   265‰ q_obs  150‰ | rational q  142‰ res=ok | pnorm-p2 q  175‰ res=ok
+  k   603‰ q_obs  193‰ | rational q  203‰ res=ok | pnorm-p2 q  229‰ res=ok
+  k  1183‰ q_obs  218‰ | rational q  243‰ res=ok | pnorm-p2 q  245‰ res=ok
+  k  2250‰ q_obs  234‰ | rational q  269‰ res=ok | pnorm-p2 q  249‰ res=ok
+  k  3659‰ q_obs  241‰ | rational q  282‰ res=ok | pnorm-p2 q  250‰ res=ok
+  k  5969‰ q_obs  246‰ | rational q  291‰ res=ok | pnorm-p2 q  251‰ res=ok
+  k  8889‰ q_obs  249‰ | rational q  296‰ res=ok | pnorm-p2 q  251‰ res=ok
+  k 13588‰ q_obs  251‰ | rational q  299‰ res=ok | pnorm-p2 q  251‰ res=ok
+  k 19478‰ q_obs  252‰ | rational q  301‰ res=ok | pnorm-p2 q  251‰ res=ok
+  k 26554‰ q_obs  253‰ | rational q  303‰ res=ok | pnorm-p2 q  251‰ res=ok
+  [rational] free=80‰(n=7) trans=114‰(n=4) sat=197‰(n=7) binding=true -> FAIL
+  [pnorm-p2] free=142‰(n=7) trans=186‰(n=4) sat=64‰(n=7) binding=false -> FAIL
+  resolution-limited points (holdout): free=2 trans=0 sat=0 cap_ok=false
+  Prime outcome (selected family pnorm-p2) = FAIL
+  [back-half rational] free=78‰(n=7) trans=123‰(n=4) sat=202‰(n=7) binding=true -> FAIL
+  [back-half pnorm-p2] free=142‰(n=7) trans=191‰(n=4) sat=64‰(n=7) binding=false -> FAIL
   [attribution 40x40 free-zone]
-    full new pipeline (criterion loss + dense ladder + independent seeds): free=83‰
-    objective=rel-SSE control (old target, same samples): free=53‰ (Δ=-40)
-    ladder=old 8-step (new objective): free=80‰ binding=true (Δ=-13)
+    full new pipeline (criterion loss + dense ladder + independent seeds): free=80‰
+    objective=rel-SSE control (old target, same samples): free=53‰ (Δ=-27)
+    ladder=old 8-step (new objective): free=80‰ binding=true (Δ=0)
     rounding (|round−floor| per point, pnorm-p2): max 1‰ (structural ≤1‰)
-    back-half seeds=reused holdout segment (old bug emulation): free=93‰ binding=false vs independent 105‰
+    back-half seeds=reused holdout segment (old bug emulation): free=80‰ binding=true vs independent 78‰
 === topology 32x32 (②′ seeds 0xc0ffee44440000+0..8) ===
 steady: fit 4/18 holdout 5/18 (dual criterion steady_window; unsteady ladders: fit [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128] holdout [2, 3, 5, 7, 9, 13, 18, 26, 36, 52, 72, 104, 208])
-fit rational: q_max=321‰ k_half=352‰ slope=911‰ (free est 911‰ binding=false)
-fit pnorm-p2: q_max=254‰ k0=283‰ slope=897‰ (free est 897‰ binding=false)
-  [fit-set rational] k     5‰ q_obs    4‰ q_model    4‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
-  [fit-set rational] k    10‰ q_obs   10‰ q_model    9‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
-  [fit-set rational] k    15‰ q_obs   14‰ q_model   13‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
-  [fit-set rational] k    21‰ q_obs   20‰ q_model   18‰ res=ok
-  [fit-set rational] k    33‰ q_obs   31‰ q_model   28‰ res=ok
-  [fit-set rational] k    45‰ q_obs   41‰ q_model   36‰ res=ok
-  [fit-set rational] k    72‰ q_obs   63‰ q_model   55‰ res=ok
-  [fit-set rational] k   104‰ q_obs   85‰ q_model   73‰ res=ok
-  [fit-set rational] k   191‰ q_obs  127‰ q_model  113‰ res=ok
-  [fit-set rational] k   355‰ q_obs  165‰ q_model  161‰ res=ok
-  [fit-set rational] k   956‰ q_obs  210‰ q_model  235‰ res=ok
-  [fit-set rational] k  1740‰ q_obs  227‰ q_model  267‰ res=ok
-  [fit-set rational] k  3467‰ q_obs  239‰ q_model  291‰ res=ok
-  [fit-set rational] k  5262‰ q_obs  244‰ q_model  301‰ res=ok
-  [fit-set rational] k  8914‰ q_obs  249‰ q_model  309‰ res=ok
-  [fit-set rational] k 12599‰ q_obs  251‰ q_model  312‰ res=ok
-  [fit-set rational] k 19996‰ q_obs  253‰ q_model  315‰ res=ok
-  [fit-set rational] k 27409‰ q_obs  254‰ q_model  317‰ res=ok
+fit rational: q_max=286‰ k_half=286‰ slope=1000‰ (free est 1114‰ binding=true)
+fit pnorm-p2: q_max=254‰ k0=288‰ slope=881‰ (free est 881‰ binding=false)
+  [fit-set rational] k     5‰ q_obs    4‰ q_model    5‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
+  [fit-set rational] k    10‰ q_obs   10‰ q_model   10‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
+  [fit-set rational] k    15‰ q_obs   14‰ q_model   14‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
+  [fit-set rational] k    21‰ q_obs   20‰ q_model   20‰ res=ok
+  [fit-set rational] k    33‰ q_obs   31‰ q_model   30‰ res=ok
+  [fit-set rational] k    45‰ q_obs   41‰ q_model   39‰ res=ok
+  [fit-set rational] k    72‰ q_obs   63‰ q_model   58‰ res=ok
+  [fit-set rational] k   104‰ q_obs   85‰ q_model   76‰ res=ok
+  [fit-set rational] k   191‰ q_obs  127‰ q_model  115‰ res=ok
+  [fit-set rational] k   355‰ q_obs  165‰ q_model  158‰ res=ok
+  [fit-set rational] k   956‰ q_obs  210‰ q_model  220‰ res=ok
+  [fit-set rational] k  1740‰ q_obs  227‰ q_model  246‰ res=ok
+  [fit-set rational] k  3467‰ q_obs  239‰ q_model  264‰ res=ok
+  [fit-set rational] k  5262‰ q_obs  244‰ q_model  271‰ res=ok
+  [fit-set rational] k  8914‰ q_obs  249‰ q_model  277‰ res=ok
+  [fit-set rational] k 12599‰ q_obs  251‰ q_model  280‰ res=ok
+  [fit-set rational] k 19996‰ q_obs  253‰ q_model  282‰ res=ok
+  [fit-set rational] k 27409‰ q_obs  254‰ q_model  283‰ res=ok
   [fit-set pnorm-p2] k     5‰ q_obs    4‰ q_model    4‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k    10‰ q_obs   10‰ q_model    9‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k    15‰ q_obs   14‰ q_model   13‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k    21‰ q_obs   20‰ q_model   19‰ res=ok
-  [fit-set pnorm-p2] k    33‰ q_obs   31‰ q_model   30‰ res=ok
-  [fit-set pnorm-p2] k    45‰ q_obs   41‰ q_model   40‰ res=ok
-  [fit-set pnorm-p2] k    72‰ q_obs   63‰ q_model   63‰ res=ok
-  [fit-set pnorm-p2] k   104‰ q_obs   85‰ q_model   88‰ res=ok
-  [fit-set pnorm-p2] k   191‰ q_obs  127‰ q_model  142‰ res=ok
-  [fit-set pnorm-p2] k   355‰ q_obs  165‰ q_model  199‰ res=ok
-  [fit-set pnorm-p2] k   956‰ q_obs  210‰ q_model  244‰ res=ok
+  [fit-set pnorm-p2] k    33‰ q_obs   31‰ q_model   29‰ res=ok
+  [fit-set pnorm-p2] k    45‰ q_obs   41‰ q_model   39‰ res=ok
+  [fit-set pnorm-p2] k    72‰ q_obs   63‰ q_model   62‰ res=ok
+  [fit-set pnorm-p2] k   104‰ q_obs   85‰ q_model   86‰ res=ok
+  [fit-set pnorm-p2] k   191‰ q_obs  127‰ q_model  141‰ res=ok
+  [fit-set pnorm-p2] k   355‰ q_obs  165‰ q_model  197‰ res=ok
+  [fit-set pnorm-p2] k   956‰ q_obs  210‰ q_model  243‰ res=ok
   [fit-set pnorm-p2] k  1740‰ q_obs  227‰ q_model  251‰ res=ok
   [fit-set pnorm-p2] k  3467‰ q_obs  239‰ q_model  253‰ res=ok
   [fit-set pnorm-p2] k  5262‰ q_obs  244‰ q_model  254‰ res=ok
@@ -115,40 +115,41 @@ fit pnorm-p2: q_max=254‰ k0=283‰ slope=897‰ (free est 897‰ binding=false
   [fit-set pnorm-p2] k 12599‰ q_obs  251‰ q_model  254‰ res=ok
   [fit-set pnorm-p2] k 19996‰ q_obs  253‰ q_model  254‰ res=ok
   [fit-set pnorm-p2] k 27409‰ q_obs  254‰ q_model  254‰ res=ok
-  [family pre-selection] criterion-loss rational=1260 pnorm=1000 (rel-SSE disclosure r=482024 p=119166) binding(r=false,p=false) -> selected=pnorm-p2 (Q3 feasible-domain criterion-loss rule; locked before holdout)
-  k     9‰ q_obs    9‰ | rational q    8‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q    8‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
-  k    15‰ q_obs   14‰ | rational q   13‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q   13‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
-  k    27‰ q_obs   25‰ | rational q   23‰ res=ok | pnorm-p2 q   24‰ res=ok
-  k    39‰ q_obs   36‰ | rational q   32‰ res=ok | pnorm-p2 q   35‰ res=ok
-  k    52‰ q_obs   47‰ | rational q   41‰ res=ok | pnorm-p2 q   46‰ res=ok
-  k    79‰ q_obs   68‰ | rational q   59‰ res=ok | pnorm-p2 q   68‰ res=ok
-  k   122‰ q_obs   96‰ | rational q   83‰ res=ok | pnorm-p2 q  101‰ res=ok
-  k   222‰ q_obs  138‰ | rational q  124‰ res=ok | pnorm-p2 q  157‰ res=ok
-  k   476‰ q_obs  180‰ | rational q  185‰ res=ok | pnorm-p2 q  219‰ res=ok
-  k  1142‰ q_obs  214‰ | rational q  245‰ res=ok | pnorm-p2 q  247‰ res=ok
-  k  2156‰ q_obs  232‰ | rational q  276‰ res=ok | pnorm-p2 q  252‰ res=ok
-  k  3907‰ q_obs  241‰ | rational q  294‰ res=ok | pnorm-p2 q  253‰ res=ok
-  k  6163‰ q_obs  246‰ | rational q  304‰ res=ok | pnorm-p2 q  254‰ res=ok
-  k  9829‰ q_obs  249‰ | rational q  310‰ res=ok | pnorm-p2 q  254‰ res=ok
-  k 14443‰ q_obs  251‰ | rational q  313‰ res=ok | pnorm-p2 q  254‰ res=ok
-  k 21848‰ q_obs  253‰ | rational q  316‰ res=ok | pnorm-p2 q  254‰ res=ok
-  k 31117‰ q_obs  254‰ | rational q  317‰ res=ok | pnorm-p2 q  254‰ res=ok
-  k 42247‰ q_obs  254‰ | rational q  318‰ res=ok | pnorm-p2 q  254‰ res=ok
-  [rational] free=132‰(n=6) trans=144‰(n=4) sat=251‰(n=8) binding=false -> FAIL
-  [pnorm-p2] free=111‰(n=6) trans=216‰(n=4) sat=86‰(n=8) binding=false -> FAIL
+  [family pre-selection] criterion-loss rational=790 pnorm=772 (rel-SSE disclosure r=177469 p=114804) binding(r=true,p=false) -> selected=pnorm-p2 (Q3 feasible-domain criterion-loss rule; locked before holdout)
+  k     9‰ q_obs    9‰ | rational q    9‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q    8‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
+  k    15‰ q_obs   14‰ | rational q   14‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q   13‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
+  k    27‰ q_obs   25‰ | rational q   25‰ res=ok | pnorm-p2 q   24‰ res=ok
+  k    39‰ q_obs   36‰ | rational q   34‰ res=ok | pnorm-p2 q   34‰ res=ok
+  k    52‰ q_obs   47‰ | rational q   44‰ res=ok | pnorm-p2 q   45‰ res=ok
+  k    79‰ q_obs   68‰ | rational q   62‰ res=ok | pnorm-p2 q   67‰ res=ok
+  k   122‰ q_obs   96‰ | rational q   86‰ res=ok | pnorm-p2 q   99‰ res=ok
+  k   222‰ q_obs  138‰ | rational q  125‰ res=ok | pnorm-p2 q  155‰ res=ok
+  k   476‰ q_obs  180‰ | rational q  179‰ res=ok | pnorm-p2 q  217‰ res=ok
+  k  1142‰ q_obs  214‰ | rational q  229‰ res=ok | pnorm-p2 q  246‰ res=ok
+  k  2156‰ q_obs  232‰ | rational q  253‰ res=ok | pnorm-p2 q  252‰ res=ok
+  k  3907‰ q_obs  241‰ | rational q  266‰ res=ok | pnorm-p2 q  253‰ res=ok
+  k  6163‰ q_obs  246‰ | rational q  273‰ res=ok | pnorm-p2 q  254‰ res=ok
+  k  9829‰ q_obs  249‰ | rational q  278‰ res=ok | pnorm-p2 q  254‰ res=ok
+  k 14443‰ q_obs  251‰ | rational q  280‰ res=ok | pnorm-p2 q  254‰ res=ok
+  k 21848‰ q_obs  253‰ | rational q  282‰ res=ok | pnorm-p2 q  254‰ res=ok
+  k 31117‰ q_obs  254‰ | rational q  283‰ res=ok | pnorm-p2 q  254‰ res=ok
+  k 42247‰ q_obs  254‰ | rational q  284‰ res=ok | pnorm-p2 q  254‰ res=ok
+  [rational] free=88‰(n=6) trans=104‰(n=4) sat=118‰(n=8) binding=true -> FAIL
+  [pnorm-p2] free=111‰(n=6) trans=205‰(n=4) sat=86‰(n=8) binding=false -> FAIL
+  resolution-limited points (holdout): free=2 trans=0 sat=0 cap_ok=false
   Prime outcome (selected family pnorm-p2) = FAIL
   [back-half rational] free=86‰(n=6) trans=104‰(n=4) sat=153‰(n=8) binding=true -> FAIL
-  [back-half pnorm-p2] free=72‰(n=6) trans=238‰(n=4) sat=81‰(n=8) binding=false -> PASS
+  [back-half pnorm-p2] free=100‰(n=6) trans=216‰(n=4) sat=81‰(n=8) binding=false -> FAIL
   [attribution 32x32 free-zone]
-    full new pipeline (criterion loss + dense ladder + independent seeds): free=111‰
-    objective=rel-SSE control (old target, same samples): free=71‰ (Δ=-61)
-    ladder=old 8-step (new objective): free=102‰ binding=true (Δ=-30)
+    full new pipeline (criterion loss + dense ladder + independent seeds): free=88‰
+    objective=rel-SSE control (old target, same samples): free=71‰ (Δ=-17)
+    ladder=old 8-step (new objective): free=102‰ binding=true (Δ=14)
     rounding (|round−floor| per point, pnorm-p2): max 1‰ (structural ≤1‰)
     back-half seeds=reused holdout segment (old bug emulation): free=88‰ binding=true vs independent 86‰
 === topology 64x64 (②′ seeds 0xc0ffee44440000+0..8) ===
 steady: fit 2/18 holdout 3/18 (dual criterion steady_window; unsteady ladders: fit [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256] holdout [2, 3, 5, 7, 9, 13, 18, 26, 36, 52, 72, 104, 144, 208, 288])
 fit rational: q_max=303‰ k_half=303‰ slope=1000‰ (free est 1070‰ binding=true)
-fit pnorm-p2: q_max=247‰ k0=259‰ slope=953‰ (free est 953‰ binding=false)
+fit pnorm-p2: q_max=247‰ k0=265‰ slope=932‰ (free est 932‰ binding=false)
   [fit-set rational] k     2‰ q_obs    2‰ q_model    2‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   [fit-set rational] k     4‰ q_obs    4‰ q_model    4‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   [fit-set rational] k     7‰ q_obs    7‰ q_model    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
@@ -170,49 +171,50 @@ fit pnorm-p2: q_max=247‰ k0=259‰ slope=953‰ (free est 953‰ binding=false
   [fit-set pnorm-p2] k     2‰ q_obs    2‰ q_model    2‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k     4‰ q_obs    4‰ q_model    4‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k     7‰ q_obs    7‰ q_model    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
-  [fit-set pnorm-p2] k     9‰ q_obs    9‰ q_model    9‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
+  [fit-set pnorm-p2] k     9‰ q_obs    9‰ q_model    8‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k    15‰ q_obs   15‰ q_model   14‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   [fit-set pnorm-p2] k    20‰ q_obs   20‰ q_model   19‰ res=ok
   [fit-set pnorm-p2] k    32‰ q_obs   30‰ q_model   30‰ res=ok
-  [fit-set pnorm-p2] k    45‰ q_obs   41‰ q_model   42‰ res=ok
-  [fit-set pnorm-p2] k    71‰ q_obs   62‰ q_model   65‰ res=ok
-  [fit-set pnorm-p2] k   101‰ q_obs   83‰ q_model   90‰ res=ok
-  [fit-set pnorm-p2] k   181‰ q_obs  124‰ q_model  142‰ res=ok
-  [fit-set pnorm-p2] k   293‰ q_obs  158‰ q_model  185‰ res=ok
-  [fit-set pnorm-p2] k   608‰ q_obs  199‰ q_model  228‰ res=ok
+  [fit-set pnorm-p2] k    45‰ q_obs   41‰ q_model   41‰ res=ok
+  [fit-set pnorm-p2] k    71‰ q_obs   62‰ q_model   64‰ res=ok
+  [fit-set pnorm-p2] k   101‰ q_obs   83‰ q_model   88‰ res=ok
+  [fit-set pnorm-p2] k   181‰ q_obs  124‰ q_model  140‰ res=ok
+  [fit-set pnorm-p2] k   293‰ q_obs  158‰ q_model  183‰ res=ok
+  [fit-set pnorm-p2] k   608‰ q_obs  199‰ q_model  227‰ res=ok
   [fit-set pnorm-p2] k   990‰ q_obs  218‰ q_model  239‰ res=ok
-  [fit-set pnorm-p2] k  1829‰ q_obs  234‰ q_model  245‰ res=ok
+  [fit-set pnorm-p2] k  1829‰ q_obs  234‰ q_model  244‰ res=ok
   [fit-set pnorm-p2] k  2705‰ q_obs  240‰ q_model  246‰ res=ok
   [fit-set pnorm-p2] k  4495‰ q_obs  245‰ q_model  247‰ res=ok
   [fit-set pnorm-p2] k  6304‰ q_obs  247‰ q_model  247‰ res=ok
-  [family pre-selection] criterion-loss rational=680 pnorm=680 (rel-SSE disclosure r=120793 p=99856) binding(r=true,p=false) -> selected=pnorm-p2 (Q3 feasible-domain criterion-loss rule; locked before holdout)
+  [family pre-selection] criterion-loss rational=680 pnorm=632 (rel-SSE disclosure r=120793 p=96675) binding(r=true,p=false) -> selected=pnorm-p2 (Q3 feasible-domain criterion-loss rule; locked before holdout)
   k     4‰ q_obs    4‰ | rational q    4‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q    4‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   k     7‰ q_obs    7‰ | rational q    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q    7‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS)
   k    12‰ q_obs   12‰ | rational q   12‰ res=LIMITED(abs_err=0‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q   11‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
   k    17‰ q_obs   17‰ | rational q   16‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS) | pnorm-p2 q   16‰ res=LIMITED(abs_err=1‰, |Δq|≤2‰ 复核:PASS)
-  k    23‰ q_obs   22‰ | rational q   21‰ res=ok | pnorm-p2 q   22‰ res=ok
-  k    35‰ q_obs   33‰ | rational q   31‰ res=ok | pnorm-p2 q   33‰ res=ok
-  k    50‰ q_obs   46‰ | rational q   43‰ res=ok | pnorm-p2 q   47‰ res=ok
-  k    78‰ q_obs   67‰ | rational q   62‰ res=ok | pnorm-p2 q   71‰ res=ok
-  k   118‰ q_obs   93‰ | rational q   85‰ res=ok | pnorm-p2 q  103‰ res=ok
-  k   204‰ q_obs  133‰ | rational q  122‰ res=ok | pnorm-p2 q  153‰ res=ok
-  k   361‰ q_obs  171‰ | rational q  165‰ res=ok | pnorm-p2 q  201‰ res=ok
-  k   698‰ q_obs  205‰ | rational q  211‰ res=ok | pnorm-p2 q  232‰ res=ok
-  k  1192‰ q_obs  224‰ | rational q  242‰ res=ok | pnorm-p2 q  242‰ res=ok
+  k    23‰ q_obs   22‰ | rational q   21‰ res=ok | pnorm-p2 q   21‰ res=ok
+  k    35‰ q_obs   33‰ | rational q   31‰ res=ok | pnorm-p2 q   32‰ res=ok
+  k    50‰ q_obs   46‰ | rational q   43‰ res=ok | pnorm-p2 q   46‰ res=ok
+  k    78‰ q_obs   67‰ | rational q   62‰ res=ok | pnorm-p2 q   70‰ res=ok
+  k   118‰ q_obs   93‰ | rational q   85‰ res=ok | pnorm-p2 q  101‰ res=ok
+  k   204‰ q_obs  133‰ | rational q  122‰ res=ok | pnorm-p2 q  151‰ res=ok
+  k   361‰ q_obs  171‰ | rational q  165‰ res=ok | pnorm-p2 q  199‰ res=ok
+  k   698‰ q_obs  205‰ | rational q  211‰ res=ok | pnorm-p2 q  231‰ res=ok
+  k  1192‰ q_obs  224‰ | rational q  242‰ res=ok | pnorm-p2 q  241‰ res=ok
   k  2044‰ q_obs  235‰ | rational q  264‰ res=ok | pnorm-p2 q  245‰ res=ok
   k  3148‰ q_obs  242‰ | rational q  276‰ res=ok | pnorm-p2 q  246‰ res=ok
   k  4943‰ q_obs  246‰ | rational q  285‰ res=ok | pnorm-p2 q  247‰ res=ok
   k  7209‰ q_obs  248‰ | rational q  291‰ res=ok | pnorm-p2 q  247‰ res=ok
   k  9939‰ q_obs  249‰ | rational q  294‰ res=ok | pnorm-p2 q  247‰ res=ok
   [rational] free=74‰(n=8) trans=86‰(n=5) sat=180‰(n=5) binding=true -> FAIL
-  [pnorm-p2] free=83‰(n=8) trans=175‰(n=5) sat=42‰(n=5) binding=false -> PASS
-  Prime outcome (selected family pnorm-p2) = PASS
-  [back-half rational] free=166‰(n=8) trans=117‰(n=5) sat=136‰(n=5) binding=false -> FAIL
-  [back-half pnorm-p2] free=166‰(n=8) trans=168‰(n=5) sat=38‰(n=5) binding=false -> FAIL
+  [pnorm-p2] free=83‰(n=8) trans=163‰(n=5) sat=42‰(n=5) binding=false -> FAIL
+  resolution-limited points (holdout): free=4 trans=0 sat=0 cap_ok=false
+  Prime outcome (selected family pnorm-p2) = FAIL
+  [back-half rational] free=166‰(n=8) trans=106‰(n=5) sat=144‰(n=5) binding=true -> FAIL
+  [back-half pnorm-p2] free=83‰(n=8) trans=151‰(n=5) sat=38‰(n=5) binding=false -> FAIL
   [attribution 64x64 free-zone]
     full new pipeline (criterion loss + dense ladder + independent seeds): free=74‰
     objective=rel-SSE control (old target, same samples): free=83‰ (Δ=9)
     ladder=old 8-step (new objective): free=104‰ binding=true (Δ=30)
     rounding (|round−floor| per point, pnorm-p2): max 1‰ (structural ≤1‰)
-    back-half seeds=reused holdout segment (old bug emulation): free=102‰ binding=false vs independent 166‰
+    back-half seeds=reused holdout segment (old bug emulation): free=88‰ binding=true vs independent 166‰
 ②′ AUTO-DISPOSITION: FAIL -> disposition ① (追认转 C, MFD 永久纯统计) — applied automatically per pre-registered termination clause
