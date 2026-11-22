@@ -1,0 +1,5 @@
+第 32 段 · 范围 B · 节选（第 2/2 部分）
+        assert!(l.events().iter().any(|e| matches!(e, EconomyEvent::Paused { .. })));
+        assert!(l.events().iter().any(|e| matches!(e, EconomyEvent::Resumed { .. })));
+    }
+}

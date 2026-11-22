@@ -1,0 +1,90 @@
+第 9 段 · 范围 A · 节选（第 3/3 部分）
+        // MFD→降级通道（ADR-NEW-26 草案）：需求压力参与触发/恢复门（effective=max），
+        // 单独触发封顶 L1；恢复需需求与工作量同时回落。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.unfreeze_demand_channel();
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 tick：触发门未到
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+/*L421*/
+        r.note_demand_pressure(0);
+        assert_eq!(r.end_tick(), DegradationLevel::L1); // 第 1 个低需求 tick：不恢复
+        r.note_demand_pressure(0);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 2 个：恢复
+    }
+
+    #[test]
+    fn demand_alone_cannot_reach_l2_l3() {
+        // 需求压力单独触发封顶 L1（债务 #31 未裁决前限制影响面）；
+        // 工作量压力仍可推 L2/L3。
+/*L431*/
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.unfreeze_demand_channel();
+        for _ in 0..2 {
+            r.note_demand_pressure(10_000);
+            assert_ne!(r.end_tick(), DegradationLevel::L2);
+        }
+        assert_eq!(r.level(), DegradationLevel::L1);
+        for _ in 0..2 {
+            r.spend(1, 2000);
+            r.end_tick();
+/*L441*/
+        }
+        assert_eq!(r.level(), DegradationLevel::L3);
+    }
+
+    #[test]
+    fn demand_state_is_covered_by_encode() {
+        // 需求通道状态入档/入摘要（G3）：demand_bp 敏感。
+        let mk = |demand: u32| {
+            let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+            r.unfreeze_demand_channel();
+/*L451*/
+            r.note_demand_pressure(demand);
+            let mut w = CanonicalWriter::new("sim-core", "BudgetState");
+            r.encode_state(&mut w);
+            w.into_bytes()
+        };
+        assert_ne!(mk(0), mk(10_000), "demand_bp must be covered");
+    }
+
+    #[test]
+    fn demand_archival_survives_end_tick() {
+/*L461*/
+        // X5 审计修复：encode_state 归档 last_demand_bp（end_tick 清零 demand_bp
+        // 后仍可归档——旧口径入档恒 0）。
+        let decls = vec![BudgetDecl { system_id: 1, unit: WorkUnit::NodeExpansions, per_tick_cap: 1000, overflow: OverflowBehavior::YieldToNextTick }];
+        let mk = |demand: u32| {
+            let mut r = BudgetRegistry::new(decls.clone(), DegradationThresholds::default());
+            r.unfreeze_demand_channel();
+            r.note_demand_pressure(demand);
+            r.end_tick(); // 清零 demand_bp 后归档
+            let mut w = CanonicalWriter::new("sim-core", "Budget");
+            r.encode_state(&mut w);
+/*L471*/
+            w.into_bytes()
+        };
+        assert_ne!(mk(0), mk(10_000), "last_demand_bp must survive end_tick");
+    }
+
+    #[test]
+    fn demand_channel_frozen_by_default() {
+        // 决策6 Z2 护栏（2026-11-22）：通道默认冻结，note_demand_pressure 为
+        // no-op；解冻须显式 unfreeze_demand_channel()（ADR-NEW-26 解冻裁决时启用）。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+/*L481*/
+        assert!(r.demand_channel_frozen());
+        for _ in 0..4 {
+            r.note_demand_pressure(10_000);
+            assert_eq!(r.end_tick(), DegradationLevel::Normal, "frozen channel must not degrade");
+        }
+        r.unfreeze_demand_channel();
+        assert!(!r.demand_channel_frozen());
+        r.note_demand_pressure(10_000);
+        r.end_tick();
+        r.note_demand_pressure(10_000);
+/*L491*/
+        assert_eq!(r.end_tick(), DegradationLevel::L1, "unfrozen channel must work");
+    }
+}

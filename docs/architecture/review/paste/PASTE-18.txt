@@ -1,0 +1,107 @@
+第 18 段 · 范围 C · 节选（第 3/3 部分）
+        family_verdict(p_binding_b, &rp_b)
+    ));
+
+    // ===== P3 双跑归因分解表（逐项开关对本拓扑 free 值贡献）=====
+    emit(format!("  [attribution {w}x{h} free-zone]"));
+    emit(format!(
+        "    full new pipeline (criterion loss + dense ladder + independent seeds): free={}‰",
+/*L371*/
+        rp.free_flow_max_err_permille.min(r.free_flow_max_err_permille)
+    ));
+    let ctrl = fit_rational_rel_sse_control(&fit_samples);
+    let r_ctrl = evaluate_rational_fit(&ctrl, &holdout, &ZoneBands::SET_D);
+    emit(format!(
+        "    objective=rel-SSE control (old target, same samples): free={}‰ (Δ={})",
+        r_ctrl.free_flow_max_err_permille,
+        (r_ctrl.free_flow_max_err_permille as i64)
+            - (r.free_flow_max_err_permille as i64)
+    ));
+/*L381*/
+    // 梯度密度因子：旧阶梯（2→256 倍增 8 档）+ 新目标。
+    let old_ladder: [u64; 8] = [2, 4, 8, 16, 32, 64, 128, 256];
+    let (old_samples, _) = sample_ladder(w, h, &old_ladder, 0);
+    let (fit_old_ladder, _, bind_ol) =
+        fit_rational_saturation_detailed(&old_samples, &ZoneBands::SET_D);
+    let r_ol = evaluate_rational_fit(&fit_old_ladder, &holdout, &ZoneBands::SET_D);
+    emit(format!(
+        "    ladder=old 8-step (new objective): free={}‰ binding={} (Δ={})",
+        r_ol.free_flow_max_err_permille,
+        bind_ol,
+/*L391*/
+        (r_ol.free_flow_max_err_permille as i64) - (r.free_flow_max_err_permille as i64)
+    ));
+    // 取整因子：|q_round − q_floor| 上界逐点最大（≤1‰ 结构性）。
+    let mut round_max = 0u64;
+    for s in &holdout {
+        let num = pfit.q_max_permille as u128 * s.k_permille as u128;
+        let den = ((s.k_permille as u128).pow(2) + (pfit.k0_permille as u128).pow(2)).isqrt().max(1);
+        let q_floor = (num / den) as u64;
+        let q_round = q_pnorm_permille(&pfit, s.k_permille);
+        round_max = round_max.max(q_floor.abs_diff(q_round));
+/*L401*/
+    }
+    emit(format!(
+        "    rounding (|round−floor| per point, pnorm-p2): max {round_max}‰ (structural ≤1‰)"
+    ));
+    // back-half 种子因子：独立段 vs 旧误用 holdout 段（+8..16）。
+    let old_bug_hold: Vec<MfdSample> = HOLDOUT_LADDER
+        .iter()
+        .map(|&inj| {
+            let (mut k, mut q) = (0u64, 0u64);
+            for i in 0..N_SEEDS {
+/*L411*/
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SEED_BASE + 8 + i);
+                k += k1;
+                q += q1;
+            }
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    let (fit_ob, _, bind_ob) = fit_rational_saturation_detailed(&back_fit, &ZoneBands::SET_D);
+    let r_ob = evaluate_rational_fit(&fit_ob, &old_bug_hold, &ZoneBands::SET_D);
+    emit(format!(
+/*L421*/
+        "    back-half seeds=reused holdout segment (old bug emulation): free={}‰ binding={} vs independent {free_ind}‰",
+        r_ob.free_flow_max_err_permille,
+        bind_ob,
+        free_ind = r_b.free_flow_max_err_permille
+    ));
+}
+
+fn main() {
+    let mut out: Vec<String> = Vec::new();
+    out.push(
+/*L431*/
+        "②′ confirmation round (debt #31; pre-registered 7160955; one-shot termination: any FAIL -> disposition ① automatically)"
+            .to_string(),
+    );
+    out.push(format!(
+        "evidence commit: {}",
+        option_env!("SETD_COMMIT").unwrap_or("(unset — build with SETD_COMMIT env)")
+    ));
+    out.push(format!(
+        "criteria: free<={}‰ transition<={}‰ saturated<={}‰ (single source = sim-traffic consts); families frozen = {{rational, pnorm-p2}}",
+        FREE_FLOW_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE, SATURATED_CRIT_PERMILLE
+/*L441*/
+    ));
+    report_topology(40, 40, &mut out);
+    report_topology(32, 32, &mut out);
+    report_topology(64, 64, &mut out);
+    let failed = out.iter().any(|l| l.contains("outcome (selected family") && l.ends_with("FAIL"))
+        || out
+            .iter()
+            .any(|l| l.contains("outcome (selected family") && l.contains("= FAIL"));
+    out.push(format!(
+        "②′ AUTO-DISPOSITION: {}",
+/*L451*/
+        if failed {
+            "FAIL -> disposition ① (追认转 C, MFD 永久纯统计) — applied automatically per pre-registered termination clause"
+        } else {
+            "PASS -> #31 核销、3a 记通过（解冻另走 ADR-NEW-26 评审）"
+        }
+    ));
+    for l in &out {
+        println!("{l}");
+    }
+}

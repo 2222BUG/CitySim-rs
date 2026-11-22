@@ -1,0 +1,169 @@
+第 24 段 · 范围 B · 节选（第 4/4 部分）
+/*L691*/
+    #[test]
+    fn topology_tx_is_atomic() {
+        let mut n = small_net();
+        let v = n.version();
+        let d = n.digest();
+        let err = n.publish(Tx { id: 9, ops: vec![Op::AddEdge(edge(1, 5, 6, 1)) ]}).unwrap_err();
+        assert_eq!(err, TxError::DuplicateEdge { id: 1 });
+        assert_eq!(n.version(), v, "失败事务不得改版本");
+        assert_eq!(n.digest(), d, "失败事务不得改状态");
+
+/*L701*/
+        n.publish(Tx { id: 10, ops: vec![Op::AddEdge(edge(4, 2, 3, 5))] }).unwrap();
+        assert_eq!(n.version(), v + 1);
+        assert_eq!(n.neighbors(2).count(), 1, "重建后 CSR 可见新边");
+    }
+
+    /// 代价事务原位更新：不动拓扑、版本 +1、摘要变化。
+    #[test]
+    fn cost_tx_updates_in_place() {
+        let mut n = small_net();
+        let out_before: Vec<_> = n.neighbors(0).collect();
+/*L711*/
+        n.publish(Tx { id: 20, ops: vec![Op::SetDynamicCost { id: 1, cost: 99 }] }).unwrap();
+        let out_after: Vec<_> = n.neighbors(0).collect();
+        assert_ne!(out_before, out_after, "代价应可见于邻接迭代");
+        assert_eq!(out_after[0].2, 99);
+    }
+
+    /// ADR-NEW-23 两阶段判定 + 条文 9 合法性 + P1-04 代价默认不触发。
+    #[test]
+    fn stale_check_two_phase() {
+        let mut n = small_net();
+/*L721*/
+        let base = n.version();
+        let path = vec![1u64, 3]; // 0->1->2
+
+        // 区间内一笔不相交事务（新边在远处）→ Accept
+        n.publish(Tx { id: 30, ops: vec![Op::AddEdge(edge(9, 8, 9, 1))] }).unwrap();
+        assert_eq!(n.stale_check(&path, base), StaleOutcome::Accept);
+
+        // 一笔仅代价变更（命中路径边）→ 默认不触发（P1-04）
+        n.publish(Tx { id: 31, ops: vec![Op::SetDynamicCost { id: 3, cost: 50 }] }).unwrap();
+        assert_eq!(n.stale_check(&path, base), StaleOutcome::Accept);
+/*L731*/
+
+        // 删除路径上的边 → Recompute（trigger=命中事务）
+        n.publish(Tx { id: 32, ops: vec![Op::RemoveEdge { id: 3 }] }).unwrap();
+        assert_eq!(
+            n.stale_check(&path, base),
+            StaleOutcome::Recompute { trigger_tx: 32 }
+        );
+    }
+
+    /// 条文 7 聚合：区间内多笔事务按 tx_id 升序取首个命中（与发布先后无关口径稳定）。
+/*L741*/
+    #[test]
+    fn stale_aggregation_is_stable() {
+        let mut n = small_net();
+        let base = n.version();
+        let path = vec![1u64, 3];
+        n.publish(Tx { id: 41, ops: vec![Op::RemoveEdge { id: 1 }] }).unwrap();
+        n.publish(Tx { id: 40, ops: vec![Op::RemoveEdge { id: 3 }] }).unwrap();
+        // 区间内 40 与 41 都命中，但判定按 tx_id 升序？——txs_between 按发布序，
+        // 版本序即发布序；首个命中=41（先发布）。断言确定性即可：
+        let r1 = n.stale_check(&path, base);
+/*L751*/
+        let r2 = n.stale_check(&path, base);
+        assert_eq!(r1, r2, "重复判定必须一致");
+        assert!(matches!(r1, StaleOutcome::Recompute { .. }));
+    }
+
+    /// 合法性（条文 9）：路径含不存在的边 → Recompute。
+    #[test]
+    fn stale_legality_missing_edge() {
+        let n = small_net();
+        assert!(matches!(
+/*L761*/
+            n.stale_check(&[1, 999], n.version()),
+            StaleOutcome::Recompute { .. }
+        ));
+    }
+
+    /// 摘要：同状态稳定、代价变化即变化（黄金值待基准定稿后固化，先性质断言）。
+    #[test]
+    fn digest_is_stable_and_sensitive() {
+        let a = small_net();
+        let b = small_net();
+/*L771*/
+        assert_eq!(a.digest(), b.digest());
+        let mut c = small_net();
+        c.publish(Tx { id: 50, ops: vec![Op::SetDynamicCost { id: 1, cost: 7 }] }).unwrap();
+        assert_ne!(a.digest(), c.digest());
+    }
+}
+
+#[cfg(test)]
+mod txretry_tests {
+    use super::*;
+/*L781*/
+
+    fn tx(id: u64) -> Tx {
+        Tx { id, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] }
+    }
+
+    #[test]
+    fn retry_keeps_tx_id_and_due_is_full_order() {
+        // 债务 #28：沿用原 tx_id，按 tx_id 全序重排（与到达顺序无关）。
+        let mut q = TxRetryQueue::new();
+        assert_eq!(q.offer(tx(2)), RetryOutcome::Requeued { retry_count: 1 });
+/*L791*/
+        assert_eq!(q.offer(tx(1)), RetryOutcome::Requeued { retry_count: 1 });
+        let due = q.due();
+        assert_eq!(due.iter().map(|t| t.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(due[0].id, 1, "original tx_id preserved");
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn retry_limit_blocks_and_emits_diagnostic() {
+        // 重试上限 3：第 4 次 offer 转受阻终态；NET-0001 诊断逐受阻 id 一条。
+/*L801*/
+        let mut q = TxRetryQueue::new();
+        for i in 1..=TX_RETRY_LIMIT {
+            assert_eq!(q.offer(tx(7)), RetryOutcome::Requeued { retry_count: i });
+        }
+        assert_eq!(q.offer(tx(7)), RetryOutcome::Blocked { retry_count: 4 });
+        assert_eq!(q.blocked_ids(), &[7]);
+        assert!(q.is_empty(), "blocked tx must leave the pending queue");
+        let mut sink = sim_error::DiagnosticSink::new();
+        q.emit_blocked_diagnostics(&mut sink, 42);
+        let events = sink.drain();
+/*L811*/
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].code.to_string(), "NET-0001");
+        assert_eq!(events[0].context.tick, 42);
+        assert_eq!(events[0].context.entity_id, 7);
+    }
+
+    #[test]
+    fn limiter_rejection_feeds_retry_queue() {
+        // 与 TxLimiter（BudgetExceeded）衔接：预算拒绝→入队→下 tick 重试成功。
+        let mut lim = TxLimiter::new(TxLimits {
+/*L821*/
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+            max_edge_ops: 16,
+        });
+        let net = Network::new();
+        let t1 = Tx { id: 1, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] };
+        let t2 = Tx { id: 2, ops: vec![Op::SetDynamicCost { id: 1, cost: 6 }] };
+        assert!(lim.admit(&t1, &net).is_ok());
+        assert!(matches!(
+            lim.admit(&t2, &net),
+/*L831*/
+            Err(TxError::BudgetExceeded { .. })
+        ));
+        let mut q = TxRetryQueue::new();
+        assert_eq!(q.offer(t2), RetryOutcome::Requeued { retry_count: 1 });
+        // 下 tick：限流器复位，due 取回原事务（原 tx_id），admit 成功。
+        lim.reset();
+        let due = q.due();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, 2);
+        assert!(lim.admit(&due[0], &net).is_ok());
+/*L841*/
+    }
+}

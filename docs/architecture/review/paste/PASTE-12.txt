@@ -1,0 +1,212 @@
+第 12 段 · 范围 C · 节选（第 3/6 部分）
+/// 定点模型流量 q(k)=q_max·k/sqrt(k²+k0²)（‰），就近舍入。
+pub fn q_pnorm_permille(fit: &PNormConcaveFit, k_permille: u64) -> u64 {
+    if k_permille == 0 { return 0; }
+    let q_max = fit.q_max_permille as u128;
+/*L381*/
+    let k = k_permille as u128;
+    let k0 = fit.k0_permille as u128;
+    let den = (k * k + k0 * k0).isqrt().max(1);
+    let num = q_max * k;
+    ((num + den / 2) / den) as u64
+}
+
+/// p-norm 族辨识（目标判据同构：相对误差平方和；越界判失败口径同有理族）。
+/// q_max 候选域=观测最大值至 4 倍+16；k0 候选域=1..4·k_max；可行域 k0≥q_max。
+pub fn fit_pnorm_concave_detailed(
+/*L391*/
+    samples: &[MfdSample],
+    bands: &ZoneBands,
+) -> (PNormConcaveFit, u64, bool) {
+    assert!(!samples.is_empty(), "no samples");
+    // q≤k 不变量下沉到拟合器入口（决策5 豆包 R3）：示例外的任何调用方
+    // 亦不得喂入 q>k 样本（单位斜率物理界，违者=采样口径缺陷）。
+    assert!(
+        samples.iter().all(|s| s.q_permille <= s.k_permille),
+        "q>k sample violates unit-slope bound (sampling population mismatch)"
+    );
+/*L401*/
+    let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
+    let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
+    let mut best_free: Option<(u64, u64, u64)> = None;
+    let mut best_feasible: Option<(u64, u64, u64)> = None;
+    for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
+        for k0 in 1..=k_max.saturating_mul(4).max(1) {
+            let fit = PNormConcaveFit { q_max_permille: q_max, k0_permille: k0 };
+            // 目标=判据归一化分区最大相对误差（②′ 修测，2026-11-22，同有理族）。
+            let loss = criterion_aligned_loss(|k| q_pnorm_permille(&fit, k), samples, bands);
+            if best_free.is_none_or(|(b, _, _)| loss < b) {
+/*L411*/
+                best_free = Some((loss, q_max, k0));
+            }
+            if k0 >= q_max && best_feasible.is_none_or(|(b, _, _)| loss < b) {
+                best_feasible = Some((loss, q_max, k0));
+            }
+        }
+    }
+    let (_, q_free, k_free) = best_free.unwrap();
+    let free_slope = (q_free as u128 * 1000 / k_free as u128) as u64;
+    if free_slope <= 1000 {
+/*L421*/
+        return (PNormConcaveFit { q_max_permille: q_free, k0_permille: k_free }, free_slope, false);
+    }
+    let (_, q_f, k_f) = best_feasible.expect("no physically feasible fit (slope<=1000‰)");
+    (PNormConcaveFit { q_max_permille: q_f, k0_permille: k_f }, free_slope, true)
+}
+
+/// 便捷入口=详细版第 1 返回值。
+pub fn fit_pnorm_concave(samples: &[MfdSample], bands: &ZoneBands) -> PNormConcaveFit {
+    fit_pnorm_concave_detailed(samples, bands).0
+}
+/*L431*/
+
+/// 分区带（审计修复 2026-11-20：判定边界须为**预注册固定 fixture**，禁止由
+/// 被评模型参数导出——决策4 3a(a)；自指边界=同参 gaming，豆包实证：自指带
+/// 下 FAIL 的数据在绝对带上三区全 PASS）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneBands {
+    /// 自由流区上界（k < free_max_k，‰）
+    pub free_max_k: u64,
+    /// 转折区上界（free_max_k ≤ k < trans_max_k，‰）
+    pub trans_max_k: u64,
+/*L441*/
+}
+
+impl ZoneBands {
+    /// Set D 主判定带（预注册绝对密度边界，豆包审计复算带）。
+    /// 敏感性带（如 free=64/263）由调用方另行构造披露。
+    pub const SET_D: ZoneBands = ZoneBands { free_max_k: 100, trans_max_k: 2000 };
+}
+
+/// 用留出样本评估拟合（ADR-NEW-25 3a 独立参照；分区=预注册绝对带）。
+/// 泛化核：对任意模型 q(k) 评估（X3 审计整改：消除各族评估的双实现，
+/*L451*/
+/// 豆包/MiniMax 报告 q_model 副本漂移教训）。
+pub fn evaluate_q_fn(
+    q: impl Fn(u64) -> u64,
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    assert!(!holdout.is_empty(), "no holdout samples");
+    let mut free_max = 0u64;
+    let mut trans_max = 0u64;
+    let mut sat_max = 0u64;
+/*L461*/
+    let (mut free_n, mut trans_n, mut sat_n) = (0usize, 0usize, 0usize);
+    for s in holdout {
+        let qm = q(s.k_permille);
+        let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
+            / (s.q_permille.max(1) as u128);
+        let err = err as u64;
+        if s.k_permille < bands.free_max_k {
+            free_max = free_max.max(err);
+            free_n += 1;
+        } else if s.k_permille < bands.trans_max_k {
+/*L471*/
+            trans_max = trans_max.max(err);
+            trans_n += 1;
+        } else {
+            sat_max = sat_max.max(err);
+            sat_n += 1;
+        }
+    }
+    FitErrorReport {
+        free_flow_max_err_permille: free_max,
+        transition_max_err_permille: trans_max,
+/*L481*/
+        saturated_max_err_permille: sat_max,
+        k_c_err_permille: 0, // 平台/饱和族无峰值拐点，N/A
+        points_evaluated: holdout.len(),
+        free_n,
+        trans_n,
+        sat_n,
+    }
+}
+
+/// 判据归一化损失（②′ 确认轮预注册拟合目标，2026-11-22 决策6 Z3）：
+/*L491*/
+/// loss = max over 非空区 (区最大相对误差‰ × 1000 / 区判据‰)。
+/// **估计目标与判据同构**——杜绝"估计目标≠判据"第三次（决策4 绝对 SSE、
+/// 决策5 rel-SSE 均与分区判据不同构，反事实复算显示仅换目标即翻转判定）。
+/// 空区跳过；判定阈值=1000（即 100% 判据边界）。
+pub fn criterion_aligned_loss(
+    q: impl Fn(u64) -> u64,
+    samples: &[MfdSample],
+    bands: &ZoneBands,
+) -> u64 {
+    let r = evaluate_q_fn(q, samples, bands);
+/*L501*/
+    let mut loss = 0u64;
+    if r.free_n > 0 {
+        loss = loss.max(r.free_flow_max_err_permille * 1000 / FREE_FLOW_CRIT_PERMILLE);
+    }
+    if r.trans_n > 0 {
+        loss = loss.max(r.transition_max_err_permille * 1000 / TRANSITION_CRIT_PERMILLE);
+    }
+    if r.sat_n > 0 {
+        loss = loss.max(r.saturated_max_err_permille * 1000 / SATURATED_CRIT_PERMILLE);
+    }
+/*L511*/
+    loss
+}
+
+/// 每点分辨率下限（②′ 修测四项，MiMo/Claude 口径）：判据×q_obs ≥ 2 个采样
+/// 单位（‰ 量化）——相对判据在该点的绝对容差必须超过 ±2‰ 取整噪声；
+/// 不满足→该点"分辨率受限"，以绝对误差 |Δq|≤2‰ 复核并在证据中披露。
+pub fn point_resolution_ok(q_obs_permille: u64, crit_permille: u64) -> bool {
+    crit_permille.saturating_mul(q_obs_permille) >= 2 * 1000
+}
+
+/*L521*/
+/// 稳态判据（②′ 稳态硬门；文档与实现口径统一=双口径任一）：
+/// 窗口前后半 q 差 ≤2‰ **或** ≤15 辆。非稳态档位不得静默——单独报告
+/// （稳态率目标：自由流区 ≥50%，DeepSeek 口径）。
+pub fn steady_window(back_half_delta_permille: u64, back_half_delta_vehicles: u64) -> bool {
+    back_half_delta_permille <= 2 || back_half_delta_vehicles <= 15
+}
+
+/// 有理饱和族评估（evaluate_q_fn 委托）。
+pub fn evaluate_rational_fit(
+    fit: &RationalSaturationFit,
+/*L531*/
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    evaluate_q_fn(|k| q_rational_permille(fit, k), holdout, bands)
+}
+
+/// p-norm 族评估（evaluate_q_fn 委托）。
+pub fn evaluate_pnorm_fit(
+    fit: &PNormConcaveFit,
+    holdout: &[MfdSample],
+/*L541*/
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    evaluate_q_fn(|k| q_pnorm_permille(fit, k), holdout, bands)
+}
+
+/// (k, q) 采样点：k=活跃车辆/边（放大 1000 倍定点），q=边遍历/边每 tick（放大 1000 倍）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MfdSample {
+    pub k_permille: u64,
+    pub q_permille: u64,
+/*L551*/
+}
+
+/// 三角基本图拟合（定点；候选模型形式，ADR-NEW-25 决策 1）。
+/// 2026-11-19 投票修复：自由流斜率改 k≤k_c 点过原点定点最小二乘（原三点估计
+/// v_free=q_max/k_first 高估约 31 倍）；拥堵斜率仅在观测到下降支时辨识。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriangleFit {
+    /// 自由流斜率（q/k，放大 1000 倍；物理上界=1000，即每车每 tick 一条边）。
+    pub v_free_permille: u64,
+    /// 临界密度（峰值处 k，放大 1000 倍）。
+/*L561*/
+    pub k_c_permille: u64,
+    /// 峰值流量（放大 1000 倍）。
+    pub q_max_permille: u64,
+    /// 拥堵斜率绝对值（放大 1000 倍；未观测到下降支时为 0=不可辨识）。
+    pub w_permille: u64,
+    /// 是否观测到拥堵下降支（q 在 k>k_c 处低于 q_max）。false=数据呈单调饱和
+    /// 平台型，三角的 -w 分支不可辨识，模型应按平台型（单调饱和凹曲线）解读。
+    pub descending_branch_observed: bool,

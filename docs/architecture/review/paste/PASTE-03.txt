@@ -1,0 +1,232 @@
+第 3 段 · 范围 A · 节选（第 1/4 部分）
+// FILE: crates/sim-pathfinding/src/lib.rs @1db87d2
+/*L1*/
+//! 寻路系统：确定性 A* 与机制 B 预算让步（主文档 2.2 架构分层；ADR-NEW-24 决策 2/3）。
+//! 权威 crate。
+//!
+//! Stage 2A 实装（2026-11-19）：
+//! - A* 唯一性五条（ADR-NEW-24 决策 2）：启发式=曼哈顿定点；open 集排序键 (f, h, node_id)
+//!   全序升序；邻居展开=CSR 数组序；closed 首展闭合、g 严格更小才 reopen；禁 BinaryHeap。
+//! - 机制 B（ADR-NEW-20 三硬约束）：B_k = min(b·g^k, L)，g=2，L=|V|；单 tick 原子搜索
+//!   （方案③：跨 tick 不保存部分搜索状态，让步即丢弃本 tick 进度、下 tick 以更大预算重做）；
+//!   解析上界 k ≤ ⌈log_g(|V|/b)⌉ + 1 tick 内完成或进入受阻判定。
+//! - 三计数器分离（ADR-NEW-20 + X2 审计修复）：budget_yield_count（请求自身预算让步，
+/*L11*/
+//!   债务 #27 判据只认它）与 stale_recompute_count（过期重算）与 quota_yield_count
+//!   （全局配额耗尽让步）互不混用。
+
+#![forbid(unsafe_code)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use sim_network::Network;
+
+/// 所属架构层（依赖方向检查与文档用）。
+pub const LAYER: &str = "寻路系统";
+/*L21*/
+/// 是否权威 crate（2.9 确定性边界内；权威 crate 置严格 clippy.toml）。
+pub const AUTHORITATIVE: bool = true;
+
+/// 供调用方与测试以函数调用读取权威标记（clippy 允许的运行时读取点）。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+// ---------------- 机制 B 预算策略 ----------------
+
+/*L31*/
+/// 机制 B 参数（ADR-NEW-24 决策 3）：b=每 tick 节点预算，g=放大幅（默认 2），L=|V|。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BudgetPolicy {
+    pub b: u64,
+    pub g: u64,
+}
+
+impl Default for BudgetPolicy {
+    fn default() -> Self {
+        BudgetPolicy { b: 64, g: 2 }
+/*L41*/
+    }
+}
+
+impl BudgetPolicy {
+    /// B_k = min(b·g^k, L)（k=连续让步次数）。
+    pub fn budget_for_yield(&self, yields: u64, n_nodes: u64) -> u64 {
+        let l = n_nodes.max(1);
+        let mut acc = self.b.max(1);
+        for _ in 0..yields {
+            acc = acc.saturating_mul(self.g.max(2));
+/*L51*/
+            if acc >= l {
+                break;
+            }
+        }
+        acc.min(l)
+    }
+
+    /// 解析上界：k ≤ ⌈log_g(L/b)⌉ + 1 个 tick 内完成或受阻（ADR-NEW-20 三硬约束）。
+    pub fn max_ticks_to_terminal(&self, n_nodes: u64) -> u64 {
+        let l = n_nodes.max(1);
+/*L61*/
+        let b = self.b.max(1).min(l);
+        let mut k = 0u64;
+        let mut acc = b;
+        while acc < l {
+            acc = acc.saturating_mul(self.g.max(2));
+            k += 1;
+        }
+        k + 1
+    }
+}
+/*L71*/
+
+// ---------------- 搜索结果 ----------------
+
+/// 单次（单 tick 原子）搜索结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FindOutcome {
+    /// 找到路径：边 ID 序列 + 总代价 + 本次展开节点数。
+    Complete { path: Vec<u64>, cost: i64, expanded: u64 },
+    /// 本 tick 节点预算耗尽（让步；不保存中间状态，下 tick 以 B_k 重做）。
+    Yielded { expanded: u64 },
+/*L81*/
+    /// open 集耗尽未达目标：不可达（进入受阻终态的判定输入）。
+    /// 携带本次展开节点数（X2 审计修复：不可达搜索实耗必须入账，否则同 tick
+    /// 多不可达请求可绕过全局配额 Q，违反 ADR-NEW-14 条 3）。
+    Unreachable { expanded: u64 },
+}
+
+impl FindOutcome {
+    /// 本次搜索展开的节点数（三种结果均携带；全局配额扣减用）。
+    pub fn expanded(&self) -> u64 {
+        match self {
+/*L91*/
+            FindOutcome::Complete { expanded, .. }
+            | FindOutcome::Yielded { expanded }
+            | FindOutcome::Unreachable { expanded } => *expanded,
+        }
+    }
+}
+
+/// 寻路器状态：双计数器 + 机制 B 执行（ADR-NEW-20）。
+#[derive(Clone, Debug, Default)]
+pub struct PathFinder {
+/*L101*/
+    pub policy: BudgetPolicy,
+    /// 预算让步计数（连续让步，成功/受阻即清零）。
+    pub budget_yield_count: u64,
+    /// 过期重算计数（与让步分离，独立上限由调用方约束）。
+    pub stale_recompute_count: u64,
+    /// 配额让步计数（全局每 tick 配额耗尽导致的让步；X2 审计修复：与
+    /// budget_yield_count 分离——债务 #27 "让步≥8"切换判据只认请求自身预算
+    /// 让步，配额让步混入会污染判据，MiMo/GPT-6/Gemini 审计命中）。
+    pub quota_yield_count: u64,
+}
+/*L111*/
+
+impl PathFinder {
+    pub fn new(policy: BudgetPolicy) -> Self {
+        PathFinder { policy, ..Default::default() }
+    }
+
+    /// 发起一次寻路请求（单 tick 原子；机制 B 预算 B_k）。
+    pub fn request(&mut self, net: &Network, coords: &[(i64, i64)], start: u64, goal: u64) -> FindOutcome {
+        let budget = self.policy.budget_for_yield(self.budget_yield_count, net.node_count());
+        let out = find_once(net, coords, start, goal, budget);
+/*L121*/
+        match &out {
+            FindOutcome::Complete { .. } | FindOutcome::Unreachable { .. } => {
+                self.budget_yield_count = 0;
+            }
+            FindOutcome::Yielded { .. } => {
+                self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+            }
+        }
+        out
+    }
+/*L131*/
+
+    /// 全局每 tick 配额下的寻路请求（债务 #29 定案，ADR-NEW-24 决策 3 补充）。
+    ///
+    /// B_k ≤ min(b·2^k, L, budget.remaining)；实耗展开数扣减 `budget.remaining`；
+    /// 配额耗尽即让步（`Yielded { expanded: 0 }`，不消耗预算）。
+    /// 多请求处理顺序（请求 ID 稳定序）与每 tick `TickBudget::reset()` 由调用方负责。
+    pub fn request_with_budget(
+        &mut self,
+        net: &Network,
+        coords: &[(i64, i64)],
+/*L141*/
+        start: u64,
+        goal: u64,
+        budget: &mut TickBudget,
+    ) -> FindOutcome {
+        if budget.remaining == 0 {
+            self.quota_yield_count = self.quota_yield_count.saturating_add(1);
+            return FindOutcome::Yielded { expanded: 0 };
+        }
+        // 决策5 整改（预算截断归因，Gemini/Claude）：b_k 被 remaining 截断且本次
+        // 未能完成时属"配额让步"（quota_yield_count），不污染 #27"让步≥8 切换"
+/*L151*/
+        // 判据所用的 budget_yield_count（请求自身预算让步）。
+        let needs = self.policy.budget_for_yield(self.budget_yield_count, net.node_count());
+        let b_k = needs.min(budget.remaining);
+        let truncated = b_k < needs;
+        let out = find_once(net, coords, start, goal, b_k);
+        // 不可达同样携带 expanded 并扣减全局配额（X2 审计修复）。
+        budget.remaining = budget.remaining.saturating_sub(out.expanded());
+        match &out {
+            FindOutcome::Complete { .. } | FindOutcome::Unreachable { .. } => {
+                self.budget_yield_count = 0;
+/*L161*/
+            }
+            FindOutcome::Yielded { .. } => {
+                if truncated {
+                    self.quota_yield_count = self.quota_yield_count.saturating_add(1);
+                } else {
+                    self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+                }
+            }
+        }
+        out
+/*L171*/
+    }
+
+    /// 过期重算记账（与让步计数分离；ADR-NEW-20 双计数器）。
+    pub fn note_stale_recompute(&mut self) {
+        self.stale_recompute_count = self.stale_recompute_count.saturating_add(1);
+    }
+}
+
+/// 全局每 tick 寻路配额 Q 的单一来源常量（X5 审计整改：消除多处字面量
+/// 状态互斥）。数值=65536，**已定案**（2026-11-19 决策3 投票 1a，9:1 通过；
+/*L181*/
+/// 含义=对实测 worst 398@40k 留余量的保险丝，非"100× 余量"）。
+pub const TICK_QUOTA: u64 = 65_536;
+
+/// 全局每 tick 寻路配额（债务 #29 定案）。
+///
+/// `remaining` = 本 tick 尚可消耗的节点展开数（确定性工作量单位，对齐 ADR-NEW-14 条 3）；
+/// 每 tick 由调用方在 tick 边界 `reset()` 归满（每 tick 预算独立）。
+/// 多请求共享：请求实耗扣减，耗尽后其余请求让步——全局每 tick 总展开 ≤ `quota`。
+#[derive(Clone, Debug)]
+pub struct TickBudget {
+/*L191*/
+    pub quota: u64,
+    pub remaining: u64,
+}
+
+impl TickBudget {
+    pub fn new(quota: u64) -> Self {
+        TickBudget { quota, remaining: quota }
+    }
+
+    /// tick 边界重置。
+/*L201*/
+    pub fn reset(&mut self) {
+        self.remaining = self.quota;
+    }
+}
+
+// ---------------- 确定性 A*（ADR-NEW-24 决策 2） ----------------
+
+fn h_manhattan(coords: &[(i64, i64)], node: u64, goal: u64) -> i64 {
+    let (x1, y1) = coords.get(node as usize).copied().unwrap_or((0, 0));

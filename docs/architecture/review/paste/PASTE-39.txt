@@ -1,0 +1,64 @@
+第 39 段 · 范围 E · 完整
+// FILE: .github/scripts/dep_graph_check.py @1db87d2
+/*L1*/
+# -*- coding: utf-8 -*-
+"""依赖方向检查（Stage 1 T1，债务 #15 约束执行）。
+规则见 docs/architecture/crate-authority-list.md：
+ 1. sim-core 仅可依赖基础设施 crate（sim-codec、sim-error），不得依赖其他 crate；
+ 2. 权威 crate 不依赖非权威 crate；
+ 3. 任何 crate 不依赖 sim-view；
+ 4. crates/ 不依赖 spikes/；
+ 5. sim-test-support 只出现在 dev-dependencies。
+exit 0 = 全部通过。
+"""
+/*L11*/
+import sys, os, tomllib
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+AUTHORITATIVE = {'sim-core', 'sim-agent', 'sim-network', 'sim-pathfinding',
+                 'sim-traffic', 'sim-economy', 'sim-error', 'sim-codec',
+                 'sim-digest', 'sim-rng', 'simscalar', 'sim-save'}
+NON_AUTHORITATIVE = {'sim-view', 'sim-test-support', 'dep-verify'}
+SPIKES = {'simscalar-spike', 'rng-spike', 'network-tx-spike', 'save-restore-spike'}
+/*L21*/
+
+errors = []
+
+def members():
+    with open(os.path.join(ROOT, 'Cargo.toml'), 'rb') as f:
+        ws = tomllib.load(f)['workspace']
+    for rel in ws['members']:
+        manifest = os.path.join(ROOT, rel, 'Cargo.toml')
+        with open(manifest, 'rb') as f:
+            data = tomllib.load(f)
+/*L31*/
+        yield data['package']['name'], data
+
+for name, data in members():
+    deps = set(data.get('dependencies', {}).keys())
+    dev_deps = set(data.get('dev-dependencies', {}).keys())
+
+    if name == 'sim-core' and deps - {'sim-codec', 'sim-error'}:
+        errors.append(f'规则1：sim-core 仅可依赖 sim-codec/sim-error，实际 {sorted(deps)}')
+    if name in AUTHORITATIVE:
+        # 运行时依赖禁止指向非权威；sim-test-support 仅允许出现在 dev-dependencies（规则 5）
+/*L41*/
+        bad = deps & NON_AUTHORITATIVE
+        if bad:
+            errors.append(f'规则2：权威 {name} 运行时依赖非权威 {sorted(bad)}')
+    if name != 'sim-view' and 'sim-view' in deps | dev_deps:
+        errors.append(f'规则3：{name} 不得依赖 sim-view')
+    if not name.endswith('-spike') and (deps | dev_deps) & SPIKES:
+        errors.append(f'规则4：{name} 不得依赖 spikes（{sorted((deps | dev_deps) & SPIKES)}）')
+    if 'sim-test-support' in deps:
+        errors.append(f'规则5：{name} 的 sim-test-support 必须仅在 dev-dependencies')
+
+/*L51*/
+if errors:
+    print('依赖方向检查 FAILED：')
+    for e in errors:
+        print(' -', e)
+    sys.exit(1)
+print('依赖方向检查 PASS（规则 1-5）')

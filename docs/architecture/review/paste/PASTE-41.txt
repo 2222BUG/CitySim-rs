@@ -1,0 +1,40 @@
+第 41 段 · 范围 E · 完整
+// FILE: Cargo.toml @1db87d2
+/*L1*/
+# CitySim-rs workspace（Stage 0 Step 9 建立；Stage 1 T1 扩充分层 crate）
+# 成员=spikes/*（Spike 验证件）与 crates/*（正式 crate）；
+# 权威/非权威分类见 docs/architecture/crate-authority-list.md（债务 #15 已定案），
+# 依赖方向由 .github/scripts/dep_graph_check.py 强制。
+[workspace]
+resolver = "2"
+members = [
+    "spikes/simscalar-spike",
+    "spikes/rng-spike",
+    "spikes/network-tx-spike",
+/*L11*/
+    "spikes/save-restore-spike",
+    "crates/sim-test-support",
+    "crates/dep-verify",
+    "crates/sim-core",
+    "crates/sim-agent",
+    "crates/sim-network",
+    "crates/sim-pathfinding",
+    "crates/sim-traffic",
+    "crates/sim-economy",
+    "crates/sim-view",
+/*L21*/
+    "crates/simscalar",
+    "crates/sim-rng",
+    "crates/sim-codec",
+    "crates/sim-digest",
+    "crates/sim-error",
+    "crates/sim-save",
+    "crates/sim-parallel",
+    "crates/sim-replay",
+    "crates/sim-world",
+]
+/*L31*/
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"

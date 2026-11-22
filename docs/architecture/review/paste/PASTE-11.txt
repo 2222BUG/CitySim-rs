@@ -1,0 +1,194 @@
+第 11 段 · 范围 C · 节选（第 2/6 部分）
+        g.record("sim-traffic", "TrafficTick", w.as_bytes());
+    }
+}
+
+/// 拟合误差报告（3a 独立参照验证口径；全定点‰，权威 crate 禁浮点）。
+/// 三区口径（2026-11-19 校准复核）：自由流 k<k_turn/2、转折区 [k_turn/2, 4·k_turn)、
+/// 饱和区 k≥4·k_turn（转折区宽度系试点数据 B 导出，须由确认集 C 复测）；
+/// k_c 位置偏差仅对三角型（descending_branch_observed）有意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FitErrorReport {
+/*L211*/
+    /// 自由流区（k < k_turn/2）最大相对误差（‰）
+    pub free_flow_max_err_permille: u64,
+    /// 转折区（k_turn/2 ≤ k < 4·k_turn）最大相对误差（‰）——只记录不设硬判据
+    pub transition_max_err_permille: u64,
+    /// 饱和区（k ≥ 4·k_turn）最大相对误差（‰）
+    pub saturated_max_err_permille: u64,
+    /// 临界密度位置误差（|k_c_拟合 − k_c_观测|，‰）；平台型标 N/A 不判
+    pub k_c_err_permille: u64,
+    /// 参与评估的留出样本点数
+    pub points_evaluated: usize,
+/*L221*/
+    /// 各区样本数（决策4(d)/决策5 共识：空区不得真空 PASS；<2 在判定层标警示）
+    pub free_n: usize,
+    pub trans_n: usize,
+    pub sat_n: usize,
+}
+
+/// 判据常量（单一来源，ADR-NEW-25 3a 判据与代码断言必须引用同一常量——
+/// 决策4 整改项 (f)：原 simulation 测试断言 250‰ 与判据 100‰ 门禁脱钩）。
+/// 复测协议（Set D+第二拓扑+预注册 fixture）后由决策4 复核回填。
+pub const FREE_FLOW_CRIT_PERMILLE: u64 = 100;
+/*L231*/
+pub const TRANSITION_CRIT_PERMILLE: u64 = 250;
+pub const SATURATED_CRIT_PERMILLE: u64 = 250;
+pub const K_C_CRIT_PERMILLE: u64 = 200;
+
+/// 模型流量 q_model(k)（‰）：平台型 min(v_free·k/1000, q_max)；
+/// 三角型在下降支 q_max − w·(k−k_c)（负值截 0）。
+/// （2026-11-19 决策4 整改：公开供 example/测试复用，删除 mfd3a.rs 内联副本。）
+pub fn q_model_permille(fit: &TriangleFit, k_permille: u64) -> u64 {
+    let q = fit.v_free_permille as u128 * k_permille as u128 / 1000;
+    let q = q.min(fit.q_max_permille as u128) as u64;
+/*L241*/
+    if fit.descending_branch_observed && k_permille > fit.k_c_permille {
+        let drop = fit.w_permille as u128 * (k_permille - fit.k_c_permille) as u128 / 1000;
+        q.saturating_sub(drop as u64)
+    } else {
+        q
+    }
+}
+
+/// 用留出样本（未参与拟合的密度点）评估拟合误差（ADR-NEW-25 3a 独立参照）。
+/// 误差=|q_model − q_obs|·1000 / max(q_obs, 1)（‰）；k_c 观测值=留出样本 argmax q 的密度。
+/*L251*/
+/// 分区（审计修复 2026-11-20）：预注册绝对带 ZoneBands（禁由被评参数导出，决策4 3a(a)）。
+pub fn evaluate_fit(
+    fit: &TriangleFit,
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    // 委托 evaluate_q_fn（X3 泛化核）：分区统计/计数单一实现（防双实现漂移）；
+    // 仅 k_c 位置误差为三角型特有。
+    let mut r = evaluate_q_fn(|k| q_model_permille(fit, k), holdout, bands);
+    let k_obs_peak = holdout
+/*L261*/
+        .iter()
+        .max_by_key(|s| s.q_permille)
+        .map(|s| s.k_permille)
+        .unwrap_or(0);
+    r.k_c_err_permille = fit.k_c_permille.abs_diff(k_obs_peak);
+    r
+}
+
+// ===========================================================================
+// 凹形有理饱和族（2026-11-19 决策4 定案默认族；ADR-NEW-25 决策 1）
+/*L271*/
+// q(k) = q_max · k / (k + k_half)；定点 +−×÷ only（禁 exp/log/powf）。
+// ===========================================================================
+
+/// 有理饱和拟合参数（定点整数）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RationalSaturationFit {
+    /// 渐近流量上界 q_max（‰）
+    pub q_max_permille: u64,
+    /// 半饱和密度 k_half（‰）——q(k_half)=q_max/2；零密度斜率=q_max·1000/k_half。
+    pub k_half_permille: u64,
+/*L281*/
+}
+
+impl RationalSaturationFit {
+    /// 零密度斜率（‰，q/k 放大 1000 倍）；物理上界=1000‰。
+    pub fn zero_density_slope_permille(&self) -> u64 {
+        if self.k_half_permille == 0 { return u64::MAX; }
+        (self.q_max_permille as u128 * 1000 / self.k_half_permille as u128) as u64
+    }
+}
+
+/*L291*/
+/// 定点模型流量 q(k)=q_max·k/(k+k_half)（‰），就近舍入（与 SimScalar 契约同口径）。
+pub fn q_rational_permille(fit: &RationalSaturationFit, k_permille: u64) -> u64 {
+    if k_permille == 0 { return 0; }
+    let num = fit.q_max_permille as u128 * k_permille as u128;
+    let den = k_permille as u128 + fit.k_half_permille as u128; // u128 先扩后加（GPT-6 E2 防 u64 环绕）
+    ((num + den / 2) / den) as u64
+}
+
+/// 辨识（确定性定点）：q_max 与 k_half **联合**整数网格最小化残差平方和
+/// （u128 定点；平局取先遇到的最小 (q_max, k_half)）。q_max 候选域=观测最大值
+/*L301*/
+/// 至其 4 倍+16（渐近值在未饱和数据下不可由观测最大值代表——W1 实测教训）；
+/// k_half 候选域=1..4·k_max。
+/// **越界判失败口径（决策4 条件⑧，审计修复 2026-11-20）**：先做无约束自由估计；
+/// 若零密度斜率超 1000‰（每车每 tick 至多一条边），**判定层直接 FAIL**（binding=true
+/// 即失败信号）；物理可行域回退解**仅作诊断披露与敏感性参考，不得参与 PASS/FAIL
+/// 判定**——旧口径"回退解参与判定"=把约束当估计用，与决策4 条件⑧相反，已废
+/// （旧 v_free=min(1000) 截断掩盖同样已废）。
+/// 返回 (拟合, 自由估计零密度斜率‰, 约束是否绑定)。
+pub fn fit_rational_saturation_detailed(
+    samples: &[MfdSample],
+/*L311*/
+    bands: &ZoneBands,
+) -> (RationalSaturationFit, u64, bool) {
+    assert!(!samples.is_empty(), "no samples");
+    // q≤k 不变量下沉到拟合器入口（决策5 豆包 R3）：示例外的任何调用方
+    // 亦不得喂入 q>k 样本（单位斜率物理界，违者=采样口径缺陷）。
+    assert!(
+        samples.iter().all(|s| s.q_permille <= s.k_permille),
+        "q>k sample violates unit-slope bound (sampling population mismatch)"
+    );
+    let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
+/*L321*/
+    let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
+    let mut best_free: Option<(u64, u64, u64)> = None;
+    let mut best_feasible: Option<(u64, u64, u64)> = None;
+    for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
+        for k_half in 1..=k_max.saturating_mul(4).max(1) {
+            let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+            // 目标=判据归一化分区最大相对误差（②′ 修测，2026-11-22）——
+            // 估计目标与判据同构（旧绝对 SSE/rel-SSE 均不同构，废）。
+            let loss = criterion_aligned_loss(|k| q_rational_permille(&fit, k), samples, bands);
+            if best_free.is_none_or(|(b, _, _)| loss < b) {
+/*L331*/
+                best_free = Some((loss, q_max, k_half));
+            }
+            if k_half >= q_max && best_feasible.is_none_or(|(b, _, _)| loss < b) {
+                best_feasible = Some((loss, q_max, k_half));
+            }
+        }
+    }
+    let (_, q_free, k_free) = best_free.unwrap();
+    let free_slope = (q_free as u128 * 1000 / k_free as u128) as u64;
+    if free_slope <= 1000 {
+/*L341*/
+        let fit = RationalSaturationFit { q_max_permille: q_free, k_half_permille: k_free };
+        return (fit, free_slope, false);
+    }
+    let (_, q_f, k_f) = best_feasible.expect("no physically feasible fit (slope<=1000‰)");
+    (
+        RationalSaturationFit { q_max_permille: q_f, k_half_permille: k_f },
+        free_slope,
+        true,
+    )
+}
+/*L351*/
+
+/// 便捷入口=详细版第 1 返回值（物理可行拟合）。
+pub fn fit_rational_saturation(samples: &[MfdSample], bands: &ZoneBands) -> RationalSaturationFit {
+    fit_rational_saturation_detailed(samples, bands).0
+}
+
+/// 广义凹形族（p-norm p=2）：q(k) = q_max·k / sqrt(k² + k0²)。
+/// X3 审计整改（豆包清单 d）：多族并行辨识，避免"单族以偏概全"——
+/// W3 转 C 的复测只用了有理族一支，豆包实证 p-norm p=2 在同数据上可全过。
+/// 定点 +−×÷ + 整数平方根（u128::isqrt），无超越函数（确定性红线保持）。
+/*L361*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PNormConcaveFit {
+    /// 渐近流量上界 q_max（‰）
+    pub q_max_permille: u64,
+    /// 尺度密度 k0（‰）——q(k0)=q_max/√2；零密度斜率=q_max·1000/k0。
+    pub k0_permille: u64,
+}
+
+impl PNormConcaveFit {
+    /// 零密度斜率（‰）；物理上界=1000‰。
+/*L371*/
+    pub fn zero_density_slope_permille(&self) -> u64 {
+        if self.k0_permille == 0 { return u64::MAX; }
+        (self.q_max_permille as u128 * 1000 / self.k0_permille as u128) as u64
+    }
+}
+

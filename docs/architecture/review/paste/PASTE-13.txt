@@ -1,0 +1,225 @@
+第 13 段 · 范围 C · 节选（第 4/6 部分）
+}
+
+/*L571*/
+/// 从采样序列拟合基本图（确定性：输入序即计算序）。
+/// 采样须按 k 升序传入（调用方排序，键相同按采样序稳定）。
+pub fn fit_triangle(samples: &[MfdSample]) -> TriangleFit {
+    assert!(!samples.is_empty(), "no samples");
+    // 注（决策5）：q≤k 采样不变量的真实数据保障在两个 detailed 拟合器入口断言
+    // 与 example 采集点 fail-fast；fit_triangle 为遗留估计器，其 clamp 语义
+    // （v_free.min(1000)）需要越界合成数据才能测试，故此处不断言。
+    let mut peak = samples[0];
+    for s in samples {
+        if s.q_permille > peak.q_permille {
+/*L581*/
+            peak = *s;
+        }
+    }
+    let k_c = peak.k_permille.max(1);
+    let q_max = peak.q_permille;
+    // 自由流斜率=相邻采样点最大割线斜率 max(Δq/Δk)（k 升序输入）。
+    // 语义=零密度导数的可观测上界；对三角数据与平台型数据均正确。
+    // （2026-11-19 二次修正：过原点全点最小二乘在单调饱和数据下被高 k 点拉低。）
+    let mut v_free = if samples[0].k_permille > 0 {
+        (samples[0].q_permille as u128 * 1000 / samples[0].k_permille as u128) as u64
+/*L591*/
+    } else {
+        0
+    };
+    for pair in samples.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if b.k_permille > a.k_permille {
+            let slope = ((b.q_permille.saturating_sub(a.q_permille)) as u128 * 1000
+                / (b.k_permille - a.k_permille) as u128) as u64;
+            if slope > v_free {
+                v_free = slope;
+/*L601*/
+            }
+        }
+    }
+    // 物理上界截断：本微观模型每车每 tick 至多一条边 → v_free ≤ 1000‰；
+    // 离散化下割线斜率可短暂越界（如 Δq/Δk≈1010‰），按契约截 0~1000。
+    let v_free = v_free.min(1000);
+    // 拥堵斜率：仅当 k>k_c 处存在 q<q_max 的下降支样本才可辨识；
+    // 对 k>k_c 点拟合 q ≈ q_max - w·(k-k_c)：w = Σ(Δk·Δq)/Σ(Δk²)（负值截 0）。
+    let descending = samples
+        .iter()
+/*L611*/
+        .any(|s| s.k_permille > k_c && s.q_permille < q_max);
+    let mut w = 0u64;
+    if descending {
+        let (mut n2, mut d2) = (0i128, 0i128);
+        for s in samples {
+            if s.k_permille > k_c {
+                let dk = (s.k_permille - k_c) as i128;
+                let dq = q_max as i128 - s.q_permille as i128;
+                n2 += dk * dq;
+                d2 += dk * dk;
+/*L621*/
+            }
+        }
+        if d2 > 0 && n2 > 0 {
+            w = (n2 * 1000 / d2) as u64;
+        }
+    }
+    TriangleFit {
+        v_free_permille: v_free,
+        k_c_permille: k_c,
+        q_max_permille: q_max,
+/*L631*/
+        w_permille: w,
+        descending_branch_observed: descending,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn small_run(densities: &[u64]) -> (GlobalDigest, Vec<MfdSample>) {
+/*L641*/
+        let mut g = GlobalDigest::new();
+        let mut samples = Vec::new();
+        for &inj in densities {
+            let mut gt = GridTraffic::new(8, 8, 1, 0x00C0_FFEE_1234_5678);
+            for t in 0..260u64 {
+                // 密度阶梯=持续注入；200 tick 后进入稳态采样
+                gt.inject(inj);
+                let _ = t;
+                gt.step();
+                gt.fold_digest(&mut g);
+/*L651*/
+            }
+            samples.push(MfdSample {
+                k_permille: gt.active_count() * 1000 / gt.edge_count(),
+                q_permille: gt.flow_this_tick * 1000 / gt.edge_count(),
+            });
+        }
+        (g, samples)
+    }
+
+    #[test]
+/*L661*/
+    fn role_is_pinned() {
+        assert!(authoritative());
+    }
+
+    #[test]
+    fn tbench_same_seed_two_runs_agree() {
+        let (g1, s1) = small_run(&[1, 2, 4]);
+        let (g2, s2) = small_run(&[1, 2, 4]);
+        assert_eq!(g1.finalize(), g2.finalize());
+        assert_eq!(s1, s2);
+/*L671*/
+    }
+
+    #[test]
+    fn mfd_shape_basic() {
+        let (_, samples) = small_run(&[1, 2, 4, 8, 16]);
+        // q 非负、峰值存在、k 单调可排
+        assert!(samples.iter().any(|s| s.q_permille > 0));
+        let peak = samples.iter().max_by_key(|s| s.q_permille).unwrap();
+        assert!(peak.q_permille > 0);
+    }
+/*L681*/
+
+    #[test]
+    fn triangle_fit_is_deterministic() {
+        let (_, mut samples) = small_run(&[1, 2, 4, 8]);
+        samples.sort_by_key(|s| s.k_permille);
+        let f1 = fit_triangle(&samples);
+        let f2 = fit_triangle(&samples);
+        assert_eq!(f1, f2);
+        assert!(f1.q_max_permille > 0);
+        assert!(f1.k_c_permille > 0);
+/*L691*/
+    }
+
+    // —— 2026-11-19 投票修复回归 ——
+
+    #[test]
+    fn free_flow_slope_is_physically_bounded() {
+        // 物理上界：每车每 tick 至多一条边 → v_free ≤ 1000‰。
+        // 旧三点估计（q_max/k_first）高估约 31 倍，此测试为回归护栏。
+        let (_, mut samples) = small_run(&[1, 2, 4, 8, 16]);
+        samples.sort_by_key(|s| s.k_permille);
+/*L701*/
+        let f = fit_triangle(&samples);
+        assert!(f.v_free_permille > 0, "v_free = {}", f.v_free_permille);
+        assert!(
+            f.v_free_permille <= 1000,
+            "v_free = {}‰ exceeds physical bound 1000‰",
+            f.v_free_permille
+        );
+    }
+
+    #[test]
+/*L711*/
+    fn monotone_saturation_reports_no_descending_branch() {
+        // 点队列模型无 spillback，(k,q) 单调饱和 → 三角 -w 分支不可辨识，
+        // 拟合须显式报告 descending_branch_observed=false（平台型解读）。
+        let (_, mut samples) = small_run(&[2, 4, 8, 16, 32]);
+        samples.sort_by_key(|s| s.k_permille);
+        let f = fit_triangle(&samples);
+        if samples.iter().filter(|s| s.k_permille > f.k_c_permille).all(|s| s.q_permille >= f.q_max_permille)
+        {
+            assert!(!f.descending_branch_observed);
+            assert_eq!(f.w_permille, 0);
+/*L721*/
+        }
+    }
+
+    #[test]
+    fn synthetic_triangle_is_recovered() {
+        // 人工合成精确三角：v_free=1000‰、k_c=100‰、q_max=100‰、w=500‰。
+        let samples = vec![
+            MfdSample { k_permille: 10, q_permille: 10 },
+            MfdSample { k_permille: 50, q_permille: 50 },
+            MfdSample { k_permille: 100, q_permille: 100 },
+/*L731*/
+            MfdSample { k_permille: 200, q_permille: 50 },
+            MfdSample { k_permille: 300, q_permille: 0 },
+        ];
+        let f = fit_triangle(&samples);
+        assert_eq!(f.v_free_permille, 1000);
+        assert_eq!(f.k_c_permille, 100);
+        assert_eq!(f.q_max_permille, 100);
+        assert!(f.descending_branch_observed);
+        assert_eq!(f.w_permille, 500);
+    }
+/*L741*/
+
+    #[test]
+    fn explicit_id_injection_is_order_independent() {
+        // 2026-11-19 投票修复：同一 ID 集合以不同物理顺序注入，权威状态（摘要）必须一致。
+        let run = |order: &[u64]| {
+            let mut gt = GridTraffic::new(8, 8, 1, 0x00C0_FFEE_1234_5678);
+            for &id in order {
+                gt.inject_with_id(id);
+            }
+            let mut g = GlobalDigest::new();
+/*L751*/
+            gt.fold_digest(&mut g);
+            for _ in 0..10u64 {
+                gt.step();
+                gt.fold_digest(&mut g);
+            }
+            g.finalize()
+        };
+        let d1 = run(&[3, 1, 2, 5, 4]);
+        let d2 = run(&[1, 2, 3, 4, 5]);
+        let d3 = run(&[5, 4, 3, 2, 1]);
+/*L761*/
+        assert_eq!(d1, d2, "injection order must not matter");
+        assert_eq!(d2, d3, "injection order must not matter");
+    }
+
+    #[test]
+    fn fold_digest_covers_goal_and_next_id() {
+        // 强读档等价护栏：goal 与 next_id 属权威状态，摘要必须敏感。
+        let base = |mut gt: GridTraffic| {
+            for _ in 0..5u64 {
+                gt.inject(3);
+/*L771*/
+                gt.step();

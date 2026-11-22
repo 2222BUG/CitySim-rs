@@ -1,0 +1,181 @@
+第 14 段 · 范围 C · 节选（第 5/6 部分）
+            }
+            let mut g = GlobalDigest::new();
+            gt.fold_digest(&mut g);
+            g.finalize()
+        };
+        let d1 = base(GridTraffic::new(8, 8, 1, 7));
+        let d2 = base(GridTraffic::new(8, 8, 1, 7));
+        assert_eq!(d1, d2);
+
+/*L781*/
+        // next_id 敏感
+        let mut gt = GridTraffic::new(8, 8, 1, 7);
+        for _ in 0..5u64 {
+            gt.inject(3);
+            gt.step();
+        }
+        gt.next_id += 1;
+        let mut g = GlobalDigest::new();
+        gt.fold_digest(&mut g);
+        assert_ne!(d1, g.finalize(), "next_id must be covered");
+/*L791*/
+
+        // goal 敏感
+        let mut gt = GridTraffic::new(8, 8, 1, 7);
+        for _ in 0..5u64 {
+            gt.inject(3);
+            gt.step();
+        }
+        if let Some(v) = gt.vehicles.first_mut() {
+            v.goal_x = v.goal_x.wrapping_add(1);
+        }
+/*L801*/
+        let mut g = GlobalDigest::new();
+        gt.fold_digest(&mut g);
+        assert_ne!(d1, g.finalize(), "vehicle goal must be covered");
+    }
+
+    #[test]
+    fn synthetic_holdout_meets_adr25_criteria() {
+        // 精确三角（v_free=1000‰, k_c=100‰, q_max=100‰, w=500‰）：
+        // 拟合用 (10,100,300) 三点，留出 (50,200) 两点——独立于拟合集评估。
+        let fit_in = vec![
+/*L811*/
+            MfdSample { k_permille: 10, q_permille: 10 },
+            MfdSample { k_permille: 100, q_permille: 100 },
+            MfdSample { k_permille: 300, q_permille: 0 },
+        ];
+        let holdout = vec![
+            MfdSample { k_permille: 50, q_permille: 50 },
+            MfdSample { k_permille: 200, q_permille: 50 },
+        ];
+        let f = fit_triangle(&fit_in);
+        assert!(f.descending_branch_observed);
+/*L821*/
+        assert_eq!(f.v_free_permille, 1000);
+        assert_eq!(f.w_permille, 500);
+        let r = evaluate_fit(&f, &holdout, &ZoneBands::SET_D);
+        // ADR-NEW-25 3a 判据（原 10/20/25% 三区重分）：自由流 ≤100‰、饱和区 ≤250‰、
+        // k_c ≤200‰（三角）；转折区只记录不设硬判据。
+        assert!(r.free_flow_max_err_permille <= 100, "{}", r.free_flow_max_err_permille);
+        assert!(r.k_c_err_permille <= 200, "{}", r.k_c_err_permille);
+        assert!(r.saturated_max_err_permille <= 250, "{}", r.saturated_max_err_permille);
+    }
+
+/*L831*/
+    #[test]
+    #[ignore = "债务 #31 审计退回（2026-11-20）：保持 ignore，直至口径修复后 Set D 复测通过并经负责人追认（FAIL 翻转则按重投裁决处置）"]
+    fn simulation_holdout_free_flow_is_accurate() {
+        // 两次独立小场景（同种子不同密度阶梯）：A 拟合、B 留出——独立密度点评估。
+        let (_, mut a) = small_run(&[1, 2, 4, 8]);
+        let (_, b) = small_run(&[3, 6, 12]);
+        a.sort_by_key(|s| s.k_permille);
+        let f = fit_triangle(&a);
+        let r = evaluate_fit(&f, &b, &ZoneBands::SET_D);
+        assert!(r.points_evaluated >= 2);
+/*L841*/
+        // 门禁对齐（决策4 整改）：断言引用判据常量（100‰），不再用 250‰ 脱钩阈值。
+        // 当前点队列模型自由流实测 190‰ FAIL——债务 #31（凹形扩展）Set D 复测通过前
+        // 本测试标 ignore，避免"FAIL 仍绿"掩盖真实状态（豆包/GPT-6 指出）。
+        assert!(
+            r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE,
+            "free-flow err {}‰",
+            r.free_flow_max_err_permille
+        );
+    }
+
+/*L851*/
+    // ---- 凹形有理饱和族（决策4 W1）----
+
+    fn rational_samples(q_max: u64, k_half: u64, ks: &[u64]) -> Vec<MfdSample> {
+        let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+        ks.iter()
+            .map(|&k| MfdSample { k_permille: k, q_permille: q_rational_permille(&fit, k) })
+            .collect()
+    }
+
+    #[test]
+/*L861*/
+    fn synthetic_rational_is_recovered() {
+        // 人工合成精确有理饱和图（q_max=200‰、k_half=150‰）→辨识恢复。
+        let ks: Vec<u64> = (1..=40).map(|i| i * 25).collect();
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        assert_eq!(fit.q_max_permille, 200);
+        assert_eq!(fit.k_half_permille, 250);
+    }
+
+    #[test]
+    fn rational_identification_is_deterministic() {
+/*L871*/
+        let ks: Vec<u64> = (1..=30).map(|i| i * 17).collect();
+        let a = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        let b = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn rational_zero_density_slope_is_bounded() {
+        let ks: Vec<u64> = (1..=30).map(|i| i * 33).collect();
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+/*L881*/
+        assert!(fit.zero_density_slope_permille() <= 1000);
+    }
+
+    #[test]
+    fn rational_bound_violation_is_disclosed_and_constrained() {
+        // 越界判失败口径（决策4）：自由估计越界→披露幅度+物理可行解回退，
+        // 不 panic 不截断。合成 (500,50) 自由斜率 10000‰ 必越界。
+        // 样本取 k≥500 保证 q≤k（采样不变量断言下合法），模型越界仍成立。
+        let ks: Vec<u64> = vec![500, 1000, 2000];
+        let (fit, free_slope, binding) =
+/*L891*/
+            fit_rational_saturation_detailed(&rational_samples(500, 50, &ks), &ZoneBands::SET_D);
+        assert!(binding, "bound must bind");
+        assert_eq!(free_slope, 10_000, "violation magnitude must be disclosed");
+        assert!(fit.zero_density_slope_permille() <= 1000);
+    }
+
+    #[test]
+    fn rational_holdout_meets_criteria_on_synthetic() {
+        // 合成数据留出评估：三区判据应全过（常量单一来源）。
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+/*L901*/
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
+        let r = evaluate_rational_fit(&fit, &rational_samples(200, 250, &holdout), &ZoneBands::SET_D);
+        assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
+        assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
+        assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);
+    }
+
+    // ===== X3：p-norm p=2 族（豆包清单 d：多族并行辨识） =====
+
+/*L911*/
+    fn pnorm_samples(q_max: u64, k0: u64, ks: &[u64]) -> Vec<MfdSample> {
+        let fit = PNormConcaveFit { q_max_permille: q_max, k0_permille: k0 };
+        ks.iter()
+            .map(|&k| MfdSample { k_permille: k, q_permille: q_pnorm_permille(&fit, k) })
+            .collect()
+    }
+
+    #[test]
+    fn synthetic_pnorm_is_recovered() {
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+/*L921*/
+        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(200, 250, &ks), &ZoneBands::SET_D);
+        assert_eq!(fit, PNormConcaveFit { q_max_permille: 200, k0_permille: 250 });
+        assert_eq!(free_slope, 800);
+        assert!(!binding);
+    }
+
+    #[test]
+    fn pnorm_identification_is_deterministic() {
+        let ks: Vec<u64> = (1..=16).map(|i| i * 40).collect();
+        let s = pnorm_samples(300, 400, &ks);
+/*L931*/
+        assert_eq!(fit_pnorm_concave_detailed(&s, &ZoneBands::SET_D), fit_pnorm_concave_detailed(&s, &ZoneBands::SET_D));
+    }
+
+    #[test]
+    fn pnorm_bound_violation_is_disclosed_and_constrained() {

@@ -1,0 +1,205 @@
+第 16 段 · 范围 C · 节选（第 1/3 部分）
+// FILE: crates/sim-traffic/examples/mfd_prime.rs @1db87d2
+/*L1*/
+//! ②′ 确认轮（债务 #31 修测一轮定生死；ADR-NEW-25"②′ 确认轮预注册规格"
+//! 2026-11-22 决策6 Z3 预注册于 7160955，本文件=fixture 实装，先落盘后取数）。
+//!
+//! 预注册 fixture（**运行前声明，先于 ②′ 数据**）：
+//! - 种子段=0x00C0_FFEE_4444_0000 + i，三段独立：fit +0..8 / holdout +8..16 /
+//!   back-half fit +16..24、back-half holdout +24..32（与 V1/Set D/Set E 段不相交）；
+//! - 拓扑：40×40 + 32×32 + 64×64（三拓扑全跑）；
+//! - 密度阶梯**低密几何加密**（②′ 修测：自由流区判定点 n≥5，抗单点杠杆）：
+//!   拟合集 18 档、留出集 18 档（×~1.4 交错）；
+//! - 每档 260 tick，末 60 tick 窗口均值；稳态判据=sim-traffic::steady_window
+/*L11*/
+//!   双口径（≤2‰ 或 ≤15 辆，文档与实现统一）；非稳态档单独报告不静默；
+//! - 每档 8 种子平均；分区边界=ZoneBands::SET_D 预注册绝对带（k<100 / 100..2000 /
+//!   ≥2000‰）；判据（常量单一来源=sim-traffic）：自由流 ≤100‰、转折 ≤250‰、
+//!   饱和 ≤250‰；每点分辨率下限=point_resolution_ok，不满足标"分辨率受限"
+//!   并以绝对误差 |Δq|≤2‰ 复核披露；
+//! - 族集冻结={rational, pnorm-p2}（扩族须重新投票——决策5 共识）；
+//! - 预选（Q3）=物理可行域内**判据归一化损失**（criterion_aligned_loss）
+//!   最小者一次锁定，不得回退；全 binding→无族可选=FAIL。
+//!
+//! **终止条款（焊死）**：任一拓扑任一区 FAIL → 自动落 ①（追认转 C，MFD 永久纯
+/*L21*/
+//! 统计），无须再投票；全部 PASS → #31 核销、3a 记通过（解冻另走 ADR-NEW-26）。
+//!
+//! 运行：SETD_COMMIT=$(git rev-parse HEAD) cargo run --release --example mfd_prime -p sim-traffic
+
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+
+use sim_traffic::{
+    criterion_aligned_loss, evaluate_pnorm_fit, evaluate_rational_fit,
+    fit_pnorm_concave_detailed, fit_rational_saturation_detailed, point_resolution_ok,
+    q_pnorm_permille, q_rational_permille, steady_window, FitErrorReport, GridTraffic, MfdSample,
+/*L31*/
+    RationalSaturationFit, ZoneBands, FREE_FLOW_CRIT_PERMILLE,
+    SATURATED_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE,
+};
+
+const SEED_BASE: u64 = 0x00C0_FFEE_4444_0000;
+const N_SEEDS: u64 = 8;
+const TICKS: usize = 260;
+const WINDOW: usize = 60;
+/// 低密几何加密（②′ 修测：自由流区 n≥5）。
+const FIT_LADDER: [u64; 18] =
+/*L41*/
+    [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512];
+/// 留出集阶梯（×~1.4 交错，与拟合集同密度范围覆盖三区）。
+const HOLDOUT_LADDER: [u64; 18] =
+    [2, 3, 5, 7, 9, 13, 18, 26, 36, 52, 72, 104, 144, 208, 288, 416, 576, 768];
+
+fn zone_crit(k_permille: u64) -> u64 {
+    if k_permille < 100 {
+        FREE_FLOW_CRIT_PERMILLE
+    } else if k_permille < 2000 {
+        TRANSITION_CRIT_PERMILLE
+/*L51*/
+    } else {
+        SATURATED_CRIT_PERMILLE
+    }
+}
+
+/// 单运行：返回 (k̄, q̄) 窗口均值与稳态判定（steady_window 双口径统一）。
+fn run_density_seed(w: u32, h: u32, inj: u64, seed: u64) -> (u64, u64, bool) {
+    let mut gt = GridTraffic::new(w, h, 1, seed);
+    let mut k_sum = 0u64;
+    let mut q_sum = 0u64;
+/*L61*/
+    let mut q_front = 0u64;
+    let mut q_back = 0u64;
+    for t in 0..TICKS {
+        gt.inject(inj);
+        gt.step();
+        if t >= TICKS - WINDOW {
+            assert!(
+                gt.flow_this_tick <= gt.last_step_population,
+                "q>k impossible under same-population accounting"
+            );
+/*L71*/
+            k_sum += gt.last_step_population * 1000 / gt.edge_count();
+            q_sum += gt.flow_this_tick * 1000 / gt.edge_count();
+            if t >= TICKS - WINDOW / 2 {
+                q_back += gt.flow_this_tick;
+            } else {
+                q_front += gt.flow_this_tick;
+            }
+        }
+    }
+    let n = WINDOW as u64;
+/*L81*/
+    let delta = q_front.abs_diff(q_back);
+    let delta_permille = delta * 1000 / (q_front + q_back).max(1);
+    (k_sum / n, q_sum / n, steady_window(delta_permille, delta))
+}
+
+/// 窗口后半采样（back-half 敏感性）。
+fn run_density_seed_back_half(w: u32, h: u32, inj: u64, seed: u64) -> (u64, u64) {
+    let mut gt = GridTraffic::new(w, h, 1, seed);
+    let mut k_sum = 0u64;
+    let mut q_sum = 0u64;
+/*L91*/
+    for t in 0..TICKS {
+        gt.inject(inj);
+        gt.step();
+        if t >= TICKS - WINDOW / 2 {
+            k_sum += gt.last_step_population * 1000 / gt.edge_count();
+            q_sum += gt.flow_this_tick * 1000 / gt.edge_count();
+        }
+    }
+    let n = (WINDOW / 2) as u64;
+    (k_sum / n, q_sum / n)
+/*L101*/
+}
+
+/// 多种子平均采样。返回 (样本, 逐档稳态标记)。
+fn sample_ladder(w: u32, h: u32, ladder: &[u64], seed_off: u64) -> (Vec<MfdSample>, Vec<bool>) {
+    let mut flags = Vec::new();
+    let samples = ladder
+        .iter()
+        .map(|&inj| {
+            let (mut k, mut q, mut steady) = (0u64, 0u64, true);
+            for i in 0..N_SEEDS {
+/*L111*/
+                let (k1, q1, s1) = run_density_seed(w, h, inj, SEED_BASE + seed_off + i);
+                k += k1;
+                q += q1;
+                steady &= s1;
+            }
+            flags.push(steady);
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    (samples, flags)
+/*L121*/
+}
+
+type QModelFn<'a> = Box<dyn Fn(u64) -> u64 + 'a>;
+
+fn rel_sse(q: impl Fn(u64) -> u64, samples: &[MfdSample]) -> u128 {
+    let mut sse = 0u128;
+    for s in samples {
+        let e = q(s.k_permille) as i128 - s.q_permille as i128;
+        let er = (e * 1000) / (s.q_permille.max(1) as i128);
+        sse += (er * er) as u128;
+/*L131*/
+    }
+    sse
+}
+
+/// 单一判定核（含转折硬判据+空区 FAIL；binding 即 FAIL=决策4 条件⑧）。
+fn family_verdict(binding: bool, r: &FitErrorReport) -> &'static str {
+    if binding
+        || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
+        || r.transition_max_err_permille > TRANSITION_CRIT_PERMILLE
+        || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE
+/*L141*/
+        || r.free_n == 0
+        || r.trans_n == 0
+        || r.sat_n == 0
+    {
+        "FAIL"
+    } else {
+        "PASS"
+    }
+}
+
+/*L151*/
+/// 归因对照专用（P3，非判定路径）：旧 rel-SSE 目标网格辨识（明确标注控制组）。
+fn fit_rational_rel_sse_control(samples: &[MfdSample]) -> RationalSaturationFit {
+    let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
+    let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
+    let mut best: Option<(u128, u64, u64)> = None;
+    for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
+        for k_half in 1..=k_max.saturating_mul(4).max(1) {
+            let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+            let sse = rel_sse(|k| q_rational_permille(&fit, k), samples);
+            if best.is_none_or(|(b, _, _)| sse < b) {
+/*L161*/
+                best = Some((sse, q_max, k_half));
+            }
+        }
+    }
+    let (_, q, k) = best.unwrap();
+    RationalSaturationFit { q_max_permille: q, k_half_permille: k }
+}
+
+/// 逐点行后缀：分辨率标注（②′ 修测）。
+fn res_tag(k: u64, q_obs: u64, q_model: u64) -> String {
+/*L171*/
+    if point_resolution_ok(q_obs, zone_crit(k)) {
+        "res=ok".to_string()
+    } else {
+        format!(
+            "res=LIMITED(abs_err={}‰, |Δq|≤2‰ 复核{})",
+            q_model.abs_diff(q_obs),
+            if q_model.abs_diff(q_obs) <= 2 { ":PASS" } else { ":FAIL" }
+        )
+    }
+}
+/*L181*/
+
+fn report_topology(w: u32, h: u32, out: &mut Vec<String>) {
+    let mut emit = |l: String| out.push(l);
+    emit(format!("=== topology {w}x{h} (②′ seeds {SEED_BASE:#x}+0..{N_SEEDS}) ==="));

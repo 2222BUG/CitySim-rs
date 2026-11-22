@@ -1,0 +1,276 @@
+第 29 段 · 范围 B · 节选（第 2/3 部分）
+pub struct Recorder {
+/*L231*/
+    input: ReplayInput,
+    last_tick: u64,
+}
+
+impl Recorder {
+    pub fn new(seed: u64, tick_rate_num: u64, tick_rate_den: u64) -> Self {
+        Self {
+            input: ReplayInput::new(seed, tick_rate_num, tick_rate_den),
+            last_tick: 0,
+        }
+/*L241*/
+    }
+
+    pub fn record(&mut self, ev: InputEvent) -> Result<(), ReplayError> {
+        let t = ev.tick();
+        if t < self.last_tick {
+            return Err(ReplayError::OutOfOrderTick {
+                previous: self.last_tick,
+                found: t,
+            });
+        }
+/*L251*/
+        self.last_tick = t;
+        self.input.events.push(ev);
+        Ok(())
+    }
+
+    pub fn finish(self) -> ReplayInput {
+        self.input
+    }
+}
+
+/*L261*/
+/// 回放器：按 tick 提交事件（记录序；不重算决策）。
+pub struct Replayer {
+    input: ReplayInput,
+    cursor: usize,
+}
+
+impl Replayer {
+    pub fn new(input: ReplayInput) -> Self {
+        Self { input, cursor: 0 }
+    }
+/*L271*/
+
+    /// 取回归属 tick ≤ `tick` 的全部未提交事件（按记录序）。
+    pub fn due(&mut self, tick: u64) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        while self.cursor < self.input.events.len() {
+            let ev = self.input.events[self.cursor];
+            if ev.tick() > tick {
+                break;
+            }
+            out.push(ev);
+/*L281*/
+            self.cursor += 1;
+        }
+        out
+    }
+
+    pub fn is_drained(&self) -> bool {
+        self.cursor >= self.input.events.len()
+    }
+
+    pub fn input(&self) -> &ReplayInput {
+/*L291*/
+        &self.input
+    }
+}
+
+/// 最小只读解码游标（信封=CSIMCOD1|module|kind，各 u64 长度前缀）。
+struct Cursor<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+/*L301*/
+impl<'a> Cursor<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], ReplayError> {
+        if self.pos + n > self.buf.len() {
+            return Err(ReplayError::Truncated);
+        }
+        let s = &self.buf[self.pos..self.pos + n];
+/*L311*/
+        self.pos += n;
+        Ok(s)
+    }
+
+    fn envelope(&mut self, module: &str, kind: &str) -> Result<(), ReplayError> {
+        if self.read_str()? != "CSIMCOD1" {
+            return Err(ReplayError::BadEnvelope);
+        }
+        if self.read_str()? != module {
+            return Err(ReplayError::BadEnvelope);
+/*L321*/
+        }
+        if self.read_str()? != kind {
+            return Err(ReplayError::BadEnvelope);
+        }
+        Ok(())
+    }
+
+    fn read_str(&mut self) -> Result<String, ReplayError> {
+        let n = self.u64()? as usize;
+        let bytes = self.take(n)?;
+/*L331*/
+        String::from_utf8(bytes.to_vec()).map_err(|_| ReplayError::BadEnvelope)
+    }
+
+    fn u8(&mut self) -> Result<u8, ReplayError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, ReplayError> {
+        Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
+    }
+/*L341*/
+
+    fn u32(&mut self) -> Result<u32, ReplayError> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+
+    fn u64(&mut self) -> Result<u64, ReplayError> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+
+    fn i64(&mut self) -> Result<i64, ReplayError> {
+/*L351*/
+        Ok(i64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+
+    fn usize(&mut self) -> Result<usize, ReplayError> {
+        Ok(self.u64()? as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+/*L361*/
+    use super::*;
+
+    fn scenario() -> Vec<InputEvent> {
+        vec![
+            InputEvent::Command {
+                command_id: 1,
+                effective_tick: 1,
+                agent_id: 7,
+                opcode: 2,
+                arg0: -3,
+/*L371*/
+                arg1: 99,
+            },
+            InputEvent::ConfigChange {
+                tick: 1,
+                key: 0xDEAD,
+                value: 5,
+            },
+            InputEvent::LodSwitch {
+                tick: 2,
+                entity_id: 7,
+/*L381*/
+                from_level: 0,
+                to_level: 1,
+            },
+            InputEvent::BudgetAdjustment {
+                tick: 3,
+                system_id: 1,
+                per_tick_cap: 65_536,
+            },
+            InputEvent::Command {
+                command_id: 2,
+/*L391*/
+                effective_tick: 4,
+                agent_id: 8,
+                opcode: 0,
+                arg0: 0,
+                arg1: 0,
+            },
+        ]
+    }
+
+    fn record() -> ReplayInput {
+/*L401*/
+        let mut rec = Recorder::new(0x1234, 30, 1);
+        for ev in scenario() {
+            rec.record(ev).unwrap();
+        }
+        rec.finish()
+    }
+
+    /// 玩具确定性模拟：状态=累加器；事件按序施加确定性变换。
+    fn apply(acc: &mut u64, ev: &InputEvent) {
+        match *ev {
+/*L411*/
+            InputEvent::Command {
+                command_id,
+                agent_id,
+                opcode,
+                arg0,
+                arg1,
+                ..
+            } => {
+                *acc = acc.wrapping_add(command_id ^ (agent_id << 8) ^ (opcode as u64) << 32);
+                *acc = acc.wrapping_add(arg0 as u64 ^ arg1 as u64);
+/*L421*/
+            }
+            InputEvent::ConfigChange { key, value, .. } => {
+                *acc = acc.wrapping_add(key ^ value as u64);
+            }
+            InputEvent::LodSwitch {
+                entity_id,
+                from_level,
+                to_level,
+                ..
+            } => {
+/*L431*/
+                *acc = acc.wrapping_add(entity_id ^ ((from_level as u64) << 4) ^ to_level as u64);
+            }
+            InputEvent::BudgetAdjustment {
+                system_id,
+                per_tick_cap,
+                ..
+            } => {
+                *acc = acc.wrapping_add(system_id ^ per_tick_cap);
+            }
+        }
+/*L441*/
+    }
+
+    fn run_digest(
+        mut events_per_tick: impl FnMut(u64) -> Vec<InputEvent>,
+        ticks: u64,
+    ) -> sim_digest::Digest256 {
+        let mut acc = 0u64;
+        for t in 0..=ticks {
+            for ev in events_per_tick(t) {
+                apply(&mut acc, &ev);
+/*L451*/
+            }
+        }
+        let mut w = CanonicalWriter::new("sim-replay", "SimState");
+        w.u64(acc);
+        sim_digest::digest("sim-replay", "SimState", w.as_bytes())
+    }
+
+    #[test]
+    fn record_replay_digest_equivalence() {
+        // 录制运行 == 编码/解码 == 回放运行（Schema §3 验收判据）。
+/*L461*/
+        let input = record();
+        let live = run_digest(
+            |t| {
+                input
+                    .events
+                    .iter()
+                    .copied()
+                    .filter(|e| e.tick() == t)
+                    .collect()
+            },
+/*L471*/
+            5,
+        );
+        let decoded = ReplayInput::decode(&input.encode()).unwrap();
+        assert_eq!(decoded, input);
+        let mut rp = Replayer::new(decoded);
+        let replay = run_digest(|t| rp.due(t), 5);
+        assert!(rp.is_drained());
+        assert_eq!(live, replay, "recorded run digest == replayed run digest");
+    }

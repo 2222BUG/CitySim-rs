@@ -1,0 +1,10 @@
+第 40 段 · 范围 E · 完整
+// FILE: rust-toolchain.toml @1db87d2
+/*L1*/
+# 工具链锁定（Stage 0 Step 8）：workspace 统一 rustc 1.100.0（与 CI .github/workflows/ci.yml 一致）。
+# 2.1 技术基线列 Rust 1.89（= Bevy 0.18.1 的 MSRV，2026-11-18 Step 8 实测）；
+# 基线 1.89 与实测 1.100.0 的收敛取舍待项目负责人定案（decision-log 待决事项）。
+[toolchain]
+channel = "1.100.0"
+components = ["clippy"]
+profile = "minimal"

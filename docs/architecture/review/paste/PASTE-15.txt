@@ -1,0 +1,78 @@
+第 15 段 · 范围 C · 节选（第 6/6 部分）
+        // 自由估计斜率超界（500/50=10000‰）→binding=true 即失败信号；
+        // 可行解回退仅诊断，zero_density_slope≤1000‰。样本 k≥500 保证 q≤k。
+        let ks: Vec<u64> = vec![500, 1000, 2000];
+        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(500, 50, &ks), &ZoneBands::SET_D);
+        assert!(binding);
+/*L941*/
+        assert!(free_slope > 1000);
+        assert!(fit.zero_density_slope_permille() <= 1000);
+    }
+
+    #[test]
+    fn pnorm_holdout_meets_criteria_on_synthetic() {
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+        let fit = fit_pnorm_concave(&pnorm_samples(200, 250, &ks), &ZoneBands::SET_D);
+        let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
+        let r = evaluate_pnorm_fit(&fit, &pnorm_samples(200, 250, &holdout), &ZoneBands::SET_D);
+/*L951*/
+        assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
+        assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
+        assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);
+    }
+
+    #[test]
+    fn pnorm_isqrt_rounding_golden() {
+        // isqrt 舍入黄金（决策5 共识收口条件）：手算定点期望值钉死语义——
+        // q = round(q_max·k·1000 / isqrt((k²+k0²)·10⁶))，就近舍入 ((num+den/2)/den)。
+        let f = PNormConcaveFit { q_max_permille: 200, k0_permille: 250 };
+/*L961*/
+        // 注意 isqrt floor 偏差披露（决策5）：den 先取整再除，使结果较真值
+        // 有 +0~+1‰ 的系统性上偏（如 k=250 真值 141.42→定点 142）。
+        assert_eq!(q_pnorm_permille(&f, 0), 0);
+        // k=250：真值 141.42‰，定点就近→142（isqrt floor 偏差）
+        assert_eq!(q_pnorm_permille(&f, 250), 142);
+        // k=1000：真值 194.03‰ → 194
+        assert_eq!(q_pnorm_permille(&f, 1000), 194);
+        // k=2500：真值 198.03‰，定点→199（isqrt floor 偏差）
+        assert_eq!(q_pnorm_permille(&f, 2500), 199);
+    }
+/*L971*/
+
+    #[test]
+    fn criterion_aligned_loss_is_zero_on_exact_fit() {
+        // ②′ 修测：拟合目标=判据归一化分区最大相对误差；精确参数合成数据下
+        // loss≈0（仅舍入级），且非精确参数 loss 严格更大（目标可辨识）。
+        let ks: Vec<u64> = (1..=24).map(|i| i * 40).collect();
+        let s = rational_samples(200, 250, &ks);
+        let exact = RationalSaturationFit { q_max_permille: 200, k_half_permille: 250 };
+        let loss_exact =
+            criterion_aligned_loss(|k| q_rational_permille(&exact, k), &s, &ZoneBands::SET_D);
+/*L981*/
+        let off = RationalSaturationFit { q_max_permille: 200, k_half_permille: 200 };
+        let loss_off =
+            criterion_aligned_loss(|k| q_rational_permille(&off, k), &s, &ZoneBands::SET_D);
+        assert!(loss_exact <= 10, "exact loss {}", loss_exact);
+        assert!(loss_off > loss_exact, "identifiability: {} vs {}", loss_off, loss_exact);
+    }
+
+    #[test]
+    fn point_resolution_floor_edges() {
+        // ②′ 修测：判据×q_obs ≥ 2000（即相对容差 ≥2‰ 采样单位）。
+/*L991*/
+        assert!(point_resolution_ok(20, 100)); // 20‰×100%=20‰… 100×20=2000 边界达标
+        assert!(!point_resolution_ok(19, 100)); // 1900<2000 分辨率受限
+        assert!(point_resolution_ok(8, 250)); // 250×8=2000 边界达标
+        assert!(!point_resolution_ok(7, 250)); // 1750<2000 分辨率受限
+    }
+
+    #[test]
+    fn steady_window_dual_criteria() {
+        // ②′ 稳态硬门：双口径任一（≤2‰ 或 ≤15 辆）。
+        assert!(steady_window(2, 100)); // ‰ 口径达标
+/*L1001*/
+        assert!(steady_window(30, 15)); // 辆口径达标
+        assert!(!steady_window(30, 16)); // 双不达标
+        assert!(steady_window(2, 16)); // 边界
+    }
+}

@@ -1,0 +1,26 @@
+第 6 段 · 范围 A · 节选（第 4/4 部分）
+    /// budget_yield_count（债务 #27 "让步≥8"切换判据只认请求自身预算让步）。
+    #[test]
+    fn quota_yield_does_not_pollute_switch_criterion() {
+        let (net, coords) = grid(10, 10);
+        let mut finder = PathFinder::new(BudgetPolicy { b: 64, g: 2 });
+        let mut budget = TickBudget::new(0); // 配额为 0：首请求即配额让步
+/*L581*/
+        let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+        assert!(matches!(out, FindOutcome::Yielded { expanded: 0 }), "配额耗尽即让步");
+        assert_eq!(finder.quota_yield_count, 1, "配额让步单独计数");
+        assert_eq!(finder.budget_yield_count, 0, "配额让步不得污染预算让步判据");
+        // 对照：请求自身预算让步（b_k==needs 未截断）仍走 budget_yield_count。
+        let mut small = PathFinder::new(BudgetPolicy { b: 1, g: 2 });
+        let mut b2 = TickBudget::new(8);
+        let _ = small.request_with_budget(&net, &coords, 0, 99, &mut b2);
+        assert_eq!(small.budget_yield_count, 1, "自身预算让步单独计数");
+        assert_eq!(small.quota_yield_count, 0, "未截断让步不计入配额让步");
+/*L591*/
+        // 决策5 截断归因回归：0<remaining<B_k 的截断让步归 quota_yield_count。
+        let mut b3 = TickBudget::new(1); // needs=2（第 2 档）被截为 1
+        let _ = small.request_with_budget(&net, &coords, 0, 99, &mut b3);
+        assert_eq!(small.quota_yield_count, 1, "截断让步计入配额让步");
+        assert_eq!(small.budget_yield_count, 1, "截断让步不得污染预算让步判据");
+    }
+}

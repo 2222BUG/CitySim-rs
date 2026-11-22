@@ -1,0 +1,245 @@
+第 7 段 · 范围 A · 节选（第 1/3 部分）
+// FILE: crates/sim-core/src/budget.rs @1db87d2
+/*L1*/
+//! 预算注册表与确定性降级（ADR-NEW-14 C2 细化，Stage 2C C3a）。
+//!
+//! - 契约即代码：每系统在注册表声明计量单位/每 tick 上限/超限行为。
+//! - 降级触发只依赖确定性工作量单位（预算消耗比例），禁止墙钟/负载/帧率。
+//! - 降级等级与滚动预算是权威状态：入存档、入 GlobalDigest（G3 口径）。
+
+use sim_codec::CanonicalWriter;
+use sim_error::{ErrorCode, ErrorClass, SimError, SimErrorContext};
+
+/// 计量单位（确定性工作量单位，ADR-NEW-14）。
+/*L11*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkUnit {
+    /// A* 节点展开数（sim-pathfinding）。
+    NodeExpansions,
+    /// 事务应用数（sim-network）。
+    TxApplies,
+    /// 本 tick 更新实体数（sim-traffic 等）。
+    EntityUpdates,
+    /// 摘要/存档条目数（sim-save）。
+    DigestEntries,
+/*L21*/
+}
+
+/// 超限行为。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowBehavior {
+    /// 让步到下 tick 续算（寻路）。
+    YieldToNextTick,
+    /// 排队到下 tick（事务）。
+    QueueToNextTick,
+    /// 分片让步（实体更新）。
+/*L31*/
+    ShardYield,
+    /// Fatal：存档不可信（SAV-0003）。
+    FatalSaveCorrupt,
+}
+
+/// 单个系统的预算声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BudgetDecl {
+    pub system_id: u32,
+    pub unit: WorkUnit,
+/*L41*/
+    pub per_tick_cap: u64,
+    pub overflow: OverflowBehavior,
+}
+
+/// 降级等级（EC-04 L1/L2/L3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DegradationLevel {
+    Normal,
+    L1,
+    L2,
+/*L51*/
+    L3,
+}
+
+/// 降级阈值（候选占位：70/90/100 万分比 + 恢复 5000bp；ADR-NEW-14 C2 待负责人确认）。
+/// 2026-11-19 投票修复（Claude）：触发/恢复加连续 tick 要求，防单 tick 突发误触发/误恢复。
+#[derive(Debug, Clone, Copy)]
+pub struct DegradationThresholds {
+    /// 预算消耗比例 ≥ 此值触发（万分比：7000=70%）。触发比较为闭区间（>=）。
+    pub l1_bp: u32,
+    pub l2_bp: u32,
+/*L61*/
+    pub l3_bp: u32,
+    /// 恢复迟滞（万分比：5000=50%）。恢复比较为开区间（<）。
+    pub recover_bp: u32,
+    /// 进入降级所需连续超阈 tick 数（候选占位=2；单 tick 突发不触发）。
+    pub trigger_ticks: u32,
+    /// 恢复 Normal 所需连续低于 recover_bp 的 tick 数（候选占位=2）。
+    pub recover_ticks: u32,
+}
+
+impl Default for DegradationThresholds {
+/*L71*/
+    fn default() -> Self {
+        Self {
+            l1_bp: 7000,
+            l2_bp: 9000,
+            l3_bp: 10000,
+            recover_bp: 5000,
+            trigger_ticks: 2,
+            recover_ticks: 2,
+        }
+    }
+/*L81*/
+}
+
+/// 预算注册表 + 降级状态机。全部状态确定性、可入档。
+#[derive(Debug, Clone)]
+pub struct BudgetRegistry {
+    decls: Vec<BudgetDecl>,
+    /// 本 tick 各系统实耗（索引与 decls 对齐）。
+    spent: Vec<u64>,
+    /// 本 tick 各系统预算占比的最大值（万分比）。2026-11-19 投票修复（MiniMax/GPT-6）：
+    /// 聚合口径=逐系统比例取最严（旧口径按 cap 加权总和，单系统饱和会被空闲系统稀释）。
+/*L91*/
+    rolling_used_bp: u32,
+    /// 连续超阈 tick 计数（触发门）。
+    over_streak: u32,
+    /// 连续低于恢复线 tick 计数（恢复门）。
+    under_streak: u32,
+    /// 本 tick 外部需求压力（万分比，0..=10000；MFD→降级信号通道，ADR-NEW-26 草案）。
+    demand_bp: u32,
+    /// 本 tick 需求压力的归档口径（X5 审计修复：demand_bp 在 end_tick 清零，
+    /// 直接入档恒 0——last_demand_bp 跨 end_tick 保留供 encode_state 归档）。
+    last_demand_bp: u32,
+/*L101*/
+    /// 连续高需求 tick 计数（与 over_streak 同门限语义）。
+    demand_streak: u32,
+    /// 需求通道冻结开关（**默认冻结**——决策6 Z2 代码护栏 2026-11-22：MFD→降级
+    /// 用途冻结不只停在 ADR 文案；冻结时 note_demand_pressure 为 no-op，解冻须显式
+    /// unfreeze_demand_channel()（ADR-NEW-26 解冻裁决时启用）。冻结状态属配置不入档）。
+    demand_channel_frozen: bool,
+    pub level: DegradationLevel,
+    thresholds: DegradationThresholds,
+}
+
+/*L111*/
+impl BudgetRegistry {
+    pub fn new(decls: Vec<BudgetDecl>, thresholds: DegradationThresholds) -> Self {
+        let spent = vec![0; decls.len()];
+        Self {
+            decls,
+            spent,
+            rolling_used_bp: 0,
+            over_streak: 0,
+            under_streak: 0,
+            demand_bp: 0,
+/*L121*/
+            last_demand_bp: 0,
+            demand_streak: 0,
+            demand_channel_frozen: true,
+            level: DegradationLevel::Normal,
+            thresholds,
+        }
+    }
+
+    pub fn decls(&self) -> &[BudgetDecl] {
+        &self.decls
+/*L131*/
+    }
+
+    pub fn level(&self) -> DegradationLevel {
+        self.level
+    }
+
+    /// 记录实耗；返回是否超该系统每 tick 上限。
+    pub fn spend(&mut self, system_id: u32, amount: u64) -> bool {
+        let idx = self
+            .decls
+/*L141*/
+            .iter()
+            .position(|d| d.system_id == system_id)
+            .expect("undeclared system");
+        self.spent[idx] = self.spent[idx].saturating_add(amount);
+        self.spent[idx] > self.decls[idx].per_tick_cap
+    }
+
+    /// 记录本 tick 外部需求压力（万分比；确定性定点，来自权威状态导出——
+    /// 如 sim-traffic 密度/k_c 比值。ADR-NEW-26 草案通道；每 tick 末清零）。
+    /// **通道默认冻结**（决策6 Z2 护栏）：冻结期间本方法为 no-op，须显式
+/*L151*/
+    /// unfreeze_demand_channel() 后才生效——防误接权威降级路径。
+    pub fn note_demand_pressure(&mut self, pressure_bp: u32) {
+        if self.demand_channel_frozen {
+            return;
+        }
+        self.demand_bp = pressure_bp.min(10_000);
+        self.last_demand_bp = self.demand_bp;
+    }
+
+    /// 解冻需求通道（ADR-NEW-26 解冻裁决通过后由生产代码显式调用）。
+/*L161*/
+    pub fn unfreeze_demand_channel(&mut self) {
+        self.demand_channel_frozen = false;
+    }
+
+    /// 需求通道是否处于冻结状态（默认 true）。
+    pub fn demand_channel_frozen(&self) -> bool {
+        self.demand_channel_frozen
+    }
+
+    /// tick 边界：按确定性工作量单位更新降级等级，重置每 tick 计量。
+/*L171*/
+    /// 返回新等级。触发/恢复只依赖 spent/cap 比例（工作量单位），无墙钟。
+    ///
+    /// 2026-11-19 投票修复：
+    /// - 聚合口径=逐系统比例取最严（max_i spent_i/cap_i），单系统饱和不被稀释；
+    /// - 触发（Normal→降级）需连续 trigger_ticks 个超阈 tick（触发比较闭区间 >=）；
+    /// - 恢复（→Normal）需连续 recover_ticks 个低于 recover_bp 的 tick（开区间 <）；
+    /// - 升级（L1→L2→L3）保持即时（安全方向不加延迟）。
+    pub fn end_tick(&mut self) -> DegradationLevel {
+        let used_bp: u32 = self
+            .decls
+/*L181*/
+            .iter()
+            .zip(self.spent.iter())
+            .map(|(d, s)| {
+                if d.per_tick_cap == 0 {
+                    if *s > 0 { 10_000u32 } else { 0 }
+                } else {
+                    ((*s as u128).saturating_mul(10_000) / d.per_tick_cap as u128).min(10_000) as u32
+                }
+            })
+            .max()
+/*L191*/
+            .unwrap_or(0);
+        self.rolling_used_bp = used_bp;
+        let t = self.thresholds;
+        // 触发/恢复连续计数（确定性派生状态）：有效压力 = max(工作量占比, 外部需求压力)。
+        // 需求压力参与触发/恢复门，但单独触发时降级封顶 L1（模型形式未裁决=债务 #31，
+        // 限制影响面；工作量压力仍可推 L2/L3）。
+        let effective_bp = used_bp.max(self.demand_bp);
+        if effective_bp >= t.l1_bp {
+            self.over_streak = self.over_streak.saturating_add(1);
+            self.demand_streak = if self.demand_bp >= t.l1_bp {
+/*L201*/
+                self.demand_streak.saturating_add(1)
+            } else {
+                0
+            };
+        } else {
+            self.over_streak = 0;
+            self.demand_streak = 0;
+        }
+        if effective_bp < t.recover_bp {
+            self.under_streak = self.under_streak.saturating_add(1);
+/*L211*/
+        } else {
+            self.under_streak = 0;
+        }
+        let triggered = self.over_streak >= t.trigger_ticks;
+        let demand_only_trigger = triggered
+            && used_bp < t.l1_bp
+            && self.demand_streak >= t.trigger_ticks;
+        let recovered = self.under_streak >= t.recover_ticks;
+        self.level = match self.level {
+            DegradationLevel::Normal => {
+/*L221*/

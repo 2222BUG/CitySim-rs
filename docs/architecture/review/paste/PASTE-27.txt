@@ -1,0 +1,85 @@
+第 27 段 · 范围 B · 节选（第 3/3 部分）
+        );
+        assert_eq!(lc.unblock(1, 3), Ok(AgentState::Active));
+        assert_eq!(
+            lc.block(1, BlockedReason::RecomputeLimitExceeded, 4),
+            Ok(BlockOutcome::Blocked { attempts: 1 })
+        );
+        assert_eq!(
+            lc.block(1, BlockedReason::MarkBlockedFallback, 5),
+/*L481*/
+            Ok(BlockOutcome::Blocked { attempts: 2 })
+        );
+        assert_eq!(lc.despawn(1, 6), Ok(AgentState::Despawned));
+        // 非法：终态复活、Spawning 直接 block、Active unblock、未登记操作。
+        assert!(lc.despawn(1, 7).is_err());
+        assert!(lc.activate(1, 7).is_err());
+        let mut lc2 = AgentLifecycle::new(3);
+        assert!(lc2.unblock(9, 0).is_err(), "unregistered agent");
+        lc2.spawn(2, 0).unwrap();
+        assert!(lc2.block(2, BlockedReason::Unreachable, 1).is_err());
+/*L491*/
+        lc2.activate(2, 2).unwrap();
+        assert!(lc2.unblock(2, 3).is_err(), "Active cannot unblock");
+    }
+
+    #[test]
+    fn blocked_enters_and_exits_with_limit() {
+        // 受阻进入/退出 + 上限退役（前向进展收口，RFC §4）。
+        let mut lc = AgentLifecycle::new(2);
+        lc.spawn(1, 0).unwrap();
+        lc.activate(1, 1).unwrap();
+/*L501*/
+        assert_eq!(
+            lc.block(1, BlockedReason::Unreachable, 2),
+            Ok(BlockOutcome::Blocked { attempts: 1 })
+        );
+        assert_eq!(
+            lc.block(1, BlockedReason::MarkBlockedFallback, 3),
+            Ok(BlockOutcome::Blocked { attempts: 2 })
+        );
+        // 第 3 次（attempts=3 > limit=2）→ 自动退役。
+        assert_eq!(
+/*L511*/
+            lc.block(1, BlockedReason::Unreachable, 4),
+            Ok(BlockOutcome::Retired { attempts: 3 })
+        );
+        assert_eq!(lc.state(1), Some(AgentState::Despawned));
+        // 对照：unblock 路径正常回到 Active。
+        let mut lc2 = AgentLifecycle::new(3);
+        lc2.spawn(1, 0).unwrap();
+        lc2.activate(1, 1).unwrap();
+        lc2.block(1, BlockedReason::Unreachable, 2).unwrap();
+        assert_eq!(lc2.unblock(1, 5), Ok(AgentState::Active));
+/*L521*/
+    }
+
+    #[test]
+    fn transition_sequence_digest_is_reproducible() {
+        // 两跑转移序列 digest 一致（RFC §5）。
+        let run = || {
+            let mut lc = AgentLifecycle::new(3);
+            lc.spawn(1, 0).unwrap();
+            lc.spawn(2, 0).unwrap();
+            lc.activate(1, 1).unwrap();
+/*L531*/
+            lc.activate(2, 1).unwrap();
+            lc.block(1, BlockedReason::Unreachable, 2).unwrap();
+            lc.unblock(1, 3).unwrap();
+            lc.block(2, BlockedReason::RecomputeLimitExceeded, 4).unwrap();
+            lc.despawn(2, 5).unwrap();
+            lc.digest()
+        };
+        assert_eq!(run(), run());
+        let mut sink = sim_error::DiagnosticSink::new();
+        let mut lc = AgentLifecycle::new(3);
+/*L541*/
+        lc.spawn(1, 0).unwrap();
+        lc.activate(1, 1).unwrap();
+        lc.block(1, BlockedReason::Unreachable, 2).unwrap();
+        lc.emit_block_diagnostics(&mut sink);
+        let events = sink.drain();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].code.to_string(), "AGT-0001");
+    }
+}

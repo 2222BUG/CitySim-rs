@@ -1,0 +1,130 @@
+第 38 段 · 范围 E · 完整
+// FILE: .github/workflows/ci.yml @1db87d2
+/*L1*/
+name: CI
+
+# Stage 0 Step 7：基础 CI 骨架（EC-11 R0/R1 门禁 + EC-12 契约即代码）。
+# R2 确定性场景门禁为占位（if: false）——模拟核心与 GlobalDigest（ADR-NEW-19）就绪后启用。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+/*L11*/
+  CARGO_TERM_COLOR: always
+
+jobs:
+  r0-unit:
+    name: "R0/R1: cargo test (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+/*L21*/
+          - crates/sim-test-support
+          - spikes/simscalar-spike
+          - spikes/rng-spike
+          - spikes/network-tx-spike
+          - spikes/save-restore-spike
+          - crates/sim-core
+          - crates/sim-agent
+          - crates/sim-network
+          - crates/sim-pathfinding
+          - crates/sim-replay
+/*L31*/
+          - crates/sim-world
+          - crates/sim-traffic
+          - crates/sim-economy
+          - crates/sim-view
+          - crates/simscalar
+          - crates/sim-rng
+          - crates/sim-codec
+          - crates/sim-digest
+          - crates/sim-error
+          - crates/sim-save
+/*L41*/
+          - crates/sim-parallel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+      - name: cargo test
+        run: cargo test --manifest-path ${{ matrix.crate }}/Cargo.toml
+
+  ec12-lint:
+/*L51*/
+    name: "EC-12: clippy 分层门禁 (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - spikes/simscalar-spike
+          - spikes/rng-spike
+          - spikes/network-tx-spike
+          - spikes/save-restore-spike
+/*L61*/
+          - crates/sim-core
+          - crates/sim-agent
+          - crates/sim-network
+          - crates/sim-pathfinding
+          - crates/sim-replay
+          - crates/sim-world
+          - crates/sim-traffic
+          - crates/sim-economy
+          - crates/simscalar
+          - crates/sim-rng
+/*L71*/
+          - crates/sim-codec
+          - crates/sim-digest
+          - crates/sim-error
+          - crates/sim-save
+          - crates/sim-parallel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+/*L81*/
+          components: clippy
+      # 各权威 crate 包根自带 clippy.toml（disallowed-types/methods，见
+      # docs/benchmarks/clippy-layering-REPORT.md）；sim-test-support 为非权威侧不参与。
+      - name: cargo clippy (-D warnings)
+        run: cargo clippy --manifest-path ${{ matrix.crate }}/Cargo.toml --all-targets -- -D warnings
+
+  msrv-check:
+    name: "MSRV: cargo check @ 1.89（2.1 基线）"
+    runs-on: ubuntu-latest
+    steps:
+/*L91*/
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89"
+      # Rust 1.89 = Bevy 0.18.1 MSRV（Step 8 实测）；依赖闭包须保持 1.89 可编译
+      # （ordered-float 由 Cargo.lock 钉 ≤5.4.0，见 decision-log 债务 #22）。
+      - name: cargo check (MSRV)
+        run: cargo check --workspace --all-targets
+
+  dep-graph:
+/*L101*/
+    name: "依赖方向检查（2.2 分层 / 债务 #15）"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 约束清单 docs/architecture/crate-authority-list.md（规则 1-5）
+      - name: dep_graph_check
+        run: python3 .github/scripts/dep_graph_check.py
+
+  r2-deterministic:
+    name: "R2: 确定性场景门禁（占位）"
+/*L111*/
+    if: false # 启用条件：模拟核心 + GlobalDigest（ADR-NEW-19）+ R2 场景 fixture 就绪
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: placeholder
+        run: echo "R2: 固定场景（10,000 Agent x 1,000 Tick）+ 读档等价 + 摘要比对，见 EC-11"

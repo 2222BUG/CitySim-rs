@@ -1,0 +1,223 @@
+第 10 段 · 范围 C · 节选（第 1/6 部分）
+// FILE: crates/sim-traffic/src/lib.rs @1db87d2
+/*L1*/
+//! 交通系统：MFD 微观基准 + 区域聚合采样（ADR-NEW-25，Stage 2C C3b）。
+//!
+//! - 权威 crate。确定性：BTreeMap 队列、车辆按 ID 全序、event_u64 派生 OD、
+//!   u64 tick 计数，无时钟/无浮点/无 HashMap（2.9）。
+//! - MFD 三角基本图（候选）：微观基准采样 (k, q) → 定点拟合 v_free/k_c/q_max/w。
+//! - T-Bench-1（ADR-NEW-25 决策 4）：40×40 双向网格、密度阶梯注入、每档稳定
+//!   200 tick 后采样；本文件以缩小档位实现，example 输出完整档位。
+
+use sim_codec::CanonicalWriter;
+use sim_digest::GlobalDigest;
+/*L11*/
+use sim_rng::event_u64;
+
+pub const LAYER: &str = "交通系统";
+pub const AUTHORITATIVE: bool = true;
+
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+/// 车辆（确定性：ID 即全序）。
+/*L21*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Vehicle {
+    pub id: u64,
+    pub x: u32,
+    pub y: u32,
+    pub goal_x: u32,
+    pub goal_y: u32,
+    pub edge_traversals: u64,
+}
+
+/*L31*/
+impl Vehicle {
+    pub fn arrived(&self) -> bool {
+        self.x == self.goal_x && self.y == self.goal_y
+    }
+}
+
+/// 网格交通基准（T-Bench-1）：W×H 双向网格，每边每 tick 容量 cap 辆。
+#[derive(Debug, Clone)]
+pub struct GridTraffic {
+    pub w: u32,
+/*L41*/
+    pub h: u32,
+    pub cap_per_edge_per_tick: u64,
+    pub tick: u64,
+    /// 等待进入路网的注入队列（按 (注入 tick, id) 全序）。
+    pending: Vec<Vehicle>,
+    pub vehicles: Vec<Vehicle>,
+    next_id: u64,
+    /// 本 tick 完成的边遍历数（流量采样）。
+    pub flow_this_tick: u64,
+    /// 本 tick 参与移动的车辆数（step 中移除到达车**之前**的人口；k 采样口径，
+/*L51*/
+    /// 与 flow 同群体 → q≤k 恒成立——审计修复 2026-11-20：旧口径 flow 含到达车
+    /// 末步、active_count 不含，q>k 违规点伪造误差地板）。
+    pub last_step_population: u64,
+    seed: u64,
+}
+
+impl GridTraffic {
+    pub fn new(w: u32, h: u32, cap: u64, seed: u64) -> Self {
+        Self {
+            w,
+/*L61*/
+            h,
+            cap_per_edge_per_tick: cap,
+            tick: 0,
+            pending: Vec::new(),
+            vehicles: Vec::new(),
+            next_id: 0,
+            flow_this_tick: 0,
+            last_step_population: 0,
+            seed,
+        }
+/*L71*/
+    }
+
+    /// 注入 n 辆车（OD 由 event_u64 确定性派生；曼哈顿路径，先 x 后 y）。
+    pub fn inject(&mut self, n: u64) {
+        for _ in 0..n {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.inject_with_id(id);
+        }
+    }
+/*L81*/
+
+    /// 显式 ID 注入（2026-11-19 投票修复：注入顺序无关性）。
+    /// 契约：ID 由集中分配点按稳定键分配（ADR-NEW-20 口径）；OD 派生只依赖 ID，
+    /// pending 入档/进网均按 id 稳定序 → 注入的物理顺序不影响任何权威状态。
+    /// 调用方负责 ID 唯一性（重复 ID 会产生两辆车，属调用方契约违例）。
+    pub fn inject_with_id(&mut self, id: u64) {
+        let sx = (event_u64(self.seed, "traffic.od", id, 0) % self.w as u64) as u32;
+        let sy = (event_u64(self.seed, "traffic.od", id, 1) % self.h as u64) as u32;
+        let gx = (event_u64(self.seed, "traffic.od", id, 2) % self.w as u64) as u32;
+        let gy = (event_u64(self.seed, "traffic.od", id, 3) % self.h as u64) as u32;
+/*L91*/
+        self.pending.push(Vehicle {
+            id,
+            x: sx,
+            y: sy,
+            goal_x: gx,
+            goal_y: gy,
+            edge_traversals: 0,
+        });
+    }
+
+/*L101*/
+    /// 推进一个 tick：注入进网、车辆沿曼哈顿路径前进一步（容量让行）。
+    /// 全序：车辆按 id 升序处理；同位置同 tick 内先到先行（id 序）。
+    pub fn step(&mut self) {
+        self.tick += 1;
+        self.flow_this_tick = 0;
+        // 注入进网（pending 已按 id 序）
+        let entering: Vec<Vehicle> = std::mem::take(&mut self.pending);
+        for v in entering {
+            self.vehicles.push(v);
+        }
+/*L111*/
+        self.vehicles.sort_by_key(|v| v.id);
+        // 容量记账：每个目标格每 tick 只放行 cap 辆（cap=1 时即逐格排队）
+        let mut admitted_at: std::collections::BTreeMap<(u32, u32), u64> =
+            std::collections::BTreeMap::new();
+        for v in self.vehicles.iter_mut() {
+            if v.arrived() {
+                continue;
+            }
+            let (nx, ny) = if v.x != v.goal_x {
+                (if v.x < v.goal_x { v.x + 1 } else { v.x - 1 }, v.y)
+/*L121*/
+            } else {
+                (v.x, if v.y < v.goal_y { v.y + 1 } else { v.y - 1 })
+            };
+            let slot = admitted_at.entry((nx, ny)).or_insert(0);
+            if *slot < self.cap_per_edge_per_tick {
+                *slot += 1;
+                v.x = nx;
+                v.y = ny;
+                v.edge_traversals += 1;
+                self.flow_this_tick += 1;
+/*L131*/
+            }
+        }
+        // k 采样口径（审计修复 2026-11-20）：人口在移除到达车之前计量，与
+        // flow_this_tick（含到达车末步）同群体 → q≤k 恒成立（每车每 tick ≤1 条边）。
+        self.last_step_population = self.vehicles.len() as u64;
+        // 已到达车辆出网（保持 vehicles=活跃车辆）
+        self.vehicles.retain(|v| !v.arrived());
+    }
+
+    /// 活跃车辆数（密度分子）。
+/*L141*/
+    /// 需求压力（万分比 0..=10000）= 当前密度 k 相对特征密度 k_ref_permille 的比值封顶。
+    /// 确定性定点（权威状态导出）；MFD→降级信号通道（ADR-NEW-26、ADR-NEW-25 3c）。
+    /// 决策4 修订：k_ref=特征密度（q 首次 ≥90%·q_max 密度，版本化）；k_ref==0 返回 0
+    /// （fail-safe 改向：分母未知时宁可不触发降级，原返回 10000 方向反）。
+    pub fn demand_pressure_bp(&self, k_ref_permille: u64) -> u32 {
+        if k_ref_permille == 0 || self.edge_count() == 0 {
+            return 0;
+        }
+        // 采样口径=last_step_population（与 q 同群体；审计修复 2026-11-20，
+        // MiMo #5：乘法走 u128 防 u64 环绕；edge_count==0 fail-safe 返回 0）。
+/*L151*/
+        let k = (self.last_step_population as u128 * 1000 / self.edge_count() as u128) as u64;
+        ((k as u128 * 10_000 / k_ref_permille as u128).min(10_000)) as u32
+    }
+
+    pub fn active_count(&self) -> u64 {
+        self.vehicles.len() as u64
+    }
+
+    /// 网格链接总数（双向边数；密度分母口径=边数）。
+    pub fn edge_count(&self) -> u64 {
+/*L161*/
+        (2 * self.w as u64 * (self.h as u64 - 1)) + (2 * self.h as u64 * (self.w as u64 - 1))
+    }
+
+    /// 逐 tick 折叠摘要（G3/确定性判据用）。
+    /// 覆盖全部权威状态（ADR-NEW-19 纳入范围）：配置、tick、pending 注入队列、
+    /// next_id 分配器、逐车全字段（含 goal 与 traversals）——2026-11-19 投票修复：
+    /// 补 goal_x/goal_y/next_id 等字段，消除强读档等价假通过风险。
+    pub fn fold_digest(&self, g: &mut GlobalDigest) {
+        let mut w = CanonicalWriter::new("sim-traffic", "TrafficTick");
+        w.u64(self.w as u64);
+/*L171*/
+        w.u64(self.h as u64);
+        w.u64(self.cap_per_edge_per_tick);
+        w.u64(self.seed);
+        w.u64(self.tick);
+        w.u64(self.next_id);
+        // pending 按 id 稳定序入档（注入顺序无关契约）
+        let mut pending_sorted: Vec<&Vehicle> = self.pending.iter().collect();
+        pending_sorted.sort_by_key(|v| v.id);
+        w.seq_len(pending_sorted.len());
+        for v in pending_sorted {
+/*L181*/
+            w.u64(v.id);
+            w.u32(v.x);
+            w.u32(v.y);
+            w.u32(v.goal_x);
+            w.u32(v.goal_y);
+            w.u64(v.edge_traversals);
+        }
+        w.u64(self.vehicles.len() as u64);
+        w.u64(self.flow_this_tick);
+        w.u64(self.last_step_population); // 决策5 豆包 R1：demand_pressure 的 k 来源，
+/*L191*/
+                                          // 权威输入必须入摘要（G3 覆盖），否则不同状态
+                                          // 同摘要而降级压力不同=强读档等价假通过风险
+        for v in &self.vehicles {
+            w.u64(v.id);
+            w.u32(v.x);
+            w.u32(v.y);
+            w.u32(v.goal_x);
+            w.u32(v.goal_y);
+            w.u64(v.edge_traversals);
+        }
+/*L201*/

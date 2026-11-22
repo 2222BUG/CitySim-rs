@@ -1,0 +1,279 @@
+第 21 段 · 范围 B · 节选（第 1/4 部分）
+// FILE: crates/sim-network/src/lib.rs @1db87d2
+/*L1*/
+//! 路网系统：道路拓扑、动态代价与路网事务的原子发布（主文档 2.2 架构分层、2.5/2.6）。
+//! 权威 crate。
+//!
+//! Stage 2A 实装（2026-11-19，ADR-NEW-24 定案）：
+//! - CSR 静态拓扑：`offsets` + `adj_edge_ids`，邻接条目按 (node_id, edge_id) 升序，
+//!   数组序即确定性迭代序；动态代价存于边表（2.6 拓扑与代价分离）。
+//! - 事务发布原子：整笔生效或整笔不生效（失败不改版本号）；拓扑事务重建 CSR、
+//!   代价事务原位写入。
+//! - ADR-NEW-23 两阶段相交判定：AABB 宽筛 + 边 ID 窄判；代价更新默认不触发重算。
+//!
+/*L11*/
+//! 依赖方向约束见 docs/architecture/crate-authority-list.md。
+
+#![forbid(unsafe_code)]
+
+use std::collections::BTreeMap;
+
+/// 所属架构层（依赖方向检查与文档用）。
+pub const LAYER: &str = "路网系统";
+/// 是否权威 crate（2.9 确定性边界内；权威 crate 置严格 clippy.toml）。
+pub const AUTHORITATIVE: bool = true;
+/*L21*/
+
+/// 供调用方与测试以函数调用读取权威标记（clippy 允许的运行时读取点）。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+// ---------------- 影响区域（网格 1 mm） ----------------
+
+/// 影响区域：轴对齐包围盒（ADR-NEW-23 宽筛层）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/*L31*/
+pub struct Region {
+    pub min_x: i64,
+    pub min_y: i64,
+    pub max_x: i64,
+    pub max_y: i64,
+}
+
+impl Region {
+    pub fn new(min_x: i64, min_y: i64, max_x: i64, max_y: i64) -> Self {
+        Region {
+/*L41*/
+            min_x: min_x.min(max_x),
+            min_y: min_y.min(max_y),
+            max_x: min_x.max(max_x),
+            max_y: min_y.max(max_y),
+        }
+    }
+
+    pub fn from_points(pts: &[(i64, i64)]) -> Self {
+        let mut r = Region::new(i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+        for &(x, y) in pts {
+/*L51*/
+            r = r.union(&Region::new(x, y, x, y));
+        }
+        r
+    }
+
+    pub fn intersects(&self, o: &Region) -> bool {
+        self.min_x <= o.max_x && o.min_x <= self.max_x && self.min_y <= o.max_y && o.min_y <= self.max_y
+    }
+
+    pub fn union(&self, o: &Region) -> Region {
+/*L61*/
+        Region {
+            min_x: self.min_x.min(o.min_x),
+            min_y: self.min_y.min(o.min_y),
+            max_x: self.max_x.max(o.max_x),
+            max_y: self.max_y.max(o.max_y),
+        }
+    }
+}
+
+// ---------------- 边与事务 ----------------
+/*L71*/
+
+/// 路网边（几何为毫米网格折线，供路径影响区域计算）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edge {
+    pub id: u64,
+    pub a: u64,
+    pub b: u64,
+    pub cost: i64,
+    pub geom: Vec<(i64, i64)>,
+}
+/*L81*/
+
+impl Edge {
+    pub fn region(&self) -> Region {
+        if self.geom.is_empty() {
+            Region::new(0, 0, 0, 0)
+        } else {
+            Region::from_points(&self.geom)
+        }
+    }
+}
+/*L91*/
+
+/// 路网事务操作（每项自带影响区域；拓扑与代价分离，2.6）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Op {
+    AddEdge(Edge),
+    RemoveEdge { id: u64 },
+    SetDynamicCost { id: u64, cost: i64 },
+}
+
+impl Op {
+/*L101*/
+    pub fn region(&self, net: &Network) -> Region {
+        match self {
+            Op::AddEdge(e) => e.region(),
+            Op::RemoveEdge { id } | Op::SetDynamicCost { id, .. } => {
+                net.edge(*id).map(Edge::region).unwrap_or(Region::new(0, 0, 0, 0))
+            }
+        }
+    }
+}
+
+/*L111*/
+/// 路网事务：整笔原子发布（ADR-NEW-23）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tx {
+    pub id: u64,
+    pub ops: Vec<Op>,
+}
+
+impl Tx {
+    pub fn region(&self, net: &Network) -> Region {
+        let mut r = Region::new(i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+/*L121*/
+        for op in &self.ops {
+            r = r.union(&op.region(net));
+        }
+        r
+    }
+}
+
+/// 发布失败原因（事务整体不生效，版本号不变）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TxError {
+/*L131*/
+    EmptyTx,
+    DuplicateEdge { id: u64 },
+    UnknownEdge { id: u64 },
+    /// 预算预检拒绝（2026-11-19 投票修复 1d；事务不入队，下 tick 重试）。
+    BudgetExceeded { kind: TxBudgetKind },
+}
+
+/// 事务预算分类（拓扑/代价分开计量；一笔含拓扑操作的事务整体按拓扑计）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxBudgetKind {
+/*L141*/
+    Topology,
+    Cost,
+    EdgeOps,
+}
+
+/// 事务每 tick 上限（候选占位，待 ADR-NEW-14 阈值回填；2026-11-19 投票修复 1d）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxLimits {
+    /// 拓扑事务（增/删边）每 tick 上限。
+    pub topology_per_tick: u64,
+/*L151*/
+    /// 纯代价事务每 tick 上限。
+    pub cost_per_tick: u64,
+    /// 单笔事务工作量上限（op 数+几何点数），防一笔超大事务绕过预算。
+    pub max_edge_ops: u64,
+}
+
+impl Default for TxLimits {
+    fn default() -> Self {
+        Self { topology_per_tick: 1024, cost_per_tick: 1024, max_edge_ops: 8192 }
+    }
+/*L161*/
+}
+
+/// 事务预算限制器（确定性工作量单位；publish 前预检 → 超限=QueueToNextTick 语义）。
+/// 调用契约：`admit` 通过后调用 `Network::publish`；tick 边界调用 `reset`。
+#[derive(Clone, Debug)]
+pub struct TxLimiter {
+    limits: TxLimits,
+    topology_used: u64,
+    cost_used: u64,
+}
+/*L171*/
+
+impl TxLimiter {
+    pub fn new(limits: TxLimits) -> Self {
+        Self { limits, topology_used: 0, cost_used: 0 }
+    }
+
+    pub fn reset(&mut self) {
+        self.topology_used = 0;
+        self.cost_used = 0;
+    }
+/*L181*/
+
+    fn op_work(op: &Op) -> u64 {
+        match op {
+            Op::AddEdge(e) => 1 + e.geom.len() as u64,
+            _ => 1,
+        }
+    }
+
+    /// 预检并计量（拒绝时零计量，可下 tick 原样重试）。
+    pub fn admit(&mut self, tx: &Tx, _net: &Network) -> Result<(), TxError> {
+/*L191*/
+        if tx.ops.is_empty() {
+            return Err(TxError::EmptyTx);
+        }
+        let work: u64 = tx.ops.iter().map(Self::op_work).sum();
+        if work > self.limits.max_edge_ops {
+            return Err(TxError::BudgetExceeded { kind: TxBudgetKind::EdgeOps });
+        }
+        let is_topology = tx.ops.iter().any(|op| matches!(op, Op::AddEdge(_) | Op::RemoveEdge { .. }));
+        if is_topology {
+            if self.topology_used >= self.limits.topology_per_tick {
+/*L201*/
+                return Err(TxError::BudgetExceeded { kind: TxBudgetKind::Topology });
+            }
+            self.topology_used += 1;
+        } else {
+            if self.cost_used >= self.limits.cost_per_tick {
+                return Err(TxError::BudgetExceeded { kind: TxBudgetKind::Cost });
+            }
+            self.cost_used += 1;
+        }
+        Ok(())
+/*L211*/
+    }
+}
+
+/// 事务重试上限（债务 #28 / ADR-NEW-24 决策 4：沿用原 tx_id 按全序重排入队重试；
+/// 重试超限转受阻终态+诊断事件 NET-0001）。
+pub const TX_RETRY_LIMIT: u32 = 3;
+
+/// 一次重试入队的处置结果。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RetryOutcome {
+/*L221*/
+    /// 已重新入队，携带累计重试次数（含本次）。
+    Requeued { retry_count: u32 },
+    /// 超过 `TX_RETRY_LIMIT`，转受阻终态。
+    Blocked { retry_count: u32 },
+}
+
+/// 被预算拒绝（`TxError::BudgetExceeded`）事务的重试队列。
+///
+/// 语义（债务 #28 定案）：重试**沿用原 tx_id**（事务身份稳定，2.8 原则），按 tx_id
+/// 全序重排入队（处理顺序不依赖到达先后，与过期结果策略同口径）；重试上限
+/*L231*/
+/// [`TX_RETRY_LIMIT`]，超限转受阻终态并产生诊断事件（不改变权威状态）。
+#[derive(Default, Debug)]
+pub struct TxRetryQueue {
+    /// tx_id -> (事务, 累计重试次数)。BTreeMap 保证 due() 按 tx_id 全序。
+    pending: BTreeMap<u64, (Tx, u32)>,
+    /// 受阻终态的 tx_id（按受阻顺序记录，确定性）。
+    blocked: Vec<u64>,
+}
+
+impl TxRetryQueue {
+/*L241*/
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 失败事务重新入队（沿用原 tx_id）；同一事务重复 offer 累计计数。
+    pub fn offer(&mut self, tx: Tx) -> RetryOutcome {
+        let id = tx.id;
+        let count = self.pending.get(&id).map(|(_, c)| *c).unwrap_or(0) + 1;
+        if count > TX_RETRY_LIMIT {
+            self.pending.remove(&id);
+/*L251*/
+            self.blocked.push(id);

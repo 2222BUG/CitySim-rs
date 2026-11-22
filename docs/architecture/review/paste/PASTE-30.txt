@@ -1,0 +1,62 @@
+第 30 段 · 范围 B · 节选（第 3/3 部分）
+
+/*L481*/
+    #[test]
+    fn encode_decode_roundtrip_is_stable() {
+        let input = record();
+        assert_eq!(input.encode(), input.encode(), "canonical bytes stable");
+        assert_eq!(ReplayInput::decode(&input.encode()).unwrap(), input);
+    }
+
+    #[test]
+    fn unsupported_version_is_diagnosable() {
+        let mut bytes = record().encode();
+/*L491*/
+        // 信封三段各 u64 长度前缀：(8+8)+(8+10)+(8+11)=53 字节后 u16 版本。
+        let ver_pos = 8 + 8 + 8 + 10 + 8 + 11;
+        bytes[ver_pos] = 2;
+        match ReplayInput::decode(&bytes) {
+            Err(ReplayError::UnsupportedVersion { found: 2 }) => {}
+            other => {
+                let hdr: Vec<String> = bytes[..64].iter().map(|x| format!("{:02x}", x)).collect();
+                panic!("expected UnsupportedVersion, got {other:?}; hdr={}", hdr.join(" "));
+            }
+        }
+/*L501*/
+        assert_eq!(ReplayError::UnsupportedVersion { found: 2 }.code().to_string(), "RPL-0001");
+    }
+
+    #[test]
+    fn trailing_bytes_and_truncation_are_rejected() {
+        let mut bytes = record().encode();
+        bytes.push(0);
+        assert_eq!(ReplayInput::decode(&bytes), Err(ReplayError::TrailingBytes));
+        let cut = &record().encode()[..10];
+        assert_eq!(ReplayInput::decode(cut), Err(ReplayError::Truncated));
+/*L511*/
+    }
+
+    #[test]
+    fn recorder_enforces_tick_order() {
+        let mut rec = Recorder::new(1, 30, 1);
+        rec.record(InputEvent::ConfigChange {
+            tick: 5,
+            key: 1,
+            value: 2,
+        })
+/*L521*/
+        .unwrap();
+        assert_eq!(
+            rec.record(InputEvent::ConfigChange {
+                tick: 3,
+                key: 1,
+                value: 2,
+            }),
+            Err(ReplayError::OutOfOrderTick {
+                previous: 5,
+                found: 3
+/*L531*/
+            })
+        );
+    }
+}

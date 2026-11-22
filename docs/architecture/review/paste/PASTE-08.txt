@@ -1,0 +1,212 @@
+第 8 段 · 范围 A · 节选（第 2/3 部分）
+                if !triggered {
+                    DegradationLevel::Normal
+                } else if demand_only_trigger {
+                    DegradationLevel::L1
+                } else if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if used_bp >= t.l2_bp {
+                    DegradationLevel::L2
+                } else {
+                    DegradationLevel::L1
+/*L231*/
+                }
+            }
+            DegradationLevel::L1 => {
+                if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if used_bp >= t.l2_bp {
+                    DegradationLevel::L2
+                } else if recovered {
+                    DegradationLevel::Normal
+                } else {
+/*L241*/
+                    DegradationLevel::L1
+                }
+            }
+            DegradationLevel::L2 => {
+                if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if recovered {
+                    DegradationLevel::Normal
+                } else {
+                    DegradationLevel::L2
+/*L251*/
+                }
+            }
+            DegradationLevel::L3 => {
+                if recovered {
+                    DegradationLevel::Normal
+                } else {
+                    DegradationLevel::L3
+                }
+            }
+        };
+/*L261*/
+        self.spent.iter_mut().for_each(|s| *s = 0);
+        self.demand_bp = 0;
+        self.level
+    }
+
+    /// 编码入档/入摘要（字段序即 canonical 序，G3 口径）。
+    pub fn encode_state(&self, w: &mut CanonicalWriter) {
+        w.u32(self.rolling_used_bp);
+        w.u32(self.over_streak);
+        w.u32(self.under_streak);
+/*L271*/
+        w.u32(self.last_demand_bp);
+        w.u32(self.demand_streak);
+        w.u8(match self.level {
+            DegradationLevel::Normal => 0,
+            DegradationLevel::L1 => 1,
+            DegradationLevel::L2 => 2,
+            DegradationLevel::L3 => 3,
+        });
+    }
+
+/*L281*/
+    /// 超限错误（供 FatalSaveCorrupt 类超限使用）。
+    /// system_id 经 ctx.system/调用方日志定位（message 为 &'static str 无法插值）。
+    pub fn overflow_error(&self, _system_id: u32, ctx: SimErrorContext) -> SimError {
+        SimError {
+            class: ErrorClass::Fatal,
+            code: ErrorCode { module: "SAV", number: 3 },
+            message: "digest entries exceeded per-tick cap; save untrustworthy",
+            context: ctx,
+        }
+    }
+/*L291*/
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decls() -> Vec<BudgetDecl> {
+        vec![
+            BudgetDecl {
+                system_id: 1,
+/*L301*/
+                unit: WorkUnit::NodeExpansions,
+                per_tick_cap: 100,
+                overflow: OverflowBehavior::YieldToNextTick,
+            },
+            BudgetDecl {
+                system_id: 2,
+                unit: WorkUnit::TxApplies,
+                per_tick_cap: 10,
+                overflow: OverflowBehavior::QueueToNextTick,
+            },
+/*L311*/
+        ]
+    }
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(crate::authoritative());
+    }
+
+    #[test]
+    fn spend_and_overflow_flag() {
+/*L321*/
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        assert!(!r.spend(1, 100));
+        assert!(r.spend(1, 1)); // 101 > 100
+        assert!(!r.spend(2, 10));
+        assert!(r.spend(2, 1));
+    }
+
+    #[test]
+    fn degradation_levels_follow_workload_only() {
+        // trigger_ticks=1：纯比例路径（旧口径测试迁移）
+/*L331*/
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        // 逐系统取最严：系统 1 消耗 77/100 → 7700bp ≥7000 → L1
+        r.spend(1, 77);
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        // 重置后无消耗 → 恢复 Normal（< 5000bp）
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+        // 系统 1 消耗 110 → 10000bp → L3
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+/*L341*/
+        // 迟滞：60/100=6000bp ≥5000 → 保持 L3
+        r.spend(1, 60);
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        // 30/100=3000bp < 5000 → 恢复
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+    }
+
+    #[test]
+    fn single_system_saturation_is_not_diluted() {
+/*L351*/
+        // 2026-11-19 投票修复（MiniMax/GPT-6）回归：旧 cap 加权口径下
+        // 系统 2（cap=10）打满只贡献 10/110≈9%→永不触发；新口径取最严必须触发。
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        r.spend(2, 10); // 系统 2 满负荷 10000bp，系统 1 空闲
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+    }
+
+    #[test]
+    fn threshold_boundaries_are_closed_open() {
+/*L361*/
+        // GPT-6 边界要求：恰 70/90/100 触发（闭区间 >=），恰 50 不恢复（开区间 <）。
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        r.spend(1, 70); // 7000bp 恰= l1
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        r.spend(1, 90); // 9000bp 恰= l2
+        assert_eq!(r.end_tick(), DegradationLevel::L2);
+        r.spend(1, 100); // 10000bp 恰= l3
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        r.spend(1, 50); // 5000bp 恰= recover → 不恢复（开区间）
+/*L371*/
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        r.spend(1, 49); // 4900bp < 5000 → 恢复
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+    }
+
+    #[test]
+    fn trigger_and_recover_need_consecutive_ticks() {
+        // Claude：单 tick 突发不触发/不恢复（默认 trigger_ticks=recover_ticks=2）。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.spend(1, 110);
+/*L381*/
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 个超阈 tick：不触发
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::L3); // 第 2 个：触发
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::L3); // 第 1 个低消耗 tick：不恢复
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 2 个：恢复
+    }
+
+    #[test]
+/*L391*/
+    fn state_encoding_is_deterministic() {
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.spend(1, 90);
+        r.end_tick();
+        let mut w1 = CanonicalWriter::new("sim-core", "BudgetState");
+        r.encode_state(&mut w1);
+        let mut w2 = CanonicalWriter::new("sim-core", "BudgetState");
+        r.encode_state(&mut w2);
+        assert_eq!(w1.into_bytes(), w2.into_bytes());
+    }
+/*L401*/
+
+    #[test]
+    fn unknown_system_spend_panics() {
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            r.spend(99, 1);
+        }));
+        assert!(result.is_err());
+    }
+
+/*L411*/
+    #[test]
+    fn demand_pressure_triggers_l1_only_with_hysteresis() {

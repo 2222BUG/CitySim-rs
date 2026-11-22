@@ -1,0 +1,198 @@
+第 17 段 · 范围 C · 节选（第 2/3 部分）
+    let (mut fit_samples, fit_flags) = sample_ladder(w, h, &FIT_LADDER, 0);
+    fit_samples.sort_by_key(|s| s.k_permille);
+    let (holdout, hold_flags) = sample_ladder(w, h, &HOLDOUT_LADDER, 8);
+    let steady_fit = fit_flags.iter().filter(|&&s| s).count();
+    let steady_hold = hold_flags.iter().filter(|&&s| s).count();
+    emit(format!(
+/*L191*/
+        "steady: fit {}/{} holdout {}/{} (dual criterion steady_window; unsteady ladders: fit {:?} holdout {:?})",
+        steady_fit,
+        FIT_LADDER.len(),
+        steady_hold,
+        HOLDOUT_LADDER.len(),
+        FIT_LADDER
+            .iter()
+            .zip(&fit_flags)
+            .filter(|(_, s)| !**s)
+            .map(|(i, _)| *i)
+/*L201*/
+            .collect::<Vec<_>>(),
+        HOLDOUT_LADDER
+            .iter()
+            .zip(&hold_flags)
+            .filter(|(_, s)| !**s)
+            .map(|(i, _)| *i)
+            .collect::<Vec<_>>(),
+    ));
+
+    // ===== 辨识两族（判据归一化损失目标，P1 修测）=====
+/*L211*/
+    let (fit, free_slope, binding) =
+        fit_rational_saturation_detailed(&fit_samples, &ZoneBands::SET_D);
+    let (pfit, p_slope, p_binding) =
+        fit_pnorm_concave_detailed(&fit_samples, &ZoneBands::SET_D);
+    emit(format!(
+        "fit rational: q_max={}‰ k_half={}‰ slope={}‰ (free est {}‰ binding={})",
+        fit.q_max_permille,
+        fit.k_half_permille,
+        fit.zero_density_slope_permille(),
+        free_slope,
+/*L221*/
+        binding
+    ));
+    emit(format!(
+        "fit pnorm-p2: q_max={}‰ k0={}‰ slope={}‰ (free est {}‰ binding={})",
+        pfit.q_max_permille,
+        pfit.k0_permille,
+        pfit.zero_density_slope_permille(),
+        p_slope,
+        p_binding
+    ));
+/*L231*/
+
+    // ===== Q3 预选（判据归一化损失，一次锁定；fit-set 逐点归档）=====
+    let qf_tab: Vec<(&str, QModelFn<'_>)> = vec![
+        ("rational", Box::new(|k: u64| q_rational_permille(&fit, k))),
+        ("pnorm-p2", Box::new(|k: u64| q_pnorm_permille(&pfit, k))),
+    ];
+    for (tag, qf) in &qf_tab {
+        for s in &fit_samples {
+            let qm = qf(s.k_permille);
+            emit(format!(
+/*L241*/
+                "  [fit-set {tag}] k {:>5}‰ q_obs {:>4}‰ q_model {:>4}‰ {}",
+                s.k_permille,
+                s.q_permille,
+                qm,
+                res_tag(s.k_permille, s.q_permille, qm)
+            ));
+        }
+    }
+    let loss_r =
+        criterion_aligned_loss(|k| q_rational_permille(&fit, k), &fit_samples, &ZoneBands::SET_D);
+/*L251*/
+    let loss_p =
+        criterion_aligned_loss(|k| q_pnorm_permille(&pfit, k), &fit_samples, &ZoneBands::SET_D);
+    let sse_r = rel_sse(|k| q_rational_permille(&fit, k), &fit_samples);
+    let sse_p = rel_sse(|k| q_pnorm_permille(&pfit, k), &fit_samples);
+    let selected: Option<&str> = match (binding, p_binding) {
+        (true, true) => None,
+        (false, true) => Some("rational"),
+        (true, false) => Some("pnorm-p2"),
+        (false, false) => Some(if loss_p < loss_r { "pnorm-p2" } else { "rational" }),
+    };
+/*L261*/
+    emit(format!(
+        "  [family pre-selection] criterion-loss rational={loss_r} pnorm={loss_p} (rel-SSE disclosure r={sse_r} p={sse_p}) binding(r={binding},p={p_binding}) -> selected={} (Q3 feasible-domain criterion-loss rule; locked before holdout)",
+        selected.unwrap_or("NONE (all binding)")
+    ));
+
+    // ===== 留出集逐点表（双族并列+分辨率标注）=====
+    for s in &holdout {
+        let q_r = q_rational_permille(&fit, s.k_permille);
+        let q_p = q_pnorm_permille(&pfit, s.k_permille);
+        emit(format!(
+/*L271*/
+            "  k {:>5}‰ q_obs {:>4}‰ | rational q {:>4}‰ {} | pnorm-p2 q {:>4}‰ {}",
+            s.k_permille,
+            s.q_permille,
+            q_r,
+            res_tag(s.k_permille, s.q_permille, q_r),
+            q_p,
+            res_tag(s.k_permille, s.q_permille, q_p)
+        ));
+    }
+
+/*L281*/
+    let r = evaluate_rational_fit(&fit, &holdout, &ZoneBands::SET_D);
+    let rp = evaluate_pnorm_fit(&pfit, &holdout, &ZoneBands::SET_D);
+    emit(format!(
+        "  [rational] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        r.free_flow_max_err_permille,
+        r.free_n,
+        r.transition_max_err_permille,
+        r.trans_n,
+        r.saturated_max_err_permille,
+        r.sat_n,
+/*L291*/
+        binding,
+        family_verdict(binding, &r)
+    ));
+    emit(format!(
+        "  [pnorm-p2] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        rp.free_flow_max_err_permille,
+        rp.free_n,
+        rp.transition_max_err_permille,
+        rp.trans_n,
+        rp.saturated_max_err_permille,
+/*L301*/
+        rp.sat_n,
+        p_binding,
+        family_verdict(p_binding, &rp)
+    ));
+    emit(format!(
+        "  Prime outcome (selected family {}) = {}",
+        selected.unwrap_or("NONE"),
+        match selected {
+            Some("pnorm-p2") => family_verdict(p_binding, &rp),
+            Some(_) => family_verdict(binding, &r),
+/*L311*/
+            None => "FAIL (no feasible family: all binding)",
+        }
+    ));
+
+    // ===== back-half 敏感性（独立种子段 +16..24 / +24..32）=====
+    let back_fit: Vec<MfdSample> = FIT_LADDER
+        .iter()
+        .map(|&inj| {
+            let (mut k, mut q) = (0u64, 0u64);
+            for i in 0..N_SEEDS {
+/*L321*/
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SEED_BASE + 16 + i);
+                k += k1;
+                q += q1;
+            }
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    let back_hold: Vec<MfdSample> = HOLDOUT_LADDER
+        .iter()
+        .map(|&inj| {
+/*L331*/
+            let (mut k, mut q) = (0u64, 0u64);
+            for i in 0..N_SEEDS {
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SEED_BASE + 24 + i);
+                k += k1;
+                q += q1;
+            }
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    let (fit_b, _, binding_b) = fit_rational_saturation_detailed(&back_fit, &ZoneBands::SET_D);
+/*L341*/
+    let r_b = evaluate_rational_fit(&fit_b, &back_hold, &ZoneBands::SET_D);
+    emit(format!(
+        "  [back-half rational] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        r_b.free_flow_max_err_permille,
+        r_b.free_n,
+        r_b.transition_max_err_permille,
+        r_b.trans_n,
+        r_b.saturated_max_err_permille,
+        r_b.sat_n,
+        binding_b,
+/*L351*/
+        family_verdict(binding_b, &r_b)
+    ));
+    let (pfit_b, _, p_binding_b) = fit_pnorm_concave_detailed(&back_fit, &ZoneBands::SET_D);
+    let rp_b = evaluate_pnorm_fit(&pfit_b, &back_hold, &ZoneBands::SET_D);
+    emit(format!(
+        "  [back-half pnorm-p2] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        rp_b.free_flow_max_err_permille,
+        rp_b.free_n,
+        rp_b.transition_max_err_permille,
+        rp_b.trans_n,
+/*L361*/
+        rp_b.saturated_max_err_permille,
+        rp_b.sat_n,
+        p_binding_b,

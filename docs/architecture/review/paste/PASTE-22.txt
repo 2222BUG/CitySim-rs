@@ -1,0 +1,266 @@
+第 22 段 · 范围 B · 节选（第 2/4 部分）
+            RetryOutcome::Blocked { retry_count: count }
+        } else {
+            self.pending.insert(id, (tx, count));
+            RetryOutcome::Requeued { retry_count: count }
+        }
+    }
+
+    /// tick 边界取回全部待重试事务（按 tx_id 全序）；取走即出队——再次失败须
+    /// 重新 [`offer`]（重试次数保留在队列语义内，不随 due 清零）。
+/*L261*/
+    pub fn due(&mut self) -> Vec<Tx> {
+        std::mem::take(&mut self.pending)
+            .into_values()
+            .map(|(tx, _)| tx)
+            .collect()
+    }
+
+    /// 当前等待重试的 tx_id（升序）。
+    pub fn pending_ids(&self) -> Vec<u64> {
+        self.pending.keys().copied().collect()
+/*L271*/
+    }
+
+    /// 受阻终态 tx_id（按受阻顺序）。
+    pub fn blocked_ids(&self) -> &[u64] {
+        &self.blocked
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+/*L281*/
+
+    /// 把受阻终态写入诊断通道（NET-0001，逐 tx_id 一条，顺序=受阻顺序）。
+    /// 调用方在 tick 边界调用；诊断事件不改变权威状态（EC-08）。
+    pub fn emit_blocked_diagnostics(&self, sink: &mut sim_error::DiagnosticSink, tick: u64) {
+        for &id in &self.blocked {
+            sink.emit(
+                sim_error::ErrorCode::new("NET", 1),
+                "tx retry limit exceeded; transaction blocked",
+                sim_error::SimErrorContext {
+                    tick,
+/*L291*/
+                    entity_id: id,
+                    system: "sim-network",
+                },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod txlimiter_tests {
+/*L301*/
+    use super::*;
+
+    fn cost_tx(id: u64) -> Tx {
+        Tx { id, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] }
+    }
+    fn topo_tx(id: u64) -> Tx {
+        Tx {
+            id,
+            ops: vec![Op::AddEdge(Edge {
+                id: 100 + id,
+/*L311*/
+                a: 0,
+                b: 1,
+                cost: 1,
+                geom: vec![(0, 0), (1, 0)],
+            })],
+        }
+    }
+
+    #[test]
+    fn topology_and_cost_budgets_are_separate() {
+/*L321*/
+        // 纯代价事务用满不应挡住拓扑事务（1d：分开上限）。
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+            max_edge_ops: 100,
+        });
+        assert!(lim.admit(&cost_tx(1), &net).is_ok());
+        assert_eq!(
+            lim.admit(&cost_tx(2), &net),
+/*L331*/
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::Cost })
+        );
+        assert!(lim.admit(&topo_tx(3), &net).is_ok(), "topology budget independent");
+        assert_eq!(
+            lim.admit(&topo_tx(4), &net),
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::Topology })
+        );
+    }
+
+    #[test]
+/*L341*/
+    fn oversized_single_tx_is_rejected() {
+        // 一笔超大事务不能绕过预算（工作量上限）。
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 10,
+            cost_per_tick: 10,
+            max_edge_ops: 3,
+        });
+        let big = Tx {
+            id: 9,
+/*L351*/
+            ops: vec![Op::AddEdge(Edge {
+                id: 9,
+                a: 0,
+                b: 1,
+                cost: 1,
+                geom: vec![(0, 0), (1, 0), (2, 0), (3, 0)],
+            })],
+        };
+        assert_eq!(
+            lim.admit(&big, &net),
+/*L361*/
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::EdgeOps })
+        );
+    }
+
+    #[test]
+    fn rejected_tx_consumes_nothing_and_reset_rearms() {
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+/*L371*/
+            max_edge_ops: 100,
+        });
+        assert!(lim.admit(&topo_tx(1), &net).is_ok());
+        assert!(lim.admit(&topo_tx(2), &net).is_err());
+        // 拒绝不计量：reset 后原样可入（QueueToNextTick 语义）
+        lim.reset();
+        assert!(lim.admit(&topo_tx(2), &net).is_ok());
+    }
+
+    #[test]
+/*L381*/
+    fn mixed_tx_counts_as_topology() {
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 5,
+            max_edge_ops: 100,
+        });
+        let mixed = Tx {
+            id: 7,
+            ops: vec![
+/*L391*/
+                Op::SetDynamicCost { id: 1, cost: 5 },
+                Op::AddEdge(Edge { id: 7, a: 0, b: 1, cost: 1, geom: vec![(0, 0)] }),
+            ],
+        };
+        assert!(lim.admit(&mixed, &net).is_ok());
+        assert!(lim.admit(&topo_tx(8), &net).is_err(), "mixed tx consumes topology budget");
+    }
+}
+
+/// 事务记录（ADR-NEW-23 条文 7 聚合与窄判所需：按版本区间查询）。
+/*L401*/
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxRecord {
+    pub id: u64,
+    pub version_after: u64,
+    pub region: Region,
+    /// 拓扑变更的边 ID（新增或删除）——窄判参与。
+    pub topology_changed_edges: Vec<u64>,
+    /// 代价变更的边 ID——默认不触发重算（P1-04 旋钮默认关闭，记录备用）。
+    pub cost_changed_edges: Vec<u64>,
+}
+/*L411*/
+
+/// 过期判定结果（ADR-NEW-17 条文 3-9 / ADR-NEW-23）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StaleOutcome {
+    /// 结果可用（版本一致，或区间内事务与路径不相交/仅代价变更）。
+    Accept,
+    /// 须重入队重算；trigger_tx=首个命中窄判的事务（按 tx_id 升序，稳定）。
+    Recompute { trigger_tx: u64 },
+}
+
+/*L421*/
+// ---------------- 路网（CSR） ----------------
+
+/// CSR 路网（ADR-NEW-24 决策 1）。
+///
+/// 节点 ID 为稠密 u64（0..=max）；边 ID 任意 u64（BTreeMap 稳定序）。
+#[derive(Clone, Debug, Default)]
+pub struct Network {
+    version: u64,
+    edges: BTreeMap<u64, Edge>,
+    // CSR 静态拓扑
+/*L431*/
+    offsets: Vec<u32>,
+    adj_edge_ids: Vec<u64>,
+    n_nodes: u64,
+    tx_log: Vec<TxRecord>,
+}
+
+impl PartialEq for Network {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version && self.edges == other.edges
+    }
+/*L441*/
+}
+impl Eq for Network {}
+
+impl Network {
+    pub fn new() -> Self {
+        Network { version: 1, ..Default::default() }
+    }
+
+    /// 批量构造（构建期入口，非事务路径；一次 CSR 重建）。
+    pub fn from_edges(edges: Vec<Edge>) -> Self {
+/*L451*/
+        let mut n = Network::new();
+        for e in edges {
+            n.edges.insert(e.id, e);
+        }
+        n.rebuild_csr();
+        n
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+/*L461*/
+    }
+
+    /// 节点数 |V|（机制 B 的 L 上界用；ADR-NEW-24 决策 3）。
+    pub fn node_count(&self) -> u64 {
+        self.n_nodes
+    }
+
+    pub fn edge(&self, id: u64) -> Option<&Edge> {
+        self.edges.get(&id)
+    }
+/*L471*/
+
+    pub fn edges(&self) -> impl Iterator<Item = &Edge> {
+        self.edges.values()
+    }
+
+    /// 节点出边：CSR 数组序（(node_id, edge_id) 升序），yield (edge_id, to, cost)。
+    pub fn neighbors(&self, node: u64) -> impl Iterator<Item = (u64, u64, i64)> + '_ {
+        let (a, b) = self.adj_range(node);
+        self.adj_edge_ids[a..b].iter().map(move |&eid| {
+            let e = &self.edges[&eid];
+/*L481*/
+            (eid, e.b, e.cost)
+        })
+    }
+
+    fn adj_range(&self, node: u64) -> (usize, usize) {
+        if node as usize >= self.offsets.len().saturating_sub(1) {
+            return (0, 0);
+        }
+        (self.offsets[node as usize] as usize, self.offsets[node as usize + 1] as usize)
+    }
+/*L491*/
+
+    fn rebuild_csr(&mut self) {
