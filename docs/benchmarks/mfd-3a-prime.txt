@@ -1,10 +1,13 @@
    Compiling sim-traffic v0.1.0 (D:\AIWORK\CITYSIM\crates\sim-traffic)
-    Finished `release` profile [optimized] target(s) in 1.04s
+    Finished `release` profile [optimized] target(s) in 0.64s
      Running `target\release\examples\mfd_prime.exe`
 ②′ confirmation round (debt #31; pre-registered 7160955; one-shot termination: any FAIL -> disposition ① automatically)
-evidence commit: 7015fed027d078244dd0cb9834dd0f491828fafd
+evidence commit: beaabcd5e833aa30365ba45f1fc8af0ed152c2af
 criteria: free<=100‰ transition<=250‰ saturated<=250‰ (single source = sim-traffic consts); families frozen = {rational, pnorm-p2}
 === topology 40x40 (②′ seeds 0xc0ffee44440000+0..8) ===
+  [fixture disclosure] edges=6240 rounding=floor-per-tick (bias <=1‰/tick structural)
+  [density domain] fit-k(permille)=[3, 7, 12, 16, 25, 35, 55, 77, 132, 210, 503, 936, 1975, 3089, 5387, 7717, 12412, 17121]
+  [density domain] holdout-k(permille)=[7, 12, 21, 30, 40, 61, 89, 148, 265, 603, 1183, 2250, 3659, 5969, 8889, 13588, 19478, 26554]
 steady: fit 4/18 holdout 6/18 (dual criterion steady_window; unsteady ladders: fit [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128] holdout [2, 3, 5, 7, 9, 13, 18, 26, 36, 52, 72, 104])
 fit rational: q_max=306‰ k_half=306‰ slope=1000‰ (free est 1089‰ binding=true)
 fit pnorm-p2: q_max=251‰ k0=275‰ slope=912‰ (free est 912‰ binding=false)
@@ -76,6 +79,9 @@ fit pnorm-p2: q_max=251‰ k0=275‰ slope=912‰ (free est 912‰ binding=false
     rounding (|round−floor| per point, pnorm-p2): max 1‰ (structural ≤1‰)
     back-half seeds=reused holdout segment (old bug emulation): free=80‰ binding=true vs independent 78‰
 === topology 32x32 (②′ seeds 0xc0ffee44440000+0..8) ===
+  [fixture disclosure] edges=3968 rounding=floor-per-tick (bias <=1‰/tick structural)
+  [density domain] fit-k(permille)=[5, 10, 15, 21, 33, 45, 72, 104, 191, 355, 956, 1740, 3467, 5262, 8914, 12599, 19996, 27409]
+  [density domain] holdout-k(permille)=[9, 15, 27, 39, 52, 79, 122, 222, 476, 1142, 2156, 3907, 6163, 9829, 14443, 21848, 31117, 42247]
 steady: fit 4/18 holdout 5/18 (dual criterion steady_window; unsteady ladders: fit [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128] holdout [2, 3, 5, 7, 9, 13, 18, 26, 36, 52, 72, 104, 208])
 fit rational: q_max=286‰ k_half=286‰ slope=1000‰ (free est 1114‰ binding=true)
 fit pnorm-p2: q_max=254‰ k0=288‰ slope=881‰ (free est 881‰ binding=false)
@@ -147,6 +153,9 @@ fit pnorm-p2: q_max=254‰ k0=288‰ slope=881‰ (free est 881‰ binding=false
     rounding (|round−floor| per point, pnorm-p2): max 1‰ (structural ≤1‰)
     back-half seeds=reused holdout segment (old bug emulation): free=88‰ binding=true vs independent 86‰
 === topology 64x64 (②′ seeds 0xc0ffee44440000+0..8) ===
+  [fixture disclosure] edges=16128 rounding=floor-per-tick (bias <=1‰/tick structural)
+  [density domain] fit-k(permille)=[2, 4, 7, 9, 15, 20, 32, 45, 71, 101, 181, 293, 608, 990, 1829, 2705, 4495, 6304]
+  [density domain] holdout-k(permille)=[4, 7, 12, 17, 23, 35, 50, 78, 118, 204, 361, 698, 1192, 2044, 3148, 4943, 7209, 9939]
 steady: fit 2/18 holdout 3/18 (dual criterion steady_window; unsteady ladders: fit [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256] holdout [2, 3, 5, 7, 9, 13, 18, 26, 36, 52, 72, 104, 144, 208, 288])
 fit rational: q_max=303‰ k_half=303‰ slope=1000‰ (free est 1070‰ binding=true)
 fit pnorm-p2: q_max=247‰ k0=265‰ slope=932‰ (free est 932‰ binding=false)

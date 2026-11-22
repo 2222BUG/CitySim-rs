@@ -33,7 +33,7 @@
 | --- | --- | --- | --- |
 | 1 | （无）→ Spawning | 分配器 alloc | 进场登记 |
 | 2 | Spawning → Active | 进场 tick 到达 | 开始活动 |
-| 3 | Active → Blocked | 任一 BlockedReason 触发 | attempts=1、since_tick=当前 tick |
+| 3 | Active → Blocked | 任一 BlockedReason 触发 | attempts=累计+1（跨 unblock 单调不重置，审计3 T1 修正）、since_tick=当前 tick |
 | 4 | Blocked → Blocked | 再次受阻 | attempts+1，刷新 reason/since_tick |
 | 5 | Blocked → Active | 重寻路成功 | 受阻解除（unblock） |
 | 6 | Blocked → Despawned | 取消 / 超时退役 / attempts 超上限 | 受控终止（见 §4） |
@@ -45,7 +45,8 @@
   attempts 超过上限时**自动退役**（→ Despawned），转移记录 `Retired`——这是
   "有限 tick 内获得路径或受阻、受阻亦有界"的收口，杜绝永久受阻悬挂。
 - 前向进展不变量（ADR-NEW-17 条文 10）在本状态机的落点：任何 Agent 的 Blocked
-  驻留必须以 #5/#6 结束，attempts 单调递增保证可终止性。
+  驻留必须以 #5/#6 结束，attempts 单调递增保证可终止性（attempts 跨 unblock 累计
+  不重置——审计3 T1 修正，旧实现 block→unblock→block 可无限循环，2026-11-22 修复）。
 
 ## 5. 确定性口径
 

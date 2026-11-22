@@ -193,6 +193,22 @@ fn report_topology(w: u32, h: u32, out: &mut Vec<String>) -> bool {
     let (mut fit_samples, fit_flags) = sample_ladder(w, h, &FIT_LADDER, 0);
     fit_samples.sort_by_key(|s| s.k_permille);
     let (holdout, hold_flags) = sample_ladder(w, h, &HOLDOUT_LADDER, 8);
+    // C-4/C-5 披露（审计3）：取整=floor 逐 tick（偏置 ≤1‰/tick 结构性，累计入
+    // 测量；受限点走绝对复核通道）；阶梯为注入率域非密度域（三拓扑边数 6240/
+    // 3968/16128 差约 4 倍→同一注入率对应不同 k̄，fit/holdout 密度域重叠与否
+    // 以实测 k̄ 序列为准——下表如实列出）。
+    emit(format!(
+        "  [fixture disclosure] edges={} rounding=floor-per-tick (bias <=1‰/tick structural)",
+        (2 * w * (h - 1) + 2 * h * (w - 1))
+    ));
+    emit(format!(
+        "  [density domain] fit-k(permille)={:?}",
+        fit_samples.iter().map(|s| s.k_permille).collect::<Vec<_>>()
+    ));
+    emit(format!(
+        "  [density domain] holdout-k(permille)={:?}",
+        holdout.iter().map(|s| s.k_permille).collect::<Vec<_>>()
+    ));
     let steady_fit = fit_flags.iter().filter(|&&s| s).count();
     let steady_hold = hold_flags.iter().filter(|&&s| s).count();
     emit(format!(

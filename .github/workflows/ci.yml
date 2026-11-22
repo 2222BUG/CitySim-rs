@@ -104,7 +104,7 @@ jobs:
       - uses: actions/checkout@v4
       # 约束清单 docs/architecture/crate-authority-list.md（规则 1-5）
       - name: dep_graph_check
-        run: python3 .github/scripts/dep_graph_check.py
+        run: python3 .github/scripts/dep_graph_check.py --self-test && python3 .github/scripts/dep_graph_check.py
 
   r2-deterministic:
     name: "R2: 确定性场景门禁（占位）"

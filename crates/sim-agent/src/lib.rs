@@ -252,6 +252,9 @@ pub struct AgentLifecycle {
     states: BTreeMap<u64, AgentState>,
     log: Vec<StateTransition>,
     block_limit: u32,
+    /// 累计受阻次数（跨 unblock 单调递增，审计3 T1：RFC §4"attempts 单调递增
+    /// 保证可终止性"——block→unblock→block 不得重置，否则永不退役）。
+    block_attempts: BTreeMap<u64, u32>,
 }
 
 impl Default for AgentLifecycle {
@@ -266,6 +269,7 @@ impl AgentLifecycle {
             states: BTreeMap::new(),
             log: Vec::new(),
             block_limit,
+            block_attempts: BTreeMap::new(),
         }
     }
 
@@ -314,13 +318,8 @@ impl AgentLifecycle {
         tick: u64,
     ) -> Result<BlockOutcome, IllegalTransition> {
         let from = self.ok_state(agent_id)?;
-        let (attempts, base) = match from {
-            AgentState::Active => (1u32, from),
-            AgentState::Blocked {
-                attempts,
-                reason: _,
-                since_tick: _,
-            } => (attempts + 1, from),
+        match from {
+            AgentState::Active | AgentState::Blocked { .. } => {}
             other => {
                 return Err(IllegalTransition {
                     agent_id,
@@ -332,6 +331,13 @@ impl AgentLifecycle {
                     },
                 })
             }
+        }
+        let base = from;
+        // 累计计数（审计3 T1）：跨 unblock 单调，不随状态转移重置。
+        let attempts = {
+            let a = self.block_attempts.entry(agent_id).or_insert(0);
+            *a += 1;
+            *a
         };
         if attempts > self.block_limit {
             let to = AgentState::Despawned;
@@ -472,13 +478,15 @@ mod lifecycle_tests {
             Ok(BlockOutcome::Blocked { attempts: 1 })
         );
         assert_eq!(lc.unblock(1, 3), Ok(AgentState::Active));
+        // 审计3 T1 修正：attempts 跨 unblock 累计（旧行为重置=block→unblock→block
+        // 永不退役，测试曾固化错误行为）。
         assert_eq!(
             lc.block(1, BlockedReason::RecomputeLimitExceeded, 4),
-            Ok(BlockOutcome::Blocked { attempts: 1 })
+            Ok(BlockOutcome::Blocked { attempts: 2 })
         );
         assert_eq!(
             lc.block(1, BlockedReason::MarkBlockedFallback, 5),
-            Ok(BlockOutcome::Blocked { attempts: 2 })
+            Ok(BlockOutcome::Blocked { attempts: 3 })
         );
         assert_eq!(lc.despawn(1, 6), Ok(AgentState::Despawned));
         // 非法：终态复活、Spawning 直接 block、Active unblock、未登记操作。
@@ -518,6 +526,30 @@ mod lifecycle_tests {
         lc2.activate(1, 1).unwrap();
         lc2.block(1, BlockedReason::Unreachable, 2).unwrap();
         assert_eq!(lc2.unblock(1, 5), Ok(AgentState::Active));
+    }
+
+    #[test]
+    fn cumulative_retirement_across_unblock() {
+        // 审计3 T1 运营路径：block→unblock→block 反复不得重置计数（RFC §4
+        // 前向进展收口）——limit=2 时第 3 次受阻（无论中间 unblock）必退役。
+        let mut lc = AgentLifecycle::new(2);
+        lc.spawn(1, 0).unwrap();
+        lc.activate(1, 1).unwrap();
+        assert_eq!(
+            lc.block(1, BlockedReason::Unreachable, 2),
+            Ok(BlockOutcome::Blocked { attempts: 1 })
+        );
+        lc.unblock(1, 3).unwrap();
+        assert_eq!(
+            lc.block(1, BlockedReason::Unreachable, 4),
+            Ok(BlockOutcome::Blocked { attempts: 2 })
+        );
+        lc.unblock(1, 5).unwrap();
+        assert_eq!(
+            lc.block(1, BlockedReason::MarkBlockedFallback, 6),
+            Ok(BlockOutcome::Retired { attempts: 3 })
+        );
+        assert_eq!(lc.state(1), Some(AgentState::Despawned));
     }
 
     #[test]
