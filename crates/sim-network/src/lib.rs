@@ -211,6 +211,91 @@ impl TxLimiter {
     }
 }
 
+/// 事务重试上限（债务 #28 / ADR-NEW-24 决策 4：沿用原 tx_id 按全序重排入队重试；
+/// 重试超限转受阻终态+诊断事件 NET-0001）。
+pub const TX_RETRY_LIMIT: u32 = 3;
+
+/// 一次重试入队的处置结果。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RetryOutcome {
+    /// 已重新入队，携带累计重试次数（含本次）。
+    Requeued { retry_count: u32 },
+    /// 超过 `TX_RETRY_LIMIT`，转受阻终态。
+    Blocked { retry_count: u32 },
+}
+
+/// 被预算拒绝（`TxError::BudgetExceeded`）事务的重试队列。
+///
+/// 语义（债务 #28 定案）：重试**沿用原 tx_id**（事务身份稳定，2.8 原则），按 tx_id
+/// 全序重排入队（处理顺序不依赖到达先后，与过期结果策略同口径）；重试上限
+/// [`TX_RETRY_LIMIT`]，超限转受阻终态并产生诊断事件（不改变权威状态）。
+#[derive(Default, Debug)]
+pub struct TxRetryQueue {
+    /// tx_id -> (事务, 累计重试次数)。BTreeMap 保证 due() 按 tx_id 全序。
+    pending: BTreeMap<u64, (Tx, u32)>,
+    /// 受阻终态的 tx_id（按受阻顺序记录，确定性）。
+    blocked: Vec<u64>,
+}
+
+impl TxRetryQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 失败事务重新入队（沿用原 tx_id）；同一事务重复 offer 累计计数。
+    pub fn offer(&mut self, tx: Tx) -> RetryOutcome {
+        let id = tx.id;
+        let count = self.pending.get(&id).map(|(_, c)| *c).unwrap_or(0) + 1;
+        if count > TX_RETRY_LIMIT {
+            self.pending.remove(&id);
+            self.blocked.push(id);
+            RetryOutcome::Blocked { retry_count: count }
+        } else {
+            self.pending.insert(id, (tx, count));
+            RetryOutcome::Requeued { retry_count: count }
+        }
+    }
+
+    /// tick 边界取回全部待重试事务（按 tx_id 全序）；取走即出队——再次失败须
+    /// 重新 [`offer`]（重试次数保留在队列语义内，不随 due 清零）。
+    pub fn due(&mut self) -> Vec<Tx> {
+        std::mem::take(&mut self.pending)
+            .into_values()
+            .map(|(tx, _)| tx)
+            .collect()
+    }
+
+    /// 当前等待重试的 tx_id（升序）。
+    pub fn pending_ids(&self) -> Vec<u64> {
+        self.pending.keys().copied().collect()
+    }
+
+    /// 受阻终态 tx_id（按受阻顺序）。
+    pub fn blocked_ids(&self) -> &[u64] {
+        &self.blocked
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// 把受阻终态写入诊断通道（NET-0001，逐 tx_id 一条，顺序=受阻顺序）。
+    /// 调用方在 tick 边界调用；诊断事件不改变权威状态（EC-08）。
+    pub fn emit_blocked_diagnostics(&self, sink: &mut sim_error::DiagnosticSink, tick: u64) {
+        for &id in &self.blocked {
+            sink.emit(
+                sim_error::ErrorCode::new("NET", 1),
+                "tx retry limit exceeded; transaction blocked",
+                sim_error::SimErrorContext {
+                    tick,
+                    entity_id: id,
+                    system: "sim-network",
+                },
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod txlimiter_tests {
     use super::*;
@@ -687,5 +772,71 @@ mod tests {
         let mut c = small_net();
         c.publish(Tx { id: 50, ops: vec![Op::SetDynamicCost { id: 1, cost: 7 }] }).unwrap();
         assert_ne!(a.digest(), c.digest());
+    }
+}
+
+#[cfg(test)]
+mod txretry_tests {
+    use super::*;
+
+    fn tx(id: u64) -> Tx {
+        Tx { id, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] }
+    }
+
+    #[test]
+    fn retry_keeps_tx_id_and_due_is_full_order() {
+        // 债务 #28：沿用原 tx_id，按 tx_id 全序重排（与到达顺序无关）。
+        let mut q = TxRetryQueue::new();
+        assert_eq!(q.offer(tx(2)), RetryOutcome::Requeued { retry_count: 1 });
+        assert_eq!(q.offer(tx(1)), RetryOutcome::Requeued { retry_count: 1 });
+        let due = q.due();
+        assert_eq!(due.iter().map(|t| t.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(due[0].id, 1, "original tx_id preserved");
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn retry_limit_blocks_and_emits_diagnostic() {
+        // 重试上限 3：第 4 次 offer 转受阻终态；NET-0001 诊断逐受阻 id 一条。
+        let mut q = TxRetryQueue::new();
+        for i in 1..=TX_RETRY_LIMIT {
+            assert_eq!(q.offer(tx(7)), RetryOutcome::Requeued { retry_count: i });
+        }
+        assert_eq!(q.offer(tx(7)), RetryOutcome::Blocked { retry_count: 4 });
+        assert_eq!(q.blocked_ids(), &[7]);
+        assert!(q.is_empty(), "blocked tx must leave the pending queue");
+        let mut sink = sim_error::DiagnosticSink::new();
+        q.emit_blocked_diagnostics(&mut sink, 42);
+        let events = sink.drain();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].code.to_string(), "NET-0001");
+        assert_eq!(events[0].context.tick, 42);
+        assert_eq!(events[0].context.entity_id, 7);
+    }
+
+    #[test]
+    fn limiter_rejection_feeds_retry_queue() {
+        // 与 TxLimiter（BudgetExceeded）衔接：预算拒绝→入队→下 tick 重试成功。
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+            max_edge_ops: 16,
+        });
+        let net = Network::new();
+        let t1 = Tx { id: 1, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] };
+        let t2 = Tx { id: 2, ops: vec![Op::SetDynamicCost { id: 1, cost: 6 }] };
+        assert!(lim.admit(&t1, &net).is_ok());
+        assert!(matches!(
+            lim.admit(&t2, &net),
+            Err(TxError::BudgetExceeded { .. })
+        ));
+        let mut q = TxRetryQueue::new();
+        assert_eq!(q.offer(t2), RetryOutcome::Requeued { retry_count: 1 });
+        // 下 tick：限流器复位，due 取回原事务（原 tx_id），admit 成功。
+        lim.reset();
+        let due = q.due();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, 2);
+        assert!(lim.admit(&due[0], &net).is_ok());
     }
 }

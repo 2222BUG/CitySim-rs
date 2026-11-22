@@ -5037,6 +5037,7 @@ version = "0.1.0"
 dependencies = [
  "sim-codec",
  "sim-digest",
+ "sim-error",
 ]
 
 [[package]]

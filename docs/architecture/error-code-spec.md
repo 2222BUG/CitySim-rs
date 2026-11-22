@@ -38,6 +38,7 @@ MOD-NNNN
 | SAV | 存档/读档（sim-save） | SAV-0001 存档损坏、SAV-0002 Schema 不兼容 |
 | PTH | 寻路（sim-pathfinding） | PTH-0001 过期结果重入队、PTH-0002 重算超限受阻兜底 |
 | BGT | 预算与降级（sim-core） | BGT-0001 预算压力提示 |
+| NET | 路网事务（sim-network） | NET-0001 事务重试超限受阻（诊断级，债务 #28） |
 
 ## 新增流程
 
