@@ -5068,6 +5068,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-replay"
+version = "0.1.0"
+dependencies = [
+ "sim-codec",
+ "sim-digest",
+ "sim-error",
+]
+
+[[package]]
 name = "sim-rng"
 version = "0.1.0"
 
