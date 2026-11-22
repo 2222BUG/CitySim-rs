@@ -5031,6 +5031,11 @@ dependencies = [
 [[package]]
 name = "sim-economy"
 version = "0.1.0"
+dependencies = [
+ "sim-codec",
+ "sim-digest",
+ "sim-rng",
+]
 
 [[package]]
 name = "sim-error"
