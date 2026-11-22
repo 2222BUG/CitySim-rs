@@ -1,0 +1,51 @@
+# CitySim-rs 审计邀请：Stage 2B 并行确定性 + Stage 3 T0–T5 + ②′ 修测原语
+
+- 日期：2026-11-22
+- 类型：**债务/工程质量闭合审计**（对尚未经外部审计的工程面逐项裁决）
+- 回传渠道：issue #28（https://github.com/2222BUG/CitySim-rs/issues/28）
+- 署名：**推荐**具体型号/版本（如 DeepSeek-V4.1、qwen4-max、MiniMax-M3.1-Flash、GPT-6、Claude Sonnet 5.5）；泛称同样计票；完全未署名不计票
+- 约定：只依据材料原文判断，材料没覆盖的点标"未见证据"；**拒绝和延后是合法裁决**；每轮至少一家做代码级审查（行号级证据）
+
+## 背景（30 秒）
+
+CitySim-rs 是确定性城市模拟（同种子逐 tick 可复现、强读档等价）。此前审计史：
+五项修订 6 家 → ADR-24 第二轮 8 家 → 债务闭合审计 7 家 → 决策4/5/6（#31 三轮 10-11 家）。
+**本包审计对象=从未送审的工程面**：Stage 2B 并行确定性、Stage 3 新增六交付（T0-T5）、
+以及 #31 整改后的修测原语。设计面（ADR-14~26）已多轮评审，不在本轮范围。
+
+## 审计范围（六项，每项单独裁决）
+
+| 项 | 对象 | 关键文件 | 重点问题 |
+|---|---|---|---|
+| A | **Stage 2B 并行确定性**（从没审计） | crates/sim-parallel/{src/lib.rs,tests/thread_independence.rs}、sim-pathfinding TickBudget 段、docs/benchmarks/Stage2B-concurrent-stress.txt、Stage-2B-Exit-CHECKLIST.md | run_parallel 分片/归并是否真确定性；chaos 注入是否满足"测试自身不违 2.9"（忙等 vs sleep）；TickBudget 配额让步与 #27 判据隔离；1/2/8 线程摘要一致证据是否充分 |
+| B | **Stage 3 T0-T5**（2026-11-22 刚完成，零审计） | crates/{sim-network TxRetryQueue 段, sim-agent, sim-replay, sim-economy, sim-world}、docs/architecture/{rfc-agent-state-machine.md, replay-schema.md, rfc-lod-draft.md, Stage-3-Task-List.md} | TxRetryQueue 全序/上限/诊断语义；AgentLifecycle 转移表完备性与受阻自动退役；回放 schema canonical 编码/版本 bump/回放等价测试真实含金量；经济 10^12 防护边界；WorldId 高水位口径 |
+| C | **②′ 修测原语**（决策5 审计后新增/重写） | crates/sim-traffic/src/lib.rs（criterion_aligned_loss/point_resolution_ok/steady_window/fit_*_detailed 判据损失）、examples/mfd_prime.rs | 判据归一化损失实现是否真与判据同构；分辨率下限数学；稳态双口径；mfd_prime 是否严守预注册（种子段/族冻结/一次锁定/自动落①焊死） |
+| D | **基础 crate 尾巴** | crates/{sim-test-support, sim-error, sim-codec, sim-digest}/src/lib.rs | 六模块契约测试含金量；错误码登记完备；canonical/BLAKE3 黄金向量是否仍匹配 |
+| E | **CI 与依赖方向** | .github/workflows/ci.yml、.github/scripts/dep_graph_check.py、rust-toolchain.toml | 矩阵是否覆盖全部 21 crate；MSRV job 与 rust-toolchain 一致性；dep 规则 1-5 是否可被绕过 |
+| F | **口径一致性** | decision-log.md、Stage-3-Exit-CHECKLIST.md、README.md | "6/6 达成"是否与证据一致；债务 #7/#10/#14 收口口径是否准确；状态词表 0.2 合规 |
+
+## 请重点回答的问题
+
+1. **A 项**：sim-parallel 的确定性声明在 8 线程+chaos 下是否有未覆盖的竞态/未定义行为路径（如排序键碰撞、分片边界、panic 传播）？
+2. **B 项**：T0-T5 六交付中哪些是"测试通过但契约有缺口"？（例：回放等价测试的玩具模拟 vs 真实权威循环的差距；AgentLifecycle 与 EC-01/ADR-17 受阻语义的衔接）
+3. **C 项**：修测原语是否还有"估计目标≠判据"的残余形态？mfd_prime 的归因分解表是否可信？
+4. **D/E 项**：基础 crate 与 CI 是否存在会掩盖回归的薄弱点？
+5. **F 项**：记录与证据是否一致（不一致逐条列出）？
+
+## 裁决格式（请原样返回）
+
+```
+## Stage 2B/3 审计裁决记录
+- 署名（推荐具体型号）：
+- 逐项裁决：A= / B= / C= / D= / E= / F=（可入账 / 有条件入账 / 需重做）
+- 各项理由（1-3 句）与验证条件/修改要求（逐条）：
+- 代码级发现（行号级，如有）：
+- 新增风险（如有）：
+- 总体：可入账 / 有条件入账 / 需重做
+```
+
+## 材料清单（多通道）
+
+附件/单文本包/Release 内含：A-F 全部关键文件源码+测试、相关 benchmarks 数据
+（Stage2B-concurrent-stress.txt 等）、退出核对表、MANIFEST（口径说明）。
+仓库：https://github.com/2222BUG/CitySim-rs 。
