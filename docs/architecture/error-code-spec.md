@@ -40,7 +40,7 @@ MOD-NNNN
 | BGT | 预算与降级（sim-core） | BGT-0001 预算压力提示 |
 | NET | 路网事务（sim-network） | NET-0001 事务重试超限受阻（诊断级，债务 #28） |
 | AGT | Agent 生命周期（sim-agent） | AGT-0001 Agent 进入受阻状态（诊断级，债务 #7） |
-| RPL | 回放输入（sim-replay） | RPL-0001 回放 Schema 不兼容/损坏（Fatal 级拒绝，债务 #10） |
+| RPL | 回放输入（sim-replay） | RPL-0001 Schema 版本不兼容（Fatal 级拒绝）、RPL-0002 数据截断、RPL-0003 尾部多余字节、RPL-0004 信封损坏、RPL-0005 未知事件标签、RPL-0006 tick 逆序（债务 #10；审计3 P2-c 分码——六变体各自编号，单一真源=sim-error codes 模块） |
 
 ## 新增流程
 

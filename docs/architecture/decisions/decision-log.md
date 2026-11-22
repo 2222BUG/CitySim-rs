@@ -564,7 +564,7 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 | P0-3 | TxRetryQueue 重试计数生命周期（counts 独立于 pending、跨 due 保留、同 id 异内容 panic、诊断幂等去重）+运营路径测试 | 已完成 | fix(stage2b3): P0-3（7015fed） |
 | P0 复核 | 修复后重跑 ②′（同 fixture）：40×40 free 142‰ FAIL / 32×32 free 111‰ FAIL / 64×64 数值全过但受限点 4/18 超上限 FAIL → **复裁定=维持核销转 C（终局确认）** | 已完成 | 本批 |
 | P1 | dep 门禁三 crate 补齐+绕过向量 fail-closed、T1 attempts 跨 unblock、F 三项 ✅ 降级+"6/6 原语级"表述、C-4/C-5 披露 | 已完成（2026-11-22） | fix(stage2b3): P1——dep 门禁 fail-closed+T1 attempts 累计+F 口径修正+C-4/C-5 披露 |
-| P2 | 错误码集中登记/canonical 金标准/键唯一断言+提交序测试/dep-verify 入矩阵/R2 启用评估/MANIFEST 对照 | 待开始 | - |
+| P2 | 错误码集中登记/canonical 金标准/键唯一断言+提交序测试/dep-verify 入矩阵/R2 启用评估/MANIFEST 对照 | 已完成（2026-11-22） | fix(stage2b3): P2——错误码单一真源+canonical 黄金+键唯一断言+dep-verify 入矩阵 |
 
 ## 变更历史
 
@@ -612,6 +612,8 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 | 2026-11-20 | **债务闭合审计整改 X3–X5**：X3 p-norm p=2 族并行辨识（evaluate_q_fn 单核防双实现、拟合集 rel-SSE 预选防 gaming，ce4a705）；X4 Set D 复测**判定翻转：转 C 不成立**（pnorm-p2 物理可行两拓扑三区全 PASS，证据 commit ce4a705，125d71d）；X5 状态/文档卫生（#27 保持候选、#28 改待实装、Q=65536 已定案单一来源 TICK_QUOTA、README/主文档/核销清单/两 CHECKLIST 口径统一、budget last_demand_bp 归档修复） |
 | 2026-11-21 | 决策5（#31 复判，11 票）落盘 Y1–Y4：Y1 决策5 代码修复批（判定闸门/预选锁定/截断归因/摘要覆盖，359d2d8+c0f94ba）；Y2 Set E 确认轮（预注册 fixture 9a73ee0→取数 2/3：32×32 free 133‰ FAIL，back-half 同值）；Y3 裁决入账+#31"转 C 撤销、不核销"；Y4 issue #26 回贴（c9f115b→1d8b779） |
 | 2026-11-22 | **审计3（8 家 STAGE2B3）整改 P0+P1 落盘**：P0=TxRetryQueue 计数生命周期（7015fed）+②′ 判定路径双分支+结构化裁决（beaabcd）；**修复后复核仍 FAIL×3→#31 复裁定=维持核销转 C（终局确认，测量伪影假设被修复实测否定）**；P1=dep 门禁 fail-closed（15 权威+绕过向量+自测）/T1 attempts 跨 unblock 累计/F 三项降级+"6/6 原语级"口径/C-4/C-5 披露（fixture disclosure+k̄ 密度域实测表）；issue #26 回贴复核结论 |
+| 2026-11-22 | **审计3 整改 P2 落盘**：错误码单一真源（sim-error codes 补 NET-0001/AGT-0001/RPL-0001..0006，三 crate 调用点改引用，ReplayError 六变体分码）；canonical 字节级金标准（canonical_bytes_golden 手算期望字节 53B）；sim-parallel 键唯一断言（StableKey collision 确定性 panic）+提交键序列 1/2/8/16 全序断言；dep-verify 入 R0 测试矩阵；R2 启用评估=**暂不启用**（前置=模拟主循环集成+GlobalDigest oracle 黄金向量齐备，随集成阶段复评）；MANIFEST 对照随下轮审计材料打包附带 |
+
 
 
 ## 关联

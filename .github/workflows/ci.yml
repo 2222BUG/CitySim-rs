@@ -29,6 +29,7 @@ jobs:
           - crates/sim-pathfinding
           - crates/sim-replay
           - crates/sim-world
+          - crates/dep-verify
           - crates/sim-traffic
           - crates/sim-economy
           - crates/sim-view

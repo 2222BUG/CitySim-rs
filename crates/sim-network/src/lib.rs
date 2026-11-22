@@ -305,7 +305,7 @@ impl TxRetryQueue {
         for &id in &self.blocked {
             if self.emitted.insert(id) {
                 sink.emit(
-                    sim_error::ErrorCode::new("NET", 1),
+                    sim_error::codes::NET_TX_RETRY_BLOCKED,
                     "tx retry limit exceeded; transaction blocked",
                     sim_error::SimErrorContext {
                         tick,

@@ -413,7 +413,7 @@ impl AgentLifecycle {
         for t in &self.log {
             if matches!(t.to, AgentState::Blocked { .. }) {
                 sink.emit(
-                    sim_error::ErrorCode::new("AGT", 1),
+                    sim_error::codes::AGENT_BLOCKED,
                     "agent entered blocked state",
                     sim_error::SimErrorContext {
                         tick: t.tick,

@@ -38,6 +38,22 @@ pub fn run_parallel<S: Sync + ?Sized, In: Send, Out: Send>(
     mut commit: impl FnMut(StableKey, Out),
 ) {
     tasks.sort_by_key(|t| t.key);
+    // 稳定键唯一性契约（审计3 A-1/CF-1 修复）：排序后相邻重复即键碰撞——
+    // 碰撞会让提交序取决于线程调度（确定性静默破口），必须在入口确定性 panic。
+    {
+        let mut it = tasks.iter();
+        if let Some(first) = it.next() {
+            let mut prev = first.key;
+            for t in it {
+                assert!(
+                    t.key != prev,
+                    "StableKey collision ({:?})：稳定键必须全局唯一（契约违反，键相等由调用方保证不发生）",
+                    t.key
+                );
+                prev = t.key;
+            }
+        }
+    }
     let n_threads = threads.max(1).min(tasks.len().max(1));
     if tasks.is_empty() {
         return;
@@ -134,6 +150,46 @@ mod tests {
         let r8 = committed(shuffled_tasks(), 8);
         assert_eq!(r1, r2);
         assert_eq!(r1, r8);
+    }
+
+    /// 提交键序列线程数无关（审计3 A-2）：1/2/8/16 线程下提交的**键顺序**完全
+    /// 相同（不止结果相等——顺序契约显式断言）。
+    #[test]
+    fn commit_key_sequence_is_identical_across_thread_counts() {
+        fn key_seq(threads: usize) -> Vec<StableKey> {
+            let snap = 7u64;
+            fn t(_: &u64, i: &u64) -> u64 {
+                *i
+            }
+            let keys: Vec<StableKey> = (0..16u64).rev().map(|i| (0, i)).collect();
+            let tasks: Vec<Task<u64, u64, u64>> =
+                keys.into_iter().map(|key| Task { key, input: key.1, func: t }).collect();
+            let mut seq = Vec::new();
+            run_parallel(&snap, tasks, threads, |k, _| seq.push(k));
+            seq
+        }
+        let s1 = key_seq(1);
+        assert_eq!(s1, key_seq(2));
+        assert_eq!(s1, key_seq(8));
+        assert_eq!(s1, key_seq(16));
+        assert!(s1.windows(2).all(|w| w[0] < w[1]), "提交键序列必须为严格升序全序");
+    }
+
+    /// 稳定键碰撞即确定性 panic（审计3 A-1/CF-1）：重复键不得静默进入
+    /// 分片——碰撞时提交序会退化为线程到达序。
+    #[test]
+    #[should_panic(expected = "StableKey collision")]
+    fn stable_key_collision_is_rejected() {
+        let snap = 0u64;
+        fn t(_: &u64, i: &u64) -> u64 {
+            *i
+        }
+        let tasks: Vec<Task<u64, u64, u64>> = vec![
+            Task { key: (0, 1), input: 1, func: t },
+            Task { key: (0, 1), input: 2, func: t },
+        ];
+        let _ = &tasks;
+        run_parallel(&snap, tasks, 2, |_, _| {});
     }
 
     /// 注入延迟（确定性忙等）不影响结果——仅模拟调度扰动。

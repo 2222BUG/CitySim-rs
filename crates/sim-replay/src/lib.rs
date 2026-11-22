@@ -30,9 +30,16 @@ pub enum ReplayError {
 }
 
 impl ReplayError {
-    /// 错误码（docs/architecture/error-code-spec.md）。
+    /// 错误码（单一真源=sim_error::codes，审计3 P2-c 分码：六变体各自编号）。
     pub fn code(&self) -> sim_error::ErrorCode {
-        sim_error::ErrorCode::new("RPL", 1)
+        match self {
+            ReplayError::UnsupportedVersion { .. } => sim_error::codes::REPLAY_SCHEMA_UNSUPPORTED,
+            ReplayError::Truncated => sim_error::codes::REPLAY_TRUNCATED,
+            ReplayError::TrailingBytes => sim_error::codes::REPLAY_TRAILING_BYTES,
+            ReplayError::BadEnvelope => sim_error::codes::REPLAY_BAD_ENVELOPE,
+            ReplayError::UnknownEventTag(_) => sim_error::codes::REPLAY_UNKNOWN_TAG,
+            ReplayError::OutOfOrderTick { .. } => sim_error::codes::REPLAY_TICK_ORDER,
+        }
     }
 }
 

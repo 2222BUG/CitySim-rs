@@ -131,6 +131,22 @@ pub mod codes {
     pub const PATH_FALLBACK_BLOCKED: ErrorCode = ErrorCode::new("PTH", 2);
     /// 预算逼近上限提示（Diagnostic）。
     pub const BUDGET_PRESSURE: ErrorCode = ErrorCode::new("BGT", 1);
+    /// 事务重试上限受阻（诊断，审计3 P2-a 集中登记：NET-0001）。
+    pub const NET_TX_RETRY_BLOCKED: ErrorCode = ErrorCode::new("NET", 1);
+    /// Agent 进入受阻状态（诊断，审计3 P2-a 集中登记：AGT-0001）。
+    pub const AGENT_BLOCKED: ErrorCode = ErrorCode::new("AGT", 1);
+    /// 回放 Schema 版本不兼容。
+    pub const REPLAY_SCHEMA_UNSUPPORTED: ErrorCode = ErrorCode::new("RPL", 1);
+    /// 回放数据截断。
+    pub const REPLAY_TRUNCATED: ErrorCode = ErrorCode::new("RPL", 2);
+    /// 回放数据尾部多余字节。
+    pub const REPLAY_TRAILING_BYTES: ErrorCode = ErrorCode::new("RPL", 3);
+    /// 回放信封损坏。
+    pub const REPLAY_BAD_ENVELOPE: ErrorCode = ErrorCode::new("RPL", 4);
+    /// 回放事件标签未知。
+    pub const REPLAY_UNKNOWN_TAG: ErrorCode = ErrorCode::new("RPL", 5);
+    /// 回放事件 tick 乱序。
+    pub const REPLAY_TICK_ORDER: ErrorCode = ErrorCode::new("RPL", 6);
 }
 
 #[cfg(test)]
@@ -177,6 +193,14 @@ mod tests {
             codes::PATH_STALE_REQUEUE,
             codes::PATH_FALLBACK_BLOCKED,
             codes::BUDGET_PRESSURE,
+            codes::NET_TX_RETRY_BLOCKED,
+            codes::AGENT_BLOCKED,
+            codes::REPLAY_SCHEMA_UNSUPPORTED,
+            codes::REPLAY_TRUNCATED,
+            codes::REPLAY_TRAILING_BYTES,
+            codes::REPLAY_BAD_ENVELOPE,
+            codes::REPLAY_UNKNOWN_TAG,
+            codes::REPLAY_TICK_ORDER,
         ];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {

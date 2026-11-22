@@ -150,4 +150,36 @@ mod tests {
         // 头 34 字节（CSIMCOD1/m/k 各 8 字节长度前缀）+ u32 4 字节
         assert_eq!(w.as_bytes().len(), 38);
     }
+
+    /// canonical 字节级金标准（审计3 P2-b）：编码布局以手算期望字节钉死——
+    /// 信封=CODEC_VERSION/module/kind 各 u64 长度前缀+UTF-8；载荷小端定长。
+    /// 任何布局改动必须显式更新本黄金（=编码变更须 bump digest_version）。
+    #[test]
+    fn canonical_bytes_golden() {
+        let mut w = CanonicalWriter::new("m", "k");
+        w.u8(0xAB);
+        w.u64(0x0102_0304_0506_0708);
+        w.str("hi");
+        let expected: Vec<u8> = [
+            // 信封 34B：u64(8) "CSIMCOD1" | u64(1) "m" | u64(1) "k"
+            &[8, 0, 0, 0, 0, 0, 0, 0],
+            b"CSIMCOD1".as_slice(),
+            &[1, 0, 0, 0, 0, 0, 0, 0],
+            b"m",
+            &[1, 0, 0, 0, 0, 0, 0, 0],
+            b"k",
+            // 载荷 19B：u8 0xAB | u64 小端 | u64(2) "hi"
+            &[0xAB],
+            &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01],
+            &[2, 0, 0, 0, 0, 0, 0, 0],
+            b"hi",
+        ]
+        .concat();
+        assert_eq!(
+            w.as_bytes(),
+            expected.as_slice(),
+            "canonical 布局黄金不匹配（编码变更须 bump digest_version）"
+        );
+        assert_eq!(w.as_bytes().len(), 53);
+    }
 }
