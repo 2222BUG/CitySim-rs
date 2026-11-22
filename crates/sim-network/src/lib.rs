@@ -231,10 +231,17 @@ pub enum RetryOutcome {
 /// [`TX_RETRY_LIMIT`]，超限转受阻终态并产生诊断事件（不改变权威状态）。
 #[derive(Default, Debug)]
 pub struct TxRetryQueue {
-    /// tx_id -> (事务, 累计重试次数)。BTreeMap 保证 due() 按 tx_id 全序。
-    pending: BTreeMap<u64, (Tx, u32)>,
+    /// tx_id -> 事务。BTreeMap 保证 due() 按 tx_id 全序。
+    pending: BTreeMap<u64, Tx>,
+    /// tx_id -> 累计重试次数。**独立于 pending 生命周期**：due() 取走事务不清
+    /// 计数（审计3 P0-3 修复：旧实现计数存 pending 元组、due() mem::take 一并
+    /// 清零→每次 due 后归 1→TX_RETRY_LIMIT 在"offer→due→失败→offer"运营路径
+    /// 不可达）。计数在受阻终态后保留（只读披露）。
+    counts: BTreeMap<u64, u32>,
     /// 受阻终态的 tx_id（按受阻顺序记录，确定性）。
     blocked: Vec<u64>,
+    /// 已发出 NET-0001 诊断的受阻 tx_id（诊断幂等去重）。
+    emitted: std::collections::BTreeSet<u64>,
 }
 
 impl TxRetryQueue {
@@ -242,27 +249,39 @@ impl TxRetryQueue {
         Self::default()
     }
 
-    /// 失败事务重新入队（沿用原 tx_id）；同一事务重复 offer 累计计数。
+    /// 失败事务重新入队（沿用原 tx_id）；同一事务重复 offer 累计计数（计数跨
+    /// due 保留）。已受阻终态的 tx_id 不再接受 offer（幂等返回 Blocked）。
+    ///
+    /// # Panics
+    /// 同一 tx_id 携带不同内容的事务（tx_id 复用契约违反，2.8 事务身份稳定原则）
+    /// ——与高水位回退同口径的确定性 panic，不静默覆盖。
     pub fn offer(&mut self, tx: Tx) -> RetryOutcome {
         let id = tx.id;
-        let count = self.pending.get(&id).map(|(_, c)| *c).unwrap_or(0) + 1;
-        if count > TX_RETRY_LIMIT {
+        if self.blocked.contains(&id) {
+            return RetryOutcome::Blocked { retry_count: self.counts.get(&id).copied().unwrap_or(0) };
+        }
+        if let Some(existing) = self.pending.get(&id) {
+            assert!(
+                existing == &tx,
+                "tx_id reuse with different content (契约违反：同一 tx_id 复用内容不一致)"
+            );
+        }
+        let count = self.counts.entry(id).or_insert(0);
+        *count += 1;
+        if *count > TX_RETRY_LIMIT {
             self.pending.remove(&id);
             self.blocked.push(id);
-            RetryOutcome::Blocked { retry_count: count }
+            RetryOutcome::Blocked { retry_count: *count }
         } else {
-            self.pending.insert(id, (tx, count));
-            RetryOutcome::Requeued { retry_count: count }
+            self.pending.insert(id, tx);
+            RetryOutcome::Requeued { retry_count: *count }
         }
     }
 
     /// tick 边界取回全部待重试事务（按 tx_id 全序）；取走即出队——再次失败须
-    /// 重新 [`offer`]（重试次数保留在队列语义内，不随 due 清零）。
+    /// 重新 [`offer`]。**重试计数保存在 counts 中，不随 due 清零**（审计3 P0-3）。
     pub fn due(&mut self) -> Vec<Tx> {
-        std::mem::take(&mut self.pending)
-            .into_values()
-            .map(|(tx, _)| tx)
-            .collect()
+        std::mem::take(&mut self.pending).into_values().collect()
     }
 
     /// 当前等待重试的 tx_id（升序）。
@@ -281,17 +300,20 @@ impl TxRetryQueue {
 
     /// 把受阻终态写入诊断通道（NET-0001，逐 tx_id 一条，顺序=受阻顺序）。
     /// 调用方在 tick 边界调用；诊断事件不改变权威状态（EC-08）。
-    pub fn emit_blocked_diagnostics(&self, sink: &mut sim_error::DiagnosticSink, tick: u64) {
+    /// **幂等去重**：每个受阻 tx_id 只发一次（审计3：旧实现每调全量重发）。
+    pub fn emit_blocked_diagnostics(&mut self, sink: &mut sim_error::DiagnosticSink, tick: u64) {
         for &id in &self.blocked {
-            sink.emit(
-                sim_error::ErrorCode::new("NET", 1),
-                "tx retry limit exceeded; transaction blocked",
-                sim_error::SimErrorContext {
-                    tick,
-                    entity_id: id,
-                    system: "sim-network",
-                },
-            );
+            if self.emitted.insert(id) {
+                sink.emit(
+                    sim_error::ErrorCode::new("NET", 1),
+                    "tx retry limit exceeded; transaction blocked",
+                    sim_error::SimErrorContext {
+                        tick,
+                        entity_id: id,
+                        system: "sim-network",
+                    },
+                );
+            }
         }
     }
 }
@@ -838,5 +860,55 @@ mod txretry_tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].id, 2);
         assert!(lim.admit(&due[0], &net).is_ok());
+    }
+}
+
+
+#[cfg(test)]
+mod txretry_lifecycle_tests {
+    use super::*;
+
+    fn cost_tx(id: u64) -> Tx {
+        Tx { id, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] }
+    }
+
+    /// 审计3 P0-3 回归：运营路径 offer→due→失败→offer… 计数跨 due 保留，
+    /// TX_RETRY_LIMIT=3 在真实循环内可达（旧实现 due 清零致永不超限）。
+    #[test]
+    fn operational_loop_reaches_retry_limit_across_due() {
+        let mut q = TxRetryQueue::new();
+        for expected in 1..=TX_RETRY_LIMIT {
+            assert_eq!(q.offer(cost_tx(7)), RetryOutcome::Requeued { retry_count: expected });
+            assert_eq!(q.due().len(), 1, "tick 边界取走待重试");
+        }
+        // 第 4 次失败：3 > TX_RETRY_LIMIT → 受阻终态
+        assert_eq!(q.offer(cost_tx(7)), RetryOutcome::Blocked { retry_count: TX_RETRY_LIMIT + 1 });
+        assert!(q.is_empty());
+        assert_eq!(q.blocked_ids(), &[7u64]);
+        // 受阻后 offer 幂等
+        assert_eq!(q.offer(cost_tx(7)), RetryOutcome::Blocked { retry_count: TX_RETRY_LIMIT + 1 });
+    }
+
+    /// 诊断幂等去重：多次 emit 只发一次（审计3：旧实现全量重发）。
+    #[test]
+    fn blocked_diagnostics_are_emitted_once() {
+        let mut q = TxRetryQueue::new();
+        for _ in 0..=TX_RETRY_LIMIT {
+            q.offer(cost_tx(3));
+            q.due();
+        }
+        let mut sink = sim_error::DiagnosticSink::new();
+        q.emit_blocked_diagnostics(&mut sink, 10);
+        q.emit_blocked_diagnostics(&mut sink, 11);
+        assert_eq!(sink.drain().len(), 1, "NET-0001 每受阻 id 只发一次");
+    }
+
+    /// tx_id 复用内容不一致=契约违反确定性 panic（2.8 事务身份稳定）。
+    #[test]
+    #[should_panic(expected = "tx_id reuse with different content")]
+    fn same_id_different_content_is_rejected() {
+        let mut q = TxRetryQueue::new();
+        q.offer(cost_tx(5));
+        q.offer(Tx { id: 5, ops: vec![Op::SetDynamicCost { id: 2, cost: 9 }] });
     }
 }
