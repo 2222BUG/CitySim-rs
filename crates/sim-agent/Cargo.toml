@@ -6,3 +6,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
+sim-codec = { path = "../sim-codec" }
+sim-digest = { path = "../sim-digest" }
+sim-error = { path = "../sim-error" }

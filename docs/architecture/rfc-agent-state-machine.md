@@ -1,0 +1,72 @@
+# RFC：Agent 状态机与受阻状态语义（Stage 3 T1，债务 #7）
+
+- 状态：Proposed（2026-11-22；实装随本 RFC 一并落盘于 crates/sim-agent）
+- 关联：EC-01（过期结果兜底）、ADR-NEW-17 条文 10（前向进展不变量+兜底三候选）、
+  ADR-NEW-20（预算让步/请求队列）、EC-08（诊断分层）、2.3（AgentId 解耦）、
+  decision-log 债务 #7
+
+## 1. 问题
+
+主文档多处引用"受阻状态"（EC-01 兜底"标记受阻"、ADR-NEW-17 条文 10"有限 tick 内
+获得路径或进入明确定义的受阻状态"），但状态集、进入/退出条件、上限行为从未定义。
+债务 #7 即此。
+
+## 2. 状态集
+
+| 状态 | 含义 | 终态 |
+| --- | --- | --- |
+| `Spawning` | 已分配 AgentId（2.3 高水位），等待进场 | 否 |
+| `Active` | 正常活动（持有路径/移动中） | 否 |
+| `Blocked { reason, since_tick, attempts }` | 受阻：前向进展不变量承诺的明确定义状态 | 否（必须有限转移） |
+| `Despawned` | 已离场（终态；ID 不复用） | 是 |
+
+受阻原因（`BlockedReason`）与触发源一一对应：
+
+- `Unreachable`：寻路结果不可达（FindOutcome::Unreachable，ADR-NEW-17 条文 10 兜底候选
+  "标记受阻"）；
+- `RecomputeLimitExceeded`：过期结果重算超限（recompute_limit，EC-01 策略块）；
+- `MarkBlockedFallback`：预算让步路径兜底 MarkBlocked（ADR-NEW-20/24 预算轴）。
+
+## 3. 转移表（全集；未列出的转移一律非法并拒绝）
+
+| # | 转移 | 条件 | 语义 |
+| --- | --- | --- | --- |
+| 1 | （无）→ Spawning | 分配器 alloc | 进场登记 |
+| 2 | Spawning → Active | 进场 tick 到达 | 开始活动 |
+| 3 | Active → Blocked | 任一 BlockedReason 触发 | attempts=1、since_tick=当前 tick |
+| 4 | Blocked → Blocked | 再次受阻 | attempts+1，刷新 reason/since_tick |
+| 5 | Blocked → Active | 重寻路成功 | 受阻解除（unblock） |
+| 6 | Blocked → Despawned | 取消 / 超时退役 / attempts 超上限 | 受控终止（见 §4） |
+| 7 | Active/Spawning → Despawned | 取消 / 到达目的地离场 | 正常离场 |
+
+## 4. 受阻上限与前向进展
+
+- `block_limit`（默认 3，与 recompute_limit、TX_RETRY_LIMIT 口径一致）：受阻累计
+  attempts 超过上限时**自动退役**（→ Despawned），转移记录 `Retired`——这是
+  "有限 tick 内获得路径或受阻、受阻亦有界"的收口，杜绝永久受阻悬挂。
+- 前向进展不变量（ADR-NEW-17 条文 10）在本状态机的落点：任何 Agent 的 Blocked
+  驻留必须以 #5/#6 结束，attempts 单调递增保证可终止性。
+
+## 5. 确定性口径
+
+- 转移记录 `StateTransition { agent_id, from, to, tick }` 按发生顺序追加（稳定序=
+  调用序；调用方系统排序由 2.9 条 5 保证）；
+- `digest()`：全部转移记录经 canonical 编码（sim-codec，module="sim-agent"、
+  kind="AgentLifecycle"）→ BLAKE3（sim-digest）——两跑转移序列 digest 相等即状态机
+  级可复现；
+- 受阻转移配套诊断事件 `AGT-0001`（Diagnostic 层，EC-08；不改权威状态）。
+
+## 6. 与既有语义的衔接
+
+- EC-01 兜底三候选中"标记受阻"= 本状态机 #3（MarkBlockedFallback / Unreachable）；
+  "局部可行路径/沿用旧路径有效段"不改变状态机（仍是 Active，只是路径降级）。
+- ADR-NEW-20 让步路径：让步本身**不**触发受阻（请求仍在队列，Agent 保持 Active 等待）；
+  只有让步路径的兜底 MarkBlocked 才进入 Blocked。
+- AgentRegistry（Alive/Despawned）为旧粗粒度登记，与本状态机并存；集成期后合并
+  （AgentState 为超集），合并前以 AgentLifecycle 为权威。
+
+## 7. 开问题（随集成定案，不阻塞本 RFC）
+
+- Blocked 期间的经济/LOD 交互（受阻 Agent 是否暂停计费）→ 随 T3/T4；
+- 超时退役的"超时"计量单位（受阻 tick 数上限 vs attempts 上限）——当前 attempts
+  上限=确定性工作量口径，时长上限待 2.10 口径复核后补充。
