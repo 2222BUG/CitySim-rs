@@ -1,0 +1,1006 @@
+# STAGE2B3 审计材料合订（范围 D+E+F）· 基准 commit 1db87d2 · 纯文本
+# 格式：// FILE = 文件边界；/*Lnnn*/ = 每 10 行锚点；段首标注 = 原 PASTE 编号与完整性
+
+===== 原段落: PASTE-38 | 第 38 段 · 范围 E · 完整 =====
+// FILE: .github/workflows/ci.yml @1db87d2
+/*L1*/
+name: CI
+
+# Stage 0 Step 7：基础 CI 骨架（EC-11 R0/R1 门禁 + EC-12 契约即代码）。
+# R2 确定性场景门禁为占位（if: false）——模拟核心与 GlobalDigest（ADR-NEW-19）就绪后启用。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+/*L11*/
+  CARGO_TERM_COLOR: always
+
+jobs:
+  r0-unit:
+    name: "R0/R1: cargo test (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+/*L21*/
+          - crates/sim-test-support
+          - spikes/simscalar-spike
+          - spikes/rng-spike
+          - spikes/network-tx-spike
+          - spikes/save-restore-spike
+          - crates/sim-core
+          - crates/sim-agent
+          - crates/sim-network
+          - crates/sim-pathfinding
+          - crates/sim-replay
+/*L31*/
+          - crates/sim-world
+          - crates/sim-traffic
+          - crates/sim-economy
+          - crates/sim-view
+          - crates/simscalar
+          - crates/sim-rng
+          - crates/sim-codec
+          - crates/sim-digest
+          - crates/sim-error
+          - crates/sim-save
+/*L41*/
+          - crates/sim-parallel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+      - name: cargo test
+        run: cargo test --manifest-path ${{ matrix.crate }}/Cargo.toml
+
+  ec12-lint:
+/*L51*/
+    name: "EC-12: clippy 分层门禁 (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - spikes/simscalar-spike
+          - spikes/rng-spike
+          - spikes/network-tx-spike
+          - spikes/save-restore-spike
+/*L61*/
+          - crates/sim-core
+          - crates/sim-agent
+          - crates/sim-network
+          - crates/sim-pathfinding
+          - crates/sim-replay
+          - crates/sim-world
+          - crates/sim-traffic
+          - crates/sim-economy
+          - crates/simscalar
+          - crates/sim-rng
+/*L71*/
+          - crates/sim-codec
+          - crates/sim-digest
+          - crates/sim-error
+          - crates/sim-save
+          - crates/sim-parallel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+/*L81*/
+          components: clippy
+      # 各权威 crate 包根自带 clippy.toml（disallowed-types/methods，见
+      # docs/benchmarks/clippy-layering-REPORT.md）；sim-test-support 为非权威侧不参与。
+      - name: cargo clippy (-D warnings)
+        run: cargo clippy --manifest-path ${{ matrix.crate }}/Cargo.toml --all-targets -- -D warnings
+
+  msrv-check:
+    name: "MSRV: cargo check @ 1.89（2.1 基线）"
+    runs-on: ubuntu-latest
+    steps:
+/*L91*/
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89"
+      # Rust 1.89 = Bevy 0.18.1 MSRV（Step 8 实测）；依赖闭包须保持 1.89 可编译
+      # （ordered-float 由 Cargo.lock 钉 ≤5.4.0，见 decision-log 债务 #22）。
+      - name: cargo check (MSRV)
+        run: cargo check --workspace --all-targets
+
+  dep-graph:
+/*L101*/
+    name: "依赖方向检查（2.2 分层 / 债务 #15）"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 约束清单 docs/architecture/crate-authority-list.md（规则 1-5）
+      - name: dep_graph_check
+        run: python3 .github/scripts/dep_graph_check.py
+
+  r2-deterministic:
+    name: "R2: 确定性场景门禁（占位）"
+/*L111*/
+    if: false # 启用条件：模拟核心 + GlobalDigest（ADR-NEW-19）+ R2 场景 fixture 就绪
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: placeholder
+        run: echo "R2: 固定场景（10,000 Agent x 1,000 Tick）+ 读档等价 + 摘要比对，见 EC-11"
+
+===== 原段落: PASTE-39 | 第 39 段 · 范围 E · 完整 =====
+// FILE: .github/scripts/dep_graph_check.py @1db87d2
+/*L1*/
+# -*- coding: utf-8 -*-
+"""依赖方向检查（Stage 1 T1，债务 #15 约束执行）。
+规则见 docs/architecture/crate-authority-list.md：
+ 1. sim-core 仅可依赖基础设施 crate（sim-codec、sim-error），不得依赖其他 crate；
+ 2. 权威 crate 不依赖非权威 crate；
+ 3. 任何 crate 不依赖 sim-view；
+ 4. crates/ 不依赖 spikes/；
+ 5. sim-test-support 只出现在 dev-dependencies。
+exit 0 = 全部通过。
+"""
+/*L11*/
+import sys, os, tomllib
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+AUTHORITATIVE = {'sim-core', 'sim-agent', 'sim-network', 'sim-pathfinding',
+                 'sim-traffic', 'sim-economy', 'sim-error', 'sim-codec',
+                 'sim-digest', 'sim-rng', 'simscalar', 'sim-save'}
+NON_AUTHORITATIVE = {'sim-view', 'sim-test-support', 'dep-verify'}
+SPIKES = {'simscalar-spike', 'rng-spike', 'network-tx-spike', 'save-restore-spike'}
+/*L21*/
+
+errors = []
+
+def members():
+    with open(os.path.join(ROOT, 'Cargo.toml'), 'rb') as f:
+        ws = tomllib.load(f)['workspace']
+    for rel in ws['members']:
+        manifest = os.path.join(ROOT, rel, 'Cargo.toml')
+        with open(manifest, 'rb') as f:
+            data = tomllib.load(f)
+/*L31*/
+        yield data['package']['name'], data
+
+for name, data in members():
+    deps = set(data.get('dependencies', {}).keys())
+    dev_deps = set(data.get('dev-dependencies', {}).keys())
+
+    if name == 'sim-core' and deps - {'sim-codec', 'sim-error'}:
+        errors.append(f'规则1：sim-core 仅可依赖 sim-codec/sim-error，实际 {sorted(deps)}')
+    if name in AUTHORITATIVE:
+        # 运行时依赖禁止指向非权威；sim-test-support 仅允许出现在 dev-dependencies（规则 5）
+/*L41*/
+        bad = deps & NON_AUTHORITATIVE
+        if bad:
+            errors.append(f'规则2：权威 {name} 运行时依赖非权威 {sorted(bad)}')
+    if name != 'sim-view' and 'sim-view' in deps | dev_deps:
+        errors.append(f'规则3：{name} 不得依赖 sim-view')
+    if not name.endswith('-spike') and (deps | dev_deps) & SPIKES:
+        errors.append(f'规则4：{name} 不得依赖 spikes（{sorted((deps | dev_deps) & SPIKES)}）')
+    if 'sim-test-support' in deps:
+        errors.append(f'规则5：{name} 的 sim-test-support 必须仅在 dev-dependencies')
+
+/*L51*/
+if errors:
+    print('依赖方向检查 FAILED：')
+    for e in errors:
+        print(' -', e)
+    sys.exit(1)
+print('依赖方向检查 PASS（规则 1-5）')
+
+===== 原段落: PASTE-40 | 第 40 段 · 范围 E · 完整 =====
+// FILE: rust-toolchain.toml @1db87d2
+/*L1*/
+# 工具链锁定（Stage 0 Step 8）：workspace 统一 rustc 1.100.0（与 CI .github/workflows/ci.yml 一致）。
+# 2.1 技术基线列 Rust 1.89（= Bevy 0.18.1 的 MSRV，2026-11-18 Step 8 实测）；
+# 基线 1.89 与实测 1.100.0 的收敛取舍待项目负责人定案（decision-log 待决事项）。
+[toolchain]
+channel = "1.100.0"
+components = ["clippy"]
+profile = "minimal"
+
+===== 原段落: PASTE-41 | 第 41 段 · 范围 E · 完整 =====
+// FILE: Cargo.toml @1db87d2
+/*L1*/
+# CitySim-rs workspace（Stage 0 Step 9 建立；Stage 1 T1 扩充分层 crate）
+# 成员=spikes/*（Spike 验证件）与 crates/*（正式 crate）；
+# 权威/非权威分类见 docs/architecture/crate-authority-list.md（债务 #15 已定案），
+# 依赖方向由 .github/scripts/dep_graph_check.py 强制。
+[workspace]
+resolver = "2"
+members = [
+    "spikes/simscalar-spike",
+    "spikes/rng-spike",
+    "spikes/network-tx-spike",
+/*L11*/
+    "spikes/save-restore-spike",
+    "crates/sim-test-support",
+    "crates/dep-verify",
+    "crates/sim-core",
+    "crates/sim-agent",
+    "crates/sim-network",
+    "crates/sim-pathfinding",
+    "crates/sim-traffic",
+    "crates/sim-economy",
+    "crates/sim-view",
+/*L21*/
+    "crates/simscalar",
+    "crates/sim-rng",
+    "crates/sim-codec",
+    "crates/sim-digest",
+    "crates/sim-error",
+    "crates/sim-save",
+    "crates/sim-parallel",
+    "crates/sim-replay",
+    "crates/sim-world",
+]
+/*L31*/
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+===== 原段落: PASTE-42 | 第 42 段 · 范围 D · 完整 =====
+// FILE: crates/sim-codec/src/lib.rs @1db87d2
+/*L1*/
+//! CitySim-rs sim-codec（Stage 1 T6）：canonical 序列化编码器（ADR-NEW-19）。
+//!
+//! 存档与 GlobalDigest 共用**底层编码规则**（字段编码、端序、可选值、字段顺序、
+//! 稳定身份编码、版本标识），但**顶层 Schema 相互独立**（存档/摘要各自版本化、
+//! 迁移逻辑独立）——P0-04 修订口径。
+//!
+//! 编码规则 v1：
+//! - 整数一律小端定长（u8/u16/u32/u64/i64）；usize 以 u64 编码。
+//! - 变长数据 = u64 长度前缀 + 原始字节；字符串 = UTF-8 字节同上。
+//! - 浮点禁入（2.9 条 3；权威侧无 f32/f64）。
+/*L11*/
+//! - domain separation：编码流首部含编码规则版本、模块标识、类型标识
+//!   （ADR-NEW-19 条 2）。
+//! - 字段顺序即编码顺序（调用方约定，由各 Schema 文档固定）。
+#![forbid(unsafe_code)]
+
+/// 编码规则版本标识（变更必须 bump，并同步 digest_version/存档 Schema 策略）。
+pub const CODEC_VERSION: &str = "CSIMCOD1";
+
+/// canonical 编码器：小端、确定性、带 domain separation 头。
+pub struct CanonicalWriter {
+/*L21*/
+    buf: Vec<u8>,
+}
+
+impl CanonicalWriter {
+    /// 开始一个带域分隔的编码流：CSIMCOD1 | module | kind | …字段…
+    pub fn new(module: &str, kind: &str) -> Self {
+        let mut w = Self { buf: Vec::new() };
+        w.str(CODEC_VERSION);
+        w.str(module);
+        w.str(kind);
+/*L31*/
+        w
+    }
+
+    pub fn u8(&mut self, v: u8) {
+        self.buf.push(v);
+    }
+
+    pub fn bool(&mut self, v: bool) {
+        self.buf.push(u8::from(v));
+    }
+/*L41*/
+
+    pub fn u16(&mut self, v: u16) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn u32(&mut self, v: u32) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn u64(&mut self, v: u64) {
+/*L51*/
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn i64(&mut self, v: i64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    /// usize 以 u64 编码（平台字长无关，2.9 口径）。
+    pub fn usize(&mut self, v: usize) {
+        self.u64(v as u64);
+/*L61*/
+    }
+
+    /// 变长字节：u64 长度前缀 + 原始字节。
+    pub fn bytes(&mut self, b: &[u8]) {
+        self.u64(b.len() as u64);
+        self.buf.extend_from_slice(b);
+    }
+
+    /// 字符串：UTF-8 字节 + u64 长度前缀。
+    pub fn str(&mut self, s: &str) {
+/*L71*/
+        self.bytes(s.as_bytes());
+    }
+
+    /// 序列前缀：u64 元素数 + 各元素由调用方逐个写入。
+    pub fn seq_len(&mut self, len: usize) {
+        self.usize(len);
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.buf
+/*L81*/
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.buf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+/*L91*/
+
+    /// 字节布局由规范直接推导（小端），断言精确字节。
+    #[test]
+    fn integer_layout_is_little_endian_fixed_width() {
+        let mut w = CanonicalWriter::new("t", "x");
+        w.u8(1);
+        w.bool(true);
+        w.u16(0x0203);
+        w.u32(0x0405_0607);
+        w.u64(0x0809_0a0b_0c0d_0e0f);
+/*L101*/
+        w.i64(-1);
+        assert_eq!(
+            w.as_bytes()[w.as_bytes().len() - 24..],
+            [
+                1u8,
+                1u8,
+                0x03, 0x02,
+                0x07, 0x06, 0x05, 0x04,
+                0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+/*L111*/
+            ][..]
+        );
+    }
+
+    /// 变长前缀与域分隔头。
+    #[test]
+    fn domain_header_and_varlen_prefix() {
+        let mut w = CanonicalWriter::new("sim-agent", "AgentState");
+        w.str("ab");
+        let b = w.into_bytes();
+/*L121*/
+        // 头：CODEC_VERSION | "sim-agent" | "AgentState"，各带 u64 长度前缀
+        assert!(b.starts_with(&[8, 0, 0, 0, 0, 0, 0, 0]), "CODEC_VERSION 长度前缀=8");
+        assert!(b.windows(8).any(|s| s == b"CSIMCOD1"));
+        assert!(b.windows(9).any(|s| s == b"sim-agent"));
+        assert!(b.windows(10).any(|s| s == b"AgentState"));
+        // 尾部："ab" = 长度 2 + 'a' 'b'
+        assert_eq!(&b[b.len() - 10..], &[2, 0, 0, 0, 0, 0, 0, 0, b'a', b'b']);
+    }
+
+    /// 同输入两次编码逐字节一致（确定性）。
+/*L131*/
+    #[test]
+    fn encoding_is_deterministic() {
+        let f = || {
+            let mut w = CanonicalWriter::new("m", "k");
+            w.u64(42);
+            w.str("稳");
+            w.seq_len(2);
+            w.i64(-7);
+            w.i64(7);
+            w.into_bytes()
+/*L141*/
+        };
+        assert_eq!(f(), f());
+    }
+
+    /// 浮点禁入由类型系统保证：编码器不提供 f32/f64 方法（本测试为契约记录）。
+    #[test]
+    fn no_float_entry_points() {
+        let mut w = CanonicalWriter::new("m", "k");
+        w.u32(0x3f80_0000); // 若需记录位模式，以整数显式写入
+        // 头 34 字节（CSIMCOD1/m/k 各 8 字节长度前缀）+ u32 4 字节
+/*L151*/
+        assert_eq!(w.as_bytes().len(), 38);
+    }
+}
+
+===== 原段落: PASTE-43 | 第 43 段 · 范围 D · 完整 =====
+// FILE: crates/sim-digest/src/lib.rs @1db87d2
+/*L1*/
+//! CitySim-rs sim-digest（Stage 1 T6）：GlobalDigest 权威状态摘要（ADR-NEW-19）。
+//!
+//! ADR-NEW-19 决策（2026-11-19 正式裁决采纳，附条件）：
+//! - 哈希：BLAKE3-256（备选 xxh3-64；否决 SHA-256/CRC64/serde 默认）。
+//! - 编码：与存档共用底层 canonical 编码规则（sim-codec），顶层 Schema 相互
+//!   独立（本 crate 的信封 Schema 仅用于摘要），domain separation 由
+//!   sim-codec 头（编码规则版本 | 模块标识 | 类型标识）承担。
+//! - digest_version u16：算法/纳入范围/编码变更必须 bump。
+//! - 存档点全量重算为判据；每 tick 滚动摘要仅是优化（保留与否以实测为准，
+//!   条件核销清单未决项）。
+/*L11*/
+//! - 纳入范围=全部权威状态（含预算队列/让步状态，NEW-19 条件③）——由调用方
+//!   按 `record(module, kind, payload)` 逐模块喂入；模块清单随 T7/T9 接入补全。
+//!
+//! 证据纪律：BLAKE3 跨平台位级一致性（x86_64/aarch64）为条件核销清单未决项
+//! （ADR-NEW-19 条件①，挂 R4）；黄金向量见 docs/benchmarks/globaldigest-golden-vectors.txt。
+#![forbid(unsafe_code)]
+
+use std::collections::BTreeMap;
+
+use sim_codec::CanonicalWriter;
+/*L21*/
+
+/// 摘要协议版本（EC-03 存档字段口径）。算法/纳入范围/编码变更必须 bump。
+pub const DIGEST_VERSION: u16 = 1;
+
+/// 256 位摘要（BLAKE3-256 输出）。
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Digest256(pub [u8; 32]);
+
+impl Digest256 {
+    pub fn hex(&self) -> String {
+/*L31*/
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+impl std::fmt::Debug for Digest256 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Digest256({})", self.hex())
+    }
+}
+
+/*L41*/
+/// 单条状态摘要：envelope = codec 头(编码规则版本|module|kind)
+///   | digest_version u16 | payload(u64 长度前缀) → BLAKE3-256。
+pub fn digest(module: &str, kind: &str, payload: &[u8]) -> Digest256 {
+    let mut w = CanonicalWriter::new(module, kind);
+    w.u16(DIGEST_VERSION);
+    w.bytes(payload);
+    Digest256(*blake3::hash(w.as_bytes()).as_bytes())
+}
+
+/// GlobalDigest：权威状态总摘要。
+/*L51*/
+/// 记录以 (module, kind) 为键的模块级摘要，finalize 时按键序（BTreeMap 稳定序）
+/// 合成总摘要——**记录顺序无关**（2.9 条 4 口径）。
+#[derive(Default)]
+pub struct GlobalDigest {
+    entries: BTreeMap<(String, String), [u8; 32]>,
+}
+
+impl GlobalDigest {
+    pub fn new() -> Self {
+        Self::default()
+/*L61*/
+    }
+
+    /// 记录一个模块的一类权威状态（重复记录同键=覆盖，取最后一次）。
+    pub fn record(&mut self, module: &str, kind: &str, payload: &[u8]) {
+        self.entries
+            .insert((module.to_string(), kind.to_string()), digest(module, kind, payload).0);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+/*L71*/
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// 合成总摘要：envelope | 条目数 | (键, 摘要)* 按键序 → BLAKE3-256。
+    pub fn finalize(&self) -> Digest256 {
+        let mut w = CanonicalWriter::new("sim-digest", "GlobalDigest");
+        w.u16(DIGEST_VERSION);
+/*L81*/
+        w.seq_len(self.entries.len());
+        for ((module, kind), hash) in &self.entries {
+            w.str(module);
+            w.str(kind);
+            w.bytes(hash);
+        }
+        Digest256(*blake3::hash(w.as_bytes()).as_bytes())
+    }
+}
+
+/*L91*/
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digest_version_pinned() {
+        assert_eq!(DIGEST_VERSION, 1, "摘要协议变更必须 bump 并修订 ADR-NEW-19");
+    }
+
+    /// domain separation：模块/类型标识参与信封，同负载不同域摘要不同。
+/*L101*/
+    #[test]
+    fn domain_separation() {
+        let a = digest("sim-agent", "AgentState", b"payload");
+        let b = digest("sim-network", "AgentState", b"payload");
+        let c = digest("sim-agent", "EdgeState", b"payload");
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+    }
+
+    /// 负载敏感性：单字节变化必须改变摘要。
+/*L111*/
+    #[test]
+    fn payload_sensitivity() {
+        let a = digest("m", "k", b"payload-x");
+        let b = digest("m", "k", b"payload-y");
+        assert_ne!(a, b);
+    }
+
+    /// 同输入稳定（同进程两次调用一致；跨构建稳定性由黄金向量测试保证）。
+    #[test]
+    fn same_input_same_digest() {
+/*L121*/
+        assert_eq!(digest("m", "k", b"x"), digest("m", "k", b"x"));
+    }
+
+    /// 记录顺序无关：BTreeMap 键序合成。
+    #[test]
+    fn global_digest_order_independent() {
+        let mut g1 = GlobalDigest::new();
+        g1.record("sim-agent", "Agents", b"a1");
+        g1.record("sim-network", "Network", b"n1");
+        g1.record("sim-economy", "Economy", b"e1");
+/*L131*/
+        let mut g2 = GlobalDigest::new();
+        g2.record("sim-economy", "Economy", b"e1");
+        g2.record("sim-agent", "Agents", b"a1");
+        g2.record("sim-network", "Network", b"n1");
+        assert_eq!(g1.finalize(), g2.finalize());
+    }
+
+    /// 模块敏感性：任一模块状态变化必须改变总摘要。
+    #[test]
+    fn global_digest_module_sensitivity() {
+/*L141*/
+        let mut g1 = GlobalDigest::new();
+        g1.record("sim-agent", "Agents", b"a1");
+        g1.record("sim-network", "Network", b"n1");
+        let mut g2 = GlobalDigest::new();
+        g2.record("sim-agent", "Agents", b"a2");
+        g2.record("sim-network", "Network", b"n1");
+        assert_ne!(g1.finalize(), g2.finalize());
+    }
+
+    /// 空集合确定性：无记录时总摘要稳定。
+/*L151*/
+    #[test]
+    fn empty_global_digest_is_stable() {
+        assert_eq!(GlobalDigest::new().finalize(), GlobalDigest::new().finalize());
+    }
+
+    /// 黄金向量打印（生成后固化进 golden_vectors 测试与
+    /// docs/benchmarks/globaldigest-golden-vectors.txt）：
+    /// cargo test -p sim-digest print_goldens -- --nocapture
+    #[test]
+    fn print_goldens() {
+/*L161*/
+        println!("DIGEST_VERSION = {DIGEST_VERSION}");
+        println!(
+            r#"digest("sim-agent","Agents",b"golden-1") = {}"#,
+            digest("sim-agent", "Agents", b"golden-1").hex()
+        );
+        println!(
+            r#"digest("sim-digest","GlobalDigest",b"") = {}"#,
+            digest("sim-digest", "GlobalDigest", b"").hex()
+        );
+        let mut g = GlobalDigest::new();
+/*L171*/
+        g.record("sim-agent", "Agents", b"a1");
+        g.record("sim-network", "Network", b"n1");
+        println!("global(a1,n1) = {}", g.finalize().hex());
+    }
+
+    /// 黄金向量（跨构建稳定性=R2 oracle 基础）：2026-11-19 print_goldens 打印后固化；
+    /// 向量文件 docs/benchmarks/globaldigest-golden-vectors.txt。
+    /// 本测试失败=摘要协议/编码规则变更未 bump digest_version。
+    #[test]
+    fn golden_vectors() {
+/*L181*/
+        assert_eq!(
+            digest("sim-agent", "Agents", b"golden-1").hex(),
+            "64ec5fc5c6062bc58af4df5050df8920e8f79201bfbe15d61ac1ef2287d15b2f"
+        );
+        assert_eq!(
+            digest("sim-digest", "GlobalDigest", b"").hex(),
+            "0f677f5692aaf571f6d440c1f931722ff5de1d99965baaec48472389f5091bb5"
+        );
+        let mut g = GlobalDigest::new();
+        g.record("sim-agent", "Agents", b"a1");
+/*L191*/
+        g.record("sim-network", "Network", b"n1");
+        assert_eq!(
+            g.finalize().hex(),
+            "11d8b5e30bed8a3b9f1bb17c0d5ebb71f513b0d73a794d0c6e2f970d39f1d1d5"
+        );
+    }
+}
+
+===== 原段落: PASTE-44 | 第 44 段 · 范围 D · 完整 =====
+// FILE: crates/sim-error/src/lib.rs @1db87d2
+/*L1*/
+//! CitySim-rs sim-error（Stage 1 T8）：错误分层骨架（EC-08）。
+//!
+//! EC-08 分层：Fatal（不可恢复，必须停机/拒绝加载）/ Recoverable（可继续模拟，
+//! 有确定性处置）/ Diagnostic（诊断信息，不改变权威状态）。
+//! SimErrorContext.entity_id 语义 = AgentId（2.3：与 Bevy Entity 解耦的稳定
+//! u64 身份；正式类型随 T4 在 sim-agent 定义，此处以 u64 表达并以文档钉语义）。
+//!
+//! 错误码规范见 docs/architecture/error-code-spec.md（格式 MOD-NNNN）。
+//! 诊断事件通道为确定性 Vec（产生顺序=drain 顺序），无 HashMap/时钟/浮点。
+#![forbid(unsafe_code)]
+/*L11*/
+
+/// 错误分层（EC-08）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ErrorClass {
+    /// 不可恢复：存档损坏、协议版本不兼容、不变量破坏——必须终止本次运行。
+    Fatal,
+    /// 可恢复：确定性处置后模拟可继续（如过期寻路结果重入队）。
+    Recoverable,
+    /// 诊断：不改变权威状态（如预算逼近上限的提示）。
+    Diagnostic,
+/*L21*/
+}
+
+/// 错误码：模块前缀 + 4 位编号（规范：docs/architecture/error-code-spec.md）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ErrorCode {
+    pub module: &'static str,
+    pub number: u32,
+}
+
+impl ErrorCode {
+/*L31*/
+    pub const fn new(module: &'static str, number: u32) -> Self {
+        Self { module, number }
+    }
+}
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{:04}", self.module, self.number)
+    }
+}
+/*L41*/
+
+/// 错误上下文（确定性：tick 为 u64，无墙钟；entity_id 语义=AgentId）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SimErrorContext {
+    /// 权威时间：u64 tick（2.9 条 7；不读系统时钟）。
+    pub tick: u64,
+    /// 相关实体的稳定身份。语义 = AgentId（2.3，与 Bevy Entity 解耦）。
+    pub entity_id: u64,
+    /// 产生点的系统标识（namespace 口径，如 "sim-pathfinding"）。
+    pub system: &'static str,
+/*L51*/
+}
+
+/// 分层错误。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimError {
+    pub class: ErrorClass,
+    pub code: ErrorCode,
+    pub message: &'static str,
+    pub context: SimErrorContext,
+}
+/*L61*/
+
+impl SimError {
+    pub const fn new(
+        class: ErrorClass,
+        code: ErrorCode,
+        message: &'static str,
+        context: SimErrorContext,
+    ) -> Self {
+        Self {
+            class,
+/*L71*/
+            code,
+            message,
+            context,
+        }
+    }
+}
+
+/// 诊断事件（Diagnostic 层的结构化记录；不改变权威状态）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticEvent {
+/*L81*/
+    pub code: ErrorCode,
+    pub message: &'static str,
+    pub context: SimErrorContext,
+}
+
+/// 诊断事件通道：确定性 Vec，emit 顺序 = drain 顺序（2.9 条 4 口径：
+/// 不依赖任何无序迭代；事件可作为 GlobalDigest 输入在 T9 接入）。
+#[derive(Default)]
+pub struct DiagnosticSink {
+    events: Vec<DiagnosticEvent>,
+/*L91*/
+}
+
+impl DiagnosticSink {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn emit(&mut self, code: ErrorCode, message: &'static str, context: SimErrorContext) {
+        self.events.push(DiagnosticEvent {
+            code,
+/*L101*/
+            message,
+            context,
+        });
+    }
+
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+/*L111*/
+        self.events.is_empty()
+    }
+
+    /// 按产生顺序取出全部事件（清空通道）。
+    pub fn drain(&mut self) -> Vec<DiagnosticEvent> {
+        std::mem::take(&mut self.events)
+    }
+}
+
+/// 常用错误码登记（增量登记规范见 error-code-spec.md；编号不得复用）。
+/*L121*/
+pub mod codes {
+    use super::ErrorCode;
+
+    /// 存档损坏/一致性检查失败（Fatal）。
+    pub const SAVE_CORRUPT: ErrorCode = ErrorCode::new("SAV", 1);
+    /// 存档 Schema 版本不兼容（Fatal，可诊断拒绝加载）。
+    pub const SAVE_SCHEMA_UNSUPPORTED: ErrorCode = ErrorCode::new("SAV", 2);
+    /// 过期寻路结果重入队（Recoverable）。
+    pub const PATH_STALE_REQUEUE: ErrorCode = ErrorCode::new("PTH", 1);
+    /// 重算超限进入受阻兜底（Recoverable）。
+/*L131*/
+    pub const PATH_FALLBACK_BLOCKED: ErrorCode = ErrorCode::new("PTH", 2);
+    /// 预算逼近上限提示（Diagnostic）。
+    pub const BUDGET_PRESSURE: ErrorCode = ErrorCode::new("BGT", 1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> SimErrorContext {
+/*L141*/
+        SimErrorContext {
+            tick: 42,
+            entity_id: 7,
+            system: "sim-pathfinding",
+        }
+    }
+
+    /// 分层可表达三类。
+    #[test]
+    fn three_classes_exist() {
+/*L151*/
+        let e = SimError::new(ErrorClass::Fatal, codes::SAVE_CORRUPT, "save digest mismatch", ctx());
+        assert_eq!(e.class, ErrorClass::Fatal);
+        assert_eq!(
+            SimError::new(ErrorClass::Recoverable, codes::PATH_STALE_REQUEUE, "stale", ctx()).class,
+            ErrorClass::Recoverable
+        );
+        assert_eq!(
+            SimError::new(ErrorClass::Diagnostic, codes::BUDGET_PRESSURE, "pressure", ctx()).class,
+            ErrorClass::Diagnostic
+        );
+/*L161*/
+    }
+
+    /// 错误码格式 MOD-NNNN。
+    #[test]
+    fn error_code_format() {
+        assert_eq!(codes::SAVE_CORRUPT.to_string(), "SAV-0001");
+        assert_eq!(codes::PATH_FALLBACK_BLOCKED.to_string(), "PTH-0002");
+        assert_eq!(codes::BUDGET_PRESSURE.to_string(), "BGT-0001");
+    }
+
+/*L171*/
+    /// 登记码唯一（模块+编号不重复）。
+    #[test]
+    fn registered_codes_are_unique() {
+        let all = [
+            codes::SAVE_CORRUPT,
+            codes::SAVE_SCHEMA_UNSUPPORTED,
+            codes::PATH_STALE_REQUEUE,
+            codes::PATH_FALLBACK_BLOCKED,
+            codes::BUDGET_PRESSURE,
+        ];
+/*L181*/
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "错误码不得重复登记");
+            }
+        }
+    }
+
+    /// 上下文：tick 为 u64、entity_id 语义=AgentId（文档钉义，此处断言字段可表达）。
+    #[test]
+    fn context_fields() {
+/*L191*/
+        let c = ctx();
+        let tick: u64 = c.tick;
+        let agent: u64 = c.entity_id;
+        assert_eq!((tick, agent), (42, 7));
+    }
+
+    /// 诊断通道确定性：emit 顺序=drain 顺序，drain 后清空。
+    #[test]
+    fn diagnostic_sink_is_ordered_and_drains() {
+        let mut sink = DiagnosticSink::new();
+/*L201*/
+        sink.emit(codes::BUDGET_PRESSURE, "p1", ctx());
+        sink.emit(codes::BUDGET_PRESSURE, "p2", ctx());
+        assert_eq!(sink.len(), 2);
+        let events = sink.drain();
+        assert_eq!(events[0].message, "p1");
+        assert_eq!(events[1].message, "p2");
+        assert!(sink.is_empty());
+    }
+}
+
+===== 原段落: PASTE-45 | 第 45 段 · 范围 D · 完整 =====
+// FILE: docs/benchmarks/globaldigest-golden-vectors.txt @1db87d2
+/*L1*/
+# GlobalDigest 黄金向量（digest_version = 1）
+
+- 日期：2026-11-19（Stage 1 T6）
+- 协议：ADR-NEW-19（BLAKE3-256 + sim-codec canonical 信封 + digest_version u16）
+- 生成：`cargo test -p sim-digest print_goldens -- --nocapture`，固化于
+  `crates/sim-digest/src/lib.rs::tests::golden_vectors`
+- 用途：跨构建/跨平台位级一致性基准（R2 oracle 基础；aarch64 复验挂 R4，
+  条件核销清单未决项）
+
+## 向量
+/*L11*/
+
+| # | 输入 | 摘要（hex） |
+| --- | --- | --- |
+| 1 | digest("sim-agent", "Agents", b"golden-1") | 64ec5fc5c6062bc58af4df5050df8920e8f79201bfbe15d61ac1ef2287d15b2f |
+| 2 | digest("sim-digest", "GlobalDigest", b"") | 0f677f5692aaf571f6d440c1f931722ff5de1d99965baaec48472389f5091bb5 |
+| 3 | GlobalDigest{("sim-agent","Agents",b"a1"), ("sim-network","Network",b"n1")}.finalize() | 11d8b5e30bed8a3b9f1bb17c0d5ebb71f513b0d73a794d0c6e2f970d39f1d1d5 |
+
+## 信封定义（向量 1/2 口径）
+
+```
+/*L21*/
+blake3( CSIMCOD1 | module(len-prefixed) | kind(len-prefixed)
+        | digest_version u16 LE | payload(u64 长度前缀 + 原始字节) )
+```
+
+总摘要（向量 3 口径）：条目按 (module, kind) BTreeMap 键序，记录顺序无关。
+
+## 纳入范围（NEW-19 条件③）
+
+全部权威状态由调用方 `record(module, kind, payload)` 喂入，模块清单随
+T7（存档接入）/T9（R2 场景）补全，须含预算队列与让步状态（budget_yield_count、
+/*L31*/
+stale_recompute_count、等待 tick、优先级）。
+
+===== 原段落: PASTE-46 | 第 46 段 · 范围 F · 完整 =====
+// FILE: docs/benchmarks/Stage-3-Exit-CHECKLIST.md @1db87d2
+/*L1*/
+# Stage 3 退出条件核对（2026-11-22，S4）
+
+依据：docs/architecture/Stage-3-Task-List.md（退出条件，2026-11-22 重建清单）。
+核对口径：证据指向提交/测试/文档，未达成项如实标注。
+
+## 退出条件逐条核对
+
+| # | 条件 | 结果 | 证据 |
+| --- | --- | --- | --- |
+| 1 | T0 债务 #28 重试队列实装（沿用原 tx_id、上限 3、超限受阻+诊断） | ✅ | crates/sim-network TxRetryQueue + 3 测试（16/16）；NET-0001 登记；提交 55a439f |
+/*L11*/
+| 2 | T1 Agent 状态机：状态集+转移表+受阻语义+确定性 | ✅ | docs/architecture/rfc-agent-state-machine.md + sim-agent AgentLifecycle（8/8）；AGT-0001；提交 67ad3c2 |
+| 3 | T2 回放输入/模拟配置 schema 定义且可回放验证 | ✅ | docs/architecture/replay-schema.md + crates/sim-replay（5/5，录制 digest==回放 digest）；RPL-0001；提交 5e193bb |
+| 4 | T3 经济基础：独立整数上限、确定性派生流、摘要纳入、暂停语义 | ✅ | crates/sim-economy（4/4：两跑 digest 相等、10^12 溢出/下溢防护、EC-04 L2/L3 暂停）；提交 b8df1af |
+| 5 | T4 LOD 草案：命名/切换条件/更新频率+确定性信号+记录入档入回放 | ✅ | docs/architecture/rfc-lod-draft.md（阈值数值=待定，属草案范围外声明）；提交 bc69b2e |
+| 6 | T5 多世界最小预留（EC-10 WorldId/上下文） | ✅ | crates/sim-world（3/3：世界摘要隔离、高水位拒绝回退）；提交 876ced7 |
+
+**结论：6/6 达成，Stage 3 清单任务全部完成。**
+
+## 限定与移交
+
+/*L21*/
+1. T1/T2/T3/T5 为**基础原语**，与模拟主循环的集成（run_tick 统一驱动）属后续阶段；
+   AgentRegistry 旧粗粒度与 AgentLifecycle 并存待集成期合并（rfc-agent-state-machine.md §5）。
+2. T4 阈值数值（各层距离/频率）待定，随实测与 2.10 体系定案；
+   LOD 与降级联动策略未定（草案 §5）。
+3. 遗留债务移交后续：#20 预算滚动状态生命周期、#23 联动组 G4、#27 阈值定案
+   （审计保持候选）、R4 跨平台（发布门禁）、E 议题三件（独立立项）。
+4. 全部新 crate 已进 CI 双矩阵与依赖方向检查（规则 1-5 PASS）。
+
+===== 原段落: PASTE-47 | 第 47 段 · 范围 F · 完整 =====
+// FILE: docs/architecture/review/AI-REVIEW-BRIEF-STAGE2B3.md @1db87d2
+/*L1*/
+# CitySim-rs 审计邀请：Stage 2B 并行确定性 + Stage 3 T0–T5 + ②′ 修测原语
+
+- 日期：2026-11-22
+- 类型：**债务/工程质量闭合审计**（对尚未经外部审计的工程面逐项裁决）
+- 回传渠道：issue #28（https://github.com/2222BUG/CitySim-rs/issues/28）
+- 署名：**推荐**具体型号/版本（如 DeepSeek-V4.1、qwen4-max、MiniMax-M3.1-Flash、GPT-6、Claude Sonnet 5.5）；泛称同样计票；完全未署名不计票
+- 约定：只依据材料原文判断，材料没覆盖的点标"未见证据"；**拒绝和延后是合法裁决**；每轮至少一家做代码级审查（行号级证据）
+
+## 背景（30 秒）
+
+/*L11*/
+CitySim-rs 是确定性城市模拟（同种子逐 tick 可复现、强读档等价）。此前审计史：
+五项修订 6 家 → ADR-24 第二轮 8 家 → 债务闭合审计 7 家 → 决策4/5/6（#31 三轮 10-11 家）。
+**本包审计对象=从未送审的工程面**：Stage 2B 并行确定性、Stage 3 新增六交付（T0-T5）、
+以及 #31 整改后的修测原语。设计面（ADR-14~26）已多轮评审，不在本轮范围。
+
+## 审计范围（六项，每项单独裁决）
+
+| 项 | 对象 | 关键文件 | 重点问题 |
+|---|---|---|---|
+| A | **Stage 2B 并行确定性**（从没审计） | crates/sim-parallel/{src/lib.rs,tests/thread_independence.rs}、sim-pathfinding TickBudget 段、docs/benchmarks/Stage2B-concurrent-stress.txt、Stage-2B-Exit-CHECKLIST.md | run_parallel 分片/归并是否真确定性；chaos 注入是否满足"测试自身不违 2.9"（忙等 vs sleep）；TickBudget 配额让步与 #27 判据隔离；1/2/8 线程摘要一致证据是否充分 |
+/*L21*/
+| B | **Stage 3 T0-T5**（2026-11-22 刚完成，零审计） | crates/{sim-network TxRetryQueue 段, sim-agent, sim-replay, sim-economy, sim-world}、docs/architecture/{rfc-agent-state-machine.md, replay-schema.md, rfc-lod-draft.md, Stage-3-Task-List.md} | TxRetryQueue 全序/上限/诊断语义；AgentLifecycle 转移表完备性与受阻自动退役；回放 schema canonical 编码/版本 bump/回放等价测试真实含金量；经济 10^12 防护边界；WorldId 高水位口径 |
+| C | **②′ 修测原语**（决策5 审计后新增/重写） | crates/sim-traffic/src/lib.rs（criterion_aligned_loss/point_resolution_ok/steady_window/fit_*_detailed 判据损失）、examples/mfd_prime.rs | 判据归一化损失实现是否真与判据同构；分辨率下限数学；稳态双口径；mfd_prime 是否严守预注册（种子段/族冻结/一次锁定/自动落①焊死） |
+| D | **基础 crate 尾巴** | crates/{sim-test-support, sim-error, sim-codec, sim-digest}/src/lib.rs | 六模块契约测试含金量；错误码登记完备；canonical/BLAKE3 黄金向量是否仍匹配 |
+| E | **CI 与依赖方向** | .github/workflows/ci.yml、.github/scripts/dep_graph_check.py、rust-toolchain.toml | 矩阵是否覆盖全部 21 crate；MSRV job 与 rust-toolchain 一致性；dep 规则 1-5 是否可被绕过 |
+| F | **口径一致性** | decision-log.md、Stage-3-Exit-CHECKLIST.md、README.md | "6/6 达成"是否与证据一致；债务 #7/#10/#14 收口口径是否准确；状态词表 0.2 合规 |
+
+## 请重点回答的问题
+
+1. **A 项**：sim-parallel 的确定性声明在 8 线程+chaos 下是否有未覆盖的竞态/未定义行为路径（如排序键碰撞、分片边界、panic 传播）？
+2. **B 项**：T0-T5 六交付中哪些是"测试通过但契约有缺口"？（例：回放等价测试的玩具模拟 vs 真实权威循环的差距；AgentLifecycle 与 EC-01/ADR-17 受阻语义的衔接）
+/*L31*/
+3. **C 项**：修测原语是否还有"估计目标≠判据"的残余形态？mfd_prime 的归因分解表是否可信？
+4. **D/E 项**：基础 crate 与 CI 是否存在会掩盖回归的薄弱点？
+5. **F 项**：记录与证据是否一致（不一致逐条列出）？
+
+## 裁决格式（请原样返回）
+
+```
+## Stage 2B/3 审计裁决记录
+- 署名（推荐具体型号）：
+- 逐项裁决：A= / B= / C= / D= / E= / F=（可入账 / 有条件入账 / 需重做）
+/*L41*/
+- 各项理由（1-3 句）与验证条件/修改要求（逐条）：
+- 代码级发现（行号级，如有）：
+- 新增风险（如有）：
+- 总体：可入账 / 有条件入账 / 需重做
+```
+
+## 材料清单（多通道）
+
+附件/单文本包/Release 内含：A-F 全部关键文件源码+测试、相关 benchmarks 数据
+（Stage2B-concurrent-stress.txt 等）、退出核对表、MANIFEST（口径说明）。
+/*L51*/
+仓库：https://github.com/2222BUG/CitySim-rs 。

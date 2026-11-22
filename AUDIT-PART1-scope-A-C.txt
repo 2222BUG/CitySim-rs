@@ -1,0 +1,3490 @@
+# STAGE2B3 审计材料合订（范围 A+C）· 基准 commit 1db87d2 · 纯文本
+# 格式：// FILE = 文件边界；/*Lnnn*/ = 每 10 行锚点；段首标注 = 原 PASTE 编号与完整性
+
+===== 原段落: PASTE-01 | 第 1 段 · 范围 A · 完整 =====
+// FILE: crates/sim-parallel/src/lib.rs @1db87d2
+/*L1*/
+//! # sim-parallel —— 确定性并行执行框架（2.9 条 6）
+//!
+//! 契约（主文档 2.9 第 6 条 / ADR-NEW-15）：并行任务**只读 tick 开始快照**，
+//! 产出结果按**稳定键全序**归并后**串行提交**。线程数、调度顺序、注入延迟
+//! 只影响耗时，不影响提交序列与最终摘要（线程数无关性）。
+//!
+//! 稳定键 = `(phase_id, task_key)` 复合全序（ADR-NEW-15 P1-02 口径：
+//! 全序提交与系统执行顺序分开定义；键相等由调用方保证不发生）。
+
+#![forbid(unsafe_code)]
+/*L11*/
+
+/// 权威 crate：2.9 契约适用（clippy 分层见 crate-authority-list.md）。
+pub fn authoritative() -> bool {
+    true
+}
+
+/// 稳定提交全序键：(阶段 ID, 任务键)。
+pub type StableKey = (u32, u64);
+
+/// 并行任务：对共享快照的纯计算（`func` 不得捕获外部状态）。
+/*L21*/
+pub struct Task<S: ?Sized, In, Out> {
+    pub key: StableKey,
+    pub input: In,
+    pub func: fn(&S, &In) -> Out,
+}
+
+/// 执行一批任务并确定性提交。
+///
+/// 1. 任务按稳定键升序排序（提交全序）；
+/// 2. 连续块确定性分片到 `threads` 个工作线程，各线程只读快照并行纯计算；
+/*L31*/
+/// 3. 输出按稳定键归并排序后，在调用线程**串行**调用 `commit(key, out)`。
+///
+/// `threads <= 1` 走同一代码路径（单分片），保证并行/单线程可对比。
+pub fn run_parallel<S: Sync + ?Sized, In: Send, Out: Send>(
+    snapshot: &S,
+    mut tasks: Vec<Task<S, In, Out>>,
+    threads: usize,
+    mut commit: impl FnMut(StableKey, Out),
+) {
+    tasks.sort_by_key(|t| t.key);
+/*L41*/
+    let n_threads = threads.max(1).min(tasks.len().max(1));
+    if tasks.is_empty() {
+        return;
+    }
+    let per = tasks.len().div_ceil(n_threads);
+    let mut outputs: Vec<(StableKey, Out)> = Vec::with_capacity(tasks.len());
+    // 按块转移所有权进工作线程（避免 &[Task] 共享对 In 的 Sync 要求）
+    let mut work: Vec<Vec<Task<S, In, Out>>> = Vec::new();
+    let mut it = tasks.into_iter();
+    loop {
+/*L51*/
+        let chunk: Vec<Task<S, In, Out>> = it.by_ref().take(per).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        work.push(chunk);
+    }
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for chunk in work {
+            handles.push(scope.spawn(move || {
+/*L61*/
+                chunk
+                    .into_iter()
+                    .map(|t| (t.key, (t.func)(snapshot, &t.input)))
+                    .collect::<Vec<(StableKey, Out)>>()
+            }));
+        }
+        for h in handles {
+            outputs.extend(h.join().expect("worker panicked"));
+        }
+    });
+/*L71*/
+    // 串行提交：与线程数/到达顺序无关的稳定全序
+    outputs.sort_by_key(|(k, _)| *k);
+    for (k, out) in outputs {
+        commit(k, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+/*L81*/
+
+    /// 测试快照：只读基值。
+    struct Snap {
+        base: u64,
+    }
+
+    fn mul_task(s: &Snap, i: &u64) -> u64 {
+        s.base.saturating_mul(*i).saturating_add(*i)
+    }
+
+/*L91*/
+    fn shuffled_tasks() -> Vec<Task<Snap, u64, u64>> {
+        // 乱序构造，键 (phase, key)：(1,3) (1,1) (1,2) (0,9) (0,8)
+        let keys: Vec<StableKey> = vec![(1, 3), (1, 1), (1, 2), (0, 9), (0, 8)];
+        keys.into_iter()
+            .map(|key| Task { key, input: key.1, func: mul_task })
+            .collect()
+    }
+
+    fn committed(tasks: Vec<Task<Snap, u64, u64>>, threads: usize) -> Vec<(StableKey, u64)> {
+        let snap = Snap { base: 7 };
+/*L101*/
+        let mut out = Vec::new();
+        run_parallel(&snap, tasks, threads, |k, v| out.push((k, v)));
+        out
+    }
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(authoritative());
+    }
+
+/*L111*/
+    /// 退出条件"任务提交顺序有明确契约"：commit 按稳定键全序调用。
+    #[test]
+    fn commit_order_is_stable_key_order() {
+        let seq = committed(shuffled_tasks(), 2);
+        let keys: Vec<StableKey> = seq.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec![(0, 8), (0, 9), (1, 1), (1, 2), (1, 3)]);
+    }
+
+    /// 提交顺序无关性：任务到达顺序不同，提交序列逐项一致。
+    #[test]
+/*L121*/
+    fn submission_order_independence() {
+        let a = committed(shuffled_tasks(), 3);
+        let mut rev = shuffled_tasks();
+        rev.reverse();
+        let b = committed(rev, 3);
+        assert_eq!(a, b, "到达顺序不得影响提交序列");
+    }
+
+    /// 线程数无关性（退出条件 2 的契约级）：1/2/8 线程提交序列一致。
+    #[test]
+/*L131*/
+    fn thread_count_independence() {
+        let r1 = committed(shuffled_tasks(), 1);
+        let r2 = committed(shuffled_tasks(), 2);
+        let r8 = committed(shuffled_tasks(), 8);
+        assert_eq!(r1, r2);
+        assert_eq!(r1, r8);
+    }
+
+    /// 注入延迟（确定性忙等）不影响结果——仅模拟调度扰动。
+    #[test]
+/*L141*/
+    fn chaos_injection_does_not_affect_result() {
+        use sim_test_support::chaos::chaos_spin;
+
+        struct ChaosSnap {
+            base: u64,
+            chaos_seed: u64,
+        }
+        fn chaos_task(s: &ChaosSnap, i: &u64) -> u64 {
+            chaos_spin(*i, s.chaos_seed); // 确定性忙等，打乱完成顺序
+            s.base.saturating_add(*i)
+/*L151*/
+        }
+        let keys: Vec<StableKey> = (0..16).map(|i| (0, i)).collect();
+        let run = |seed: u64| {
+            let snap = ChaosSnap { base: 11, chaos_seed: seed };
+            let tasks: Vec<Task<ChaosSnap, u64, u64>> = keys
+                .iter()
+                .map(|&key| Task { key, input: key.1, func: chaos_task })
+                .collect();
+            let mut out = Vec::new();
+            run_parallel(&snap, tasks, 4, |k, v| out.push((k, v)));
+/*L161*/
+            out
+        };
+        assert_eq!(run(0), run(42), "注入延迟不得影响提交序列");
+        assert_eq!(run(0).len(), 16);
+    }
+
+    /// 边界：空任务集与单任务。
+    #[test]
+    fn empty_and_single_task() {
+        let snap = Snap { base: 1 };
+/*L171*/
+        let mut calls = 0u32;
+        run_parallel(&snap, Vec::<Task<Snap, u64, u64>>::new(), 4, |_, _| calls += 1);
+        assert_eq!(calls, 0);
+        let one = vec![Task { key: (0, 1), input: 5, func: mul_task }];
+        let mut got = Vec::new();
+        run_parallel(&snap, one, 8, |k, v| got.push((k, v)));
+        assert_eq!(got, vec![((0, 1), 10)]); // 1*5+5=10
+    }
+}
+
+===== 原段落: PASTE-02 | 第 2 段 · 范围 A · 完整 =====
+// FILE: crates/sim-parallel/tests/thread_independence.rs @1db87d2
+/*L1*/
+//! B3 场景级线程无关性验证（Stage 2B 退出条件 1/2/3/4）。
+//!
+//! 场景：100 个 Agent × 50 tick 的确定性随机游走。
+//! 每 tick：只读快照上并行执行纯函数任务（含混沌忙等注入），
+//! 按稳定键排序串行提交，逐 tick 折叠 GlobalDigest。
+//! 断言：1/2/8 线程摘要一致、混沌种子无关、任务到达顺序无关、与单线程参考一致。
+
+use sim_codec::CanonicalWriter;
+use sim_digest::GlobalDigest;
+use sim_parallel::{run_parallel, StableKey, Task};
+/*L11*/
+use sim_rng::event_u64;
+use sim_test_support::chaos::chaos_spin;
+
+const SEED: u64 = 0x1234_5678_9ABC_DEF0;
+const AGENTS: u64 = 100;
+const TICKS: u64 = 50;
+
+#[derive(Clone)]
+struct World {
+    agents: Vec<(i64, i64)>, // 索引 = agent_id - 1
+/*L21*/
+}
+
+type In = (u64, u64, u64); // (agent_id, tick, chaos_seed)
+type Out = (i64, i64);
+
+/// 纯函数任务：只读快照 + 确定性派生位移 + 混沌忙等（只影响耗时，不影响结果）。
+fn step_task(snap: &World, input: &In) -> Out {
+    let (aid, tick, chaos_seed) = *input;
+    let _ = chaos_spin(aid.saturating_mul(tick), chaos_seed);
+    let (x, y) = snap.agents[(aid - 1) as usize];
+/*L31*/
+    let r = event_u64(
+        SEED,
+        "sim-parallel",
+        aid.saturating_mul(1000).saturating_add(tick),
+        0,
+    );
+    let dx = (r % 5) as i64 - 2;
+    let dy = ((r >> 8) % 5) as i64 - 2;
+    (x.saturating_add(dx), y.saturating_add(dy))
+}
+/*L41*/
+
+fn record_tick(gd: &mut GlobalDigest, tick: u64, world: &World) {
+    let mut w = CanonicalWriter::new("sim-parallel", "AgentState");
+    w.u64(tick);
+    for p in &world.agents {
+        w.i64(p.0);
+        w.i64(p.1);
+    }
+    gd.record("sim-parallel", "AgentState", w.as_bytes());
+}
+/*L51*/
+
+/// 场景执行：并行框架路径。reversed=true 时任务构建顺序颠倒（检验提交契约）。
+fn run_scenario(threads: usize, chaos_seed: u64, reversed: bool) -> String {
+    let mut world = World {
+        agents: (1..=AGENTS).map(|i| (i as i64 * 7, i as i64 * 11)).collect(),
+    };
+    let mut gd = GlobalDigest::new();
+    for tick in 1..=TICKS {
+        let snap = world.clone();
+        let mut tasks: Vec<Task<World, In, Out>> = (1..=AGENTS)
+/*L61*/
+            .map(|aid| Task {
+                key: (0, aid),
+                input: (aid, tick, chaos_seed),
+                func: step_task,
+            })
+            .collect();
+        if reversed {
+            tasks.reverse();
+        }
+        run_parallel(&snap, tasks, threads, |k, out| {
+/*L71*/
+            // 串行提交（run_parallel 已按稳定键排序逐项回调）
+            world.agents[(k.1 - 1) as usize] = out;
+        });
+        record_tick(&mut gd, tick, &world);
+    }
+    gd.finalize().hex()
+}
+
+/// 单线程参考实现：同样的纯函数与排序提交，完全不走并行框架。
+fn run_serial(chaos_seed: u64) -> String {
+/*L81*/
+    let mut world = World {
+        agents: (1..=AGENTS).map(|i| (i as i64 * 7, i as i64 * 11)).collect(),
+    };
+    let mut gd = GlobalDigest::new();
+    for tick in 1..=TICKS {
+        let snap = world.clone();
+        let tasks: Vec<Task<World, In, Out>> = (1..=AGENTS)
+            .map(|aid| Task {
+                key: (0, aid),
+                input: (aid, tick, chaos_seed),
+/*L91*/
+                func: step_task,
+            })
+            .collect();
+        let mut results: Vec<(StableKey, Out)> = tasks
+            .iter()
+            .map(|t| (t.key, (t.func)(&snap, &t.input)))
+            .collect();
+        results.sort_by_key(|(k, _)| *k);
+        for (k, out) in results {
+            world.agents[(k.1 - 1) as usize] = out;
+/*L101*/
+        }
+        record_tick(&mut gd, tick, &world);
+    }
+    gd.finalize().hex()
+}
+
+#[test]
+fn thread_count_independence_1_2_8() {
+    let d1 = run_scenario(1, 0, false);
+    let d2 = run_scenario(2, 0, false);
+/*L111*/
+    let d8 = run_scenario(8, 0, false);
+    assert_eq!(d1, d2, "1 线程与 2 线程摘要必须一致");
+    assert_eq!(d1, d8, "1 线程与 8 线程摘要必须一致");
+}
+
+#[test]
+fn chaos_injection_does_not_change_result() {
+    let d0 = run_scenario(4, 0, false);
+    let d42 = run_scenario(4, 42, false);
+    assert_eq!(d0, d42, "混沌注入只影响耗时，不得影响结果");
+/*L121*/
+}
+
+#[test]
+fn submission_order_independence_scenario() {
+    let forward = run_scenario(2, 0, false);
+    let reversed = run_scenario(2, 0, true);
+    assert_eq!(forward, reversed, "任务到达顺序不得影响提交结果");
+}
+
+#[test]
+/*L131*/
+fn parallel_matches_serial_reference() {
+    let par = run_scenario(4, 0, false);
+    let ser = run_serial(0);
+    assert_eq!(par, ser, "并行与单线程参考结果必须一致");
+}
+
+===== 原段落: PASTE-03 | 第 3 段 · 范围 A · 节选（第 1/4 部分） =====
+// FILE: crates/sim-pathfinding/src/lib.rs @1db87d2
+/*L1*/
+//! 寻路系统：确定性 A* 与机制 B 预算让步（主文档 2.2 架构分层；ADR-NEW-24 决策 2/3）。
+//! 权威 crate。
+//!
+//! Stage 2A 实装（2026-11-19）：
+//! - A* 唯一性五条（ADR-NEW-24 决策 2）：启发式=曼哈顿定点；open 集排序键 (f, h, node_id)
+//!   全序升序；邻居展开=CSR 数组序；closed 首展闭合、g 严格更小才 reopen；禁 BinaryHeap。
+//! - 机制 B（ADR-NEW-20 三硬约束）：B_k = min(b·g^k, L)，g=2，L=|V|；单 tick 原子搜索
+//!   （方案③：跨 tick 不保存部分搜索状态，让步即丢弃本 tick 进度、下 tick 以更大预算重做）；
+//!   解析上界 k ≤ ⌈log_g(|V|/b)⌉ + 1 tick 内完成或进入受阻判定。
+//! - 三计数器分离（ADR-NEW-20 + X2 审计修复）：budget_yield_count（请求自身预算让步，
+/*L11*/
+//!   债务 #27 判据只认它）与 stale_recompute_count（过期重算）与 quota_yield_count
+//!   （全局配额耗尽让步）互不混用。
+
+#![forbid(unsafe_code)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use sim_network::Network;
+
+/// 所属架构层（依赖方向检查与文档用）。
+pub const LAYER: &str = "寻路系统";
+/*L21*/
+/// 是否权威 crate（2.9 确定性边界内；权威 crate 置严格 clippy.toml）。
+pub const AUTHORITATIVE: bool = true;
+
+/// 供调用方与测试以函数调用读取权威标记（clippy 允许的运行时读取点）。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+// ---------------- 机制 B 预算策略 ----------------
+
+/*L31*/
+/// 机制 B 参数（ADR-NEW-24 决策 3）：b=每 tick 节点预算，g=放大幅（默认 2），L=|V|。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BudgetPolicy {
+    pub b: u64,
+    pub g: u64,
+}
+
+impl Default for BudgetPolicy {
+    fn default() -> Self {
+        BudgetPolicy { b: 64, g: 2 }
+/*L41*/
+    }
+}
+
+impl BudgetPolicy {
+    /// B_k = min(b·g^k, L)（k=连续让步次数）。
+    pub fn budget_for_yield(&self, yields: u64, n_nodes: u64) -> u64 {
+        let l = n_nodes.max(1);
+        let mut acc = self.b.max(1);
+        for _ in 0..yields {
+            acc = acc.saturating_mul(self.g.max(2));
+/*L51*/
+            if acc >= l {
+                break;
+            }
+        }
+        acc.min(l)
+    }
+
+    /// 解析上界：k ≤ ⌈log_g(L/b)⌉ + 1 个 tick 内完成或受阻（ADR-NEW-20 三硬约束）。
+    pub fn max_ticks_to_terminal(&self, n_nodes: u64) -> u64 {
+        let l = n_nodes.max(1);
+/*L61*/
+        let b = self.b.max(1).min(l);
+        let mut k = 0u64;
+        let mut acc = b;
+        while acc < l {
+            acc = acc.saturating_mul(self.g.max(2));
+            k += 1;
+        }
+        k + 1
+    }
+}
+/*L71*/
+
+// ---------------- 搜索结果 ----------------
+
+/// 单次（单 tick 原子）搜索结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FindOutcome {
+    /// 找到路径：边 ID 序列 + 总代价 + 本次展开节点数。
+    Complete { path: Vec<u64>, cost: i64, expanded: u64 },
+    /// 本 tick 节点预算耗尽（让步；不保存中间状态，下 tick 以 B_k 重做）。
+    Yielded { expanded: u64 },
+/*L81*/
+    /// open 集耗尽未达目标：不可达（进入受阻终态的判定输入）。
+    /// 携带本次展开节点数（X2 审计修复：不可达搜索实耗必须入账，否则同 tick
+    /// 多不可达请求可绕过全局配额 Q，违反 ADR-NEW-14 条 3）。
+    Unreachable { expanded: u64 },
+}
+
+impl FindOutcome {
+    /// 本次搜索展开的节点数（三种结果均携带；全局配额扣减用）。
+    pub fn expanded(&self) -> u64 {
+        match self {
+/*L91*/
+            FindOutcome::Complete { expanded, .. }
+            | FindOutcome::Yielded { expanded }
+            | FindOutcome::Unreachable { expanded } => *expanded,
+        }
+    }
+}
+
+/// 寻路器状态：双计数器 + 机制 B 执行（ADR-NEW-20）。
+#[derive(Clone, Debug, Default)]
+pub struct PathFinder {
+/*L101*/
+    pub policy: BudgetPolicy,
+    /// 预算让步计数（连续让步，成功/受阻即清零）。
+    pub budget_yield_count: u64,
+    /// 过期重算计数（与让步分离，独立上限由调用方约束）。
+    pub stale_recompute_count: u64,
+    /// 配额让步计数（全局每 tick 配额耗尽导致的让步；X2 审计修复：与
+    /// budget_yield_count 分离——债务 #27 "让步≥8"切换判据只认请求自身预算
+    /// 让步，配额让步混入会污染判据，MiMo/GPT-6/Gemini 审计命中）。
+    pub quota_yield_count: u64,
+}
+/*L111*/
+
+impl PathFinder {
+    pub fn new(policy: BudgetPolicy) -> Self {
+        PathFinder { policy, ..Default::default() }
+    }
+
+    /// 发起一次寻路请求（单 tick 原子；机制 B 预算 B_k）。
+    pub fn request(&mut self, net: &Network, coords: &[(i64, i64)], start: u64, goal: u64) -> FindOutcome {
+        let budget = self.policy.budget_for_yield(self.budget_yield_count, net.node_count());
+        let out = find_once(net, coords, start, goal, budget);
+/*L121*/
+        match &out {
+            FindOutcome::Complete { .. } | FindOutcome::Unreachable { .. } => {
+                self.budget_yield_count = 0;
+            }
+            FindOutcome::Yielded { .. } => {
+                self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+            }
+        }
+        out
+    }
+/*L131*/
+
+    /// 全局每 tick 配额下的寻路请求（债务 #29 定案，ADR-NEW-24 决策 3 补充）。
+    ///
+    /// B_k ≤ min(b·2^k, L, budget.remaining)；实耗展开数扣减 `budget.remaining`；
+    /// 配额耗尽即让步（`Yielded { expanded: 0 }`，不消耗预算）。
+    /// 多请求处理顺序（请求 ID 稳定序）与每 tick `TickBudget::reset()` 由调用方负责。
+    pub fn request_with_budget(
+        &mut self,
+        net: &Network,
+        coords: &[(i64, i64)],
+/*L141*/
+        start: u64,
+        goal: u64,
+        budget: &mut TickBudget,
+    ) -> FindOutcome {
+        if budget.remaining == 0 {
+            self.quota_yield_count = self.quota_yield_count.saturating_add(1);
+            return FindOutcome::Yielded { expanded: 0 };
+        }
+        // 决策5 整改（预算截断归因，Gemini/Claude）：b_k 被 remaining 截断且本次
+        // 未能完成时属"配额让步"（quota_yield_count），不污染 #27"让步≥8 切换"
+/*L151*/
+        // 判据所用的 budget_yield_count（请求自身预算让步）。
+        let needs = self.policy.budget_for_yield(self.budget_yield_count, net.node_count());
+        let b_k = needs.min(budget.remaining);
+        let truncated = b_k < needs;
+        let out = find_once(net, coords, start, goal, b_k);
+        // 不可达同样携带 expanded 并扣减全局配额（X2 审计修复）。
+        budget.remaining = budget.remaining.saturating_sub(out.expanded());
+        match &out {
+            FindOutcome::Complete { .. } | FindOutcome::Unreachable { .. } => {
+                self.budget_yield_count = 0;
+/*L161*/
+            }
+            FindOutcome::Yielded { .. } => {
+                if truncated {
+                    self.quota_yield_count = self.quota_yield_count.saturating_add(1);
+                } else {
+                    self.budget_yield_count = self.budget_yield_count.saturating_add(1);
+                }
+            }
+        }
+        out
+/*L171*/
+    }
+
+    /// 过期重算记账（与让步计数分离；ADR-NEW-20 双计数器）。
+    pub fn note_stale_recompute(&mut self) {
+        self.stale_recompute_count = self.stale_recompute_count.saturating_add(1);
+    }
+}
+
+/// 全局每 tick 寻路配额 Q 的单一来源常量（X5 审计整改：消除多处字面量
+/// 状态互斥）。数值=65536，**已定案**（2026-11-19 决策3 投票 1a，9:1 通过；
+/*L181*/
+/// 含义=对实测 worst 398@40k 留余量的保险丝，非"100× 余量"）。
+pub const TICK_QUOTA: u64 = 65_536;
+
+/// 全局每 tick 寻路配额（债务 #29 定案）。
+///
+/// `remaining` = 本 tick 尚可消耗的节点展开数（确定性工作量单位，对齐 ADR-NEW-14 条 3）；
+/// 每 tick 由调用方在 tick 边界 `reset()` 归满（每 tick 预算独立）。
+/// 多请求共享：请求实耗扣减，耗尽后其余请求让步——全局每 tick 总展开 ≤ `quota`。
+#[derive(Clone, Debug)]
+pub struct TickBudget {
+/*L191*/
+    pub quota: u64,
+    pub remaining: u64,
+}
+
+impl TickBudget {
+    pub fn new(quota: u64) -> Self {
+        TickBudget { quota, remaining: quota }
+    }
+
+    /// tick 边界重置。
+/*L201*/
+    pub fn reset(&mut self) {
+        self.remaining = self.quota;
+    }
+}
+
+// ---------------- 确定性 A*（ADR-NEW-24 决策 2） ----------------
+
+fn h_manhattan(coords: &[(i64, i64)], node: u64, goal: u64) -> i64 {
+    let (x1, y1) = coords.get(node as usize).copied().unwrap_or((0, 0));
+
+===== 原段落: PASTE-04 | 第 4 段 · 范围 A · 节选（第 2/4 部分） =====
+    let (x2, y2) = coords.get(goal as usize).copied().unwrap_or((0, 0));
+/*L211*/
+    // 溢出契约（ADR-NEW-21 决策 3）：禁止静默环绕，i128 中间值 + 饱和收敛到 i64。
+    let dx = (x1 as i128 - x2 as i128).abs();
+    let dy = (y1 as i128 - y2 as i128).abs();
+    (dx + dy).min(i64::MAX as i128) as i64
+}
+
+/// 单 tick 原子搜索：展开节点数不超过 node_budget；确定性五条内联。
+///
+/// 前提（ADR-NEW-24）：边代价下限 ≥ 边几何曼哈顿长度，h 可采纳。
+pub fn find_once(
+/*L221*/
+    net: &Network,
+    coords: &[(i64, i64)],
+    start: u64,
+    goal: u64,
+    node_budget: u64,
+) -> FindOutcome {
+    if start == goal {
+        return FindOutcome::Complete { path: Vec::new(), cost: 0, expanded: 0 };
+    }
+    // open 集：BTreeMap<(f, h, node_id), ()> 升序弹出 = 排序键全序（决策 2 第 2 条）
+/*L231*/
+    let h0 = h_manhattan(coords, start, goal);
+    let mut open: BTreeMap<(i64, i64, u64), ()> = BTreeMap::new();
+    open.insert((h0, h0, start), ());
+    let mut g: BTreeMap<u64, i64> = BTreeMap::new();
+    g.insert(start, 0);
+    // parent 记录 (父节点, 松弛时实际使用的边 ID)：平行同向边存在时路径边集与代价严格一致。
+    let mut parent: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
+    let mut closed: BTreeSet<u64> = BTreeSet::new();
+    let mut expanded = 0u64;
+
+/*L241*/
+    while let Some(((_f, _h, node), ())) = open.pop_first() {
+        if node == goal {
+            // 回溯路径（使用松弛时记录的边 ID）
+            let mut path = Vec::new();
+            let mut cur = goal;
+            while let Some(&(p, eid)) = parent.get(&cur) {
+                path.push(eid);
+                cur = p;
+            }
+            path.reverse();
+/*L251*/
+            return FindOutcome::Complete { path, cost: g[&goal], expanded };
+        }
+        if expanded >= node_budget {
+            // 预算耗尽：让步（不保存中间状态，方案③）
+            return FindOutcome::Yielded { expanded };
+        }
+        if !closed.insert(node) {
+            continue; // 已闭合且未被更优 g reopen
+        }
+        expanded += 1;
+/*L261*/
+        let g_cur = g[&node];
+        // 邻居展开序 = CSR 数组序（决策 2 第 3 条）
+        for (eid, to, cost) in net.neighbors(node) {
+            // 溢出契约（ADR-NEW-21 决策 3）：饱和运算，禁止静默环绕。
+            let new_g = g_cur.saturating_add(cost);
+            let known = g.get(&to).copied();
+            if known.is_some_and(|k| new_g >= k) {
+                continue; // 仅严格更小才松弛/reopen（决策 2 第 4 条）
+            }
+            g.insert(to, new_g);
+/*L271*/
+            parent.insert(to, (node, eid));
+            closed.remove(&to); // 允许 reopen
+            let hh = h_manhattan(coords, to, goal);
+            let ff = new_g.saturating_add(hh);
+            open.insert((ff, hh, to), ());
+        }
+    }
+    FindOutcome::Unreachable { expanded }
+}
+
+/*L281*/
+// ---------------- 测试 ----------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim_network::Edge;
+    use sim_network::{Op, Tx};
+
+    fn grid(w: u64, h: u64) -> (Network, Vec<(i64, i64)>) {
+        // w×h 网格（mm 单位 1000/格），边代价=曼哈顿长度（满足可采纳前提）
+/*L291*/
+        let mut net = Network::new();
+        let mut coords = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                coords.push((x as i64 * 1000, y as i64 * 1000));
+            }
+        }
+        let mut tid = 1u64;
+        let mut eid = 1u64;
+        let node = |x: u64, y: u64| y * w + x;
+/*L301*/
+        for y in 0..h {
+            for x in 0..w {
+                if x + 1 < w {
+                    net.publish(Tx {
+                        id: tid,
+                        ops: vec![Op::AddEdge(sim_network::Edge {
+                            id: eid,
+                            a: node(x, y),
+                            b: node(x + 1, y),
+                            cost: 1000,
+/*L311*/
+                            geom: vec![(x as i64 * 1000, y as i64 * 1000), ((x + 1) as i64 * 1000, y as i64 * 1000)],
+                        })],
+                    })
+                    .unwrap();
+                    tid += 1;
+                    eid += 1;
+                }
+                if y + 1 < h {
+                    net.publish(Tx {
+                        id: tid,
+/*L321*/
+                        ops: vec![Op::AddEdge(sim_network::Edge {
+                            id: eid,
+                            a: node(x, y),
+                            b: node(x, y + 1),
+                            cost: 1000,
+                            geom: vec![(x as i64 * 1000, y as i64 * 1000), (x as i64 * 1000, (y + 1) as i64 * 1000)],
+                        })],
+                    })
+                    .unwrap();
+                    tid += 1;
+/*L331*/
+                    eid += 1;
+                }
+            }
+        }
+        (net, coords)
+    }
+
+    /// 参考实现：Dijkstra（仅测试用，验证最优性对拍）。
+    fn dijkstra(net: &Network, start: u64, goal: u64) -> Option<i64> {
+        let mut dist: BTreeMap<u64, i64> = BTreeMap::new();
+/*L341*/
+        dist.insert(start, 0);
+        let mut done: BTreeSet<u64> = BTreeSet::new();
+        loop {
+            let next = dist
+                .iter()
+                .filter(|(n, _)| !done.contains(n))
+                .min_by_key(|(n, d)| (**d, **n))
+                .map(|(n, d)| (*n, *d));
+            let (u, du) = next?;
+            if u == goal {
+/*L351*/
+                return Some(du);
+            }
+            done.insert(u);
+            for (_, to, cost) in net.neighbors(u) {
+                let nd = du.saturating_add(cost);
+                if dist.get(&to).is_none_or(|&d| nd < d) {
+                    dist.insert(to, nd);
+                }
+            }
+        }
+/*L361*/
+    }
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(authoritative());
+        assert!(!LAYER.is_empty());
+    }
+
+    /// 最优性对拍（ADR-NEW-24 退出判据）：A* 代价 == Dijkstra 代价。
+    #[test]
+/*L371*/
+    fn astar_matches_dijkstra() {
+        let (net, coords) = grid(5, 5);
+        for goal in [4u64, 12, 20, 24] {
+            let out = find_once(&net, &coords, 0, goal, 10_000);
+            let FindOutcome::Complete { cost, .. } = out else { panic!("must complete") };
+            assert_eq!(Some(cost), dijkstra(&net, 0, goal), "goal={goal}");
+        }
+    }
+
+    /// 唯一性（ADR-NEW-24 退出判据）：同输入重复运行路径逐边一致。
+/*L381*/
+    #[test]
+    fn astar_is_unique() {
+        let (net, coords) = grid(6, 6);
+        let a = find_once(&net, &coords, 0, 35, 10_000);
+        let b = find_once(&net, &coords, 0, 35, 10_000);
+        assert_eq!(a, b);
+    }
+
+    /// 平局打破确定性（决策 2 第 2 条）：两条等价路径按 (f,h,node_id) 选 node_id 小者。
+    /// 2×2 网格：0->1->3 与 0->2->3 等价，node 1 < node 2 ⇒ 走 0->1->3。
+/*L391*/
+    #[test]
+    fn tie_break_is_deterministic() {
+        let (net, coords) = grid(2, 2);
+        let FindOutcome::Complete { path, .. } = find_once(&net, &coords, 0, 3, 100) else {
+            panic!("must complete")
+        };
+        // 边 ID：0->1 是水平第一条（id=1），1->3 是纵向（id=3）
+        assert_eq!(path, vec![1, 3], "平局必须走 node_id 较小的分支");
+    }
+
+/*L401*/
+    /// 机制 B 解析上界（ADR-NEW-20 三硬约束）：让步次数 ≤ ⌈log2(|V|/b)⌉+1 且必达终态。
+    #[test]
+    fn budget_yield_respects_analytic_bound() {
+        let (net, coords) = grid(4, 4); // |V|=16
+        let policy = BudgetPolicy { b: 1, g: 2 };
+
+===== 原段落: PASTE-05 | 第 5 段 · 范围 A · 节选（第 3/4 部分） =====
+        let bound = policy.max_ticks_to_terminal(net.node_count());
+        let mut pf = PathFinder::new(policy);
+        let mut ticks = 0u64;
+        loop {
+            ticks += 1;
+/*L411*/
+            match pf.request(&net, &coords, 0, 15) {
+                FindOutcome::Complete { .. } => break,
+                FindOutcome::Yielded { .. } => {
+                    assert!(ticks <= bound, "超解析上界: ticks={ticks} bound={bound}");
+                    continue;
+                }
+                FindOutcome::Unreachable { .. } => panic!("网格必连通"),
+            }
+        }
+        assert!(ticks <= bound, "终态 tick 数必须 ≤ 解析上界");
+/*L421*/
+        assert_eq!(pf.budget_yield_count, 0, "成功后让步计数清零");
+        // B_k 递增性质
+        assert_eq!(policy.budget_for_yield(0, 16), 1);
+        assert_eq!(policy.budget_for_yield(1, 16), 2);
+        assert_eq!(policy.budget_for_yield(4, 16), 16, "封顶 L=|V|");
+    }
+
+    /// 受阻终态：不可达必须返回 Unreachable（有限步终止，不得死循环）。
+    #[test]
+    fn unreachable_terminates_as_blocked() {
+/*L431*/
+        let (mut net, coords) = grid(2, 2);
+        // 删掉所有边 → 孤立
+        for id in [1u64, 2, 3, 4] {
+            net.publish(Tx { id: 100 + id, ops: vec![Op::RemoveEdge { id }] }).unwrap();
+        }
+        let out = find_once(&net, &coords, 0, 3, 100);
+        assert!(matches!(out, FindOutcome::Unreachable { expanded } if expanded > 0), "不可达须携带展开数");
+    }
+
+    /// 双计数器分离（ADR-NEW-20）：让步与过期重算互不影响。
+/*L441*/
+    #[test]
+    fn counters_are_separate() {
+        let mut pf = PathFinder::new(BudgetPolicy { b: 1, g: 2 });
+        pf.budget_yield_count = 5;
+        pf.note_stale_recompute();
+        pf.note_stale_recompute();
+        assert_eq!(pf.budget_yield_count, 5, "过期重算不得动让步计数");
+        assert_eq!(pf.stale_recompute_count, 2);
+    }
+
+/*L451*/
+    /// 平行同向边：路径边集必须是松弛实际使用的边（QWEN4-MAX 第二轮评审缺陷回归）。
+    /// 回溯按 min edge id 会在平行边不同代价时返回与报告 cost 不符的边集。
+    #[test]
+    fn parallel_edge_reconstruction_is_exact() {
+        let net = Network::from_edges(vec![
+            Edge { id: 1, a: 0, b: 1, cost: 10, geom: vec![(0, 0), (0, 0)] }, // 平行边（较贵，id 小）
+            Edge { id: 2, a: 0, b: 1, cost: 3, geom: vec![(0, 0), (0, 0)] },  // 平行边（较便宜）
+            Edge { id: 3, a: 1, b: 2, cost: 5, geom: vec![(0, 0), (0, 0)] },
+        ]);
+        let coords = vec![(0i64, 0i64); 3];
+/*L461*/
+        let FindOutcome::Complete { path, cost, .. } =
+            find_once(&net, &coords, 0, 2, 100)
+        else {
+            panic!("must complete")
+        };
+        assert_eq!(cost, 8, "最优代价=3+5");
+        assert_eq!(path, vec![2, 3], "必须选便宜的平行边 id=2，而非 min id=1");
+        // 边集代价之和 == 报告 cost（stale 窄判依赖边集正确性）
+        let sum: i64 = path
+            .iter()
+/*L471*/
+            .map(|&eid| net.edge(eid).expect("边存在").cost)
+            .sum();
+        assert_eq!(sum, cost, "返回边集的代价和必须等于报告 cost");
+    }
+
+    /// 溢出契约（ADR-NEW-21 决策 3）：饱和运算，禁止静默环绕；超大坐标/代价下确定性。
+    #[test]
+    fn overflow_saturates_deterministically() {
+        let net = Network::from_edges(vec![Edge {
+            id: 1,
+/*L481*/
+            a: 0,
+            b: 1,
+            cost: i64::MAX,
+            geom: vec![(0, 0), (0, 0)],
+        }]);
+        let coords = vec![(i64::MIN, i64::MIN), (i64::MAX, i64::MAX)];
+        // h 不得环绕为负/恐慌：饱和到 i64::MAX
+        assert_eq!(h_manhattan(&coords, 0, 1), i64::MAX);
+        let a = find_once(&net, &coords, 0, 1, 100);
+        let b = find_once(&net, &coords, 0, 1, 100);
+/*L491*/
+        assert_eq!(a, b, "溢出路径下两次运行必须逐边一致");
+        let FindOutcome::Complete { cost, path, .. } = a else { panic!("must complete") };
+        assert!(cost >= 0, "饱和运算不得环绕为负");
+        assert_eq!(path, vec![1]);
+    }
+
+    /// 债务 #29：全局配额截断——多请求共享 TickBudget，总展开 ≤ Q；耗尽后让步；reset 后恢复。
+    #[test]
+    fn global_budget_caps_total_expansions_per_tick() {
+        let (net, coords) = grid(10, 10);
+/*L501*/
+        let mut finder = PathFinder::new(BudgetPolicy::default());
+        let mut budget = TickBudget::new(64);
+        let mut total: u64 = 0;
+        let mut completes = 0u32;
+        let mut zero_yield = 0u32;
+        for _ in 0..10 {
+            let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+            match &out {
+                FindOutcome::Complete { expanded, .. } => {
+                    total += expanded;
+/*L511*/
+                    completes += 1;
+                }
+                FindOutcome::Yielded { expanded } => {
+                    total += expanded;
+                    if *expanded == 0 {
+                        zero_yield += 1;
+                    }
+                }
+                FindOutcome::Unreachable { .. } => panic!("10x10 网格角到角必须可达"),
+            }
+/*L521*/
+        }
+        assert!(total <= 64, "全局每 tick 总展开必须 ≤ Q，实测 {total}");
+        assert!(completes >= 1, "配额内应有请求完成");
+        assert!(zero_yield >= 1, "配额耗尽后请求必须以 expanded:0 让步");
+        assert_eq!(budget.remaining, 0, "配额应恰好耗尽");
+        // 下一 tick 重置后可以重新工作
+        budget.reset();
+        let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+        assert!(matches!(out, FindOutcome::Complete { .. }), "reset 后应完成");
+    }
+/*L531*/
+
+    /// 机制 B 推进：让步后下一 tick 以更大 B_k 重试，有限 tick 内完成（债务 #23/#29 交叉）。
+    #[test]
+    fn yield_then_fresh_budget_completes() {
+        let (net, coords) = grid(10, 10);
+        let mut finder = PathFinder::new(BudgetPolicy { b: 1, g: 2 });
+        let mut budget = TickBudget::new(1024);
+        let mut ticks = 0u64;
+        loop {
+            ticks += 1;
+/*L541*/
+            budget.reset(); // 每 tick 预算独立
+            let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+            match out {
+                FindOutcome::Complete { .. } => break,
+                FindOutcome::Yielded { .. } => assert!(ticks <= 16, "让步必须在有限 tick 内终止"),
+                FindOutcome::Unreachable { .. } => panic!("必须可达"),
+            }
+        }
+        assert_eq!(finder.budget_yield_count, 0, "完成后让步计数清零");
+    }
+/*L551*/
+
+    /// X2 审计修复回归：不可达搜索实耗必须扣减全局配额（否则同 tick 多不可达
+    /// 请求可绕过 Q，违反 ADR-NEW-14 条 3）。
+    #[test]
+    fn unreachable_expansion_is_charged_to_budget() {
+        let (net, coords) = grid(3, 3);
+        let mut finder = PathFinder::new(BudgetPolicy { b: 64, g: 2 });
+        let mut budget = TickBudget::new(64);
+        // 9 号节点在 3x3 网格中不存在——用孤立图改测不可达更稳：从网格取一节点
+        // 去边不可行（grid 不暴露），改用目标=孤立构造。
+/*L561*/
+        let isolated = Network::from_edges(vec![]);
+        let ic: Vec<(i64, i64)> = vec![(0, 0), (1000, 0)];
+        let out = finder.request_with_budget(&isolated, &ic, 0, 1, &mut budget);
+        assert!(
+            matches!(out, FindOutcome::Unreachable { expanded } if expanded == 1),
+            "孤立图：展开起点 1 个节点后 open 耗尽"
+        );
+        assert_eq!(budget.remaining, 63, "不可达实耗 1 展开必须入账");
+        // 可达路径对照：同一 budget 继续扣减
+        let _ = finder.request_with_budget(&net, &coords, 0, 8, &mut budget);
+/*L571*/
+        assert!(budget.remaining < 63, "后续请求继续扣减");
+    }
+
+    /// X2 审计修复回归：配额耗尽让步计入 quota_yield_count，不污染
+
+===== 原段落: PASTE-06 | 第 6 段 · 范围 A · 节选（第 4/4 部分） =====
+    /// budget_yield_count（债务 #27 "让步≥8"切换判据只认请求自身预算让步）。
+    #[test]
+    fn quota_yield_does_not_pollute_switch_criterion() {
+        let (net, coords) = grid(10, 10);
+        let mut finder = PathFinder::new(BudgetPolicy { b: 64, g: 2 });
+        let mut budget = TickBudget::new(0); // 配额为 0：首请求即配额让步
+/*L581*/
+        let out = finder.request_with_budget(&net, &coords, 0, 99, &mut budget);
+        assert!(matches!(out, FindOutcome::Yielded { expanded: 0 }), "配额耗尽即让步");
+        assert_eq!(finder.quota_yield_count, 1, "配额让步单独计数");
+        assert_eq!(finder.budget_yield_count, 0, "配额让步不得污染预算让步判据");
+        // 对照：请求自身预算让步（b_k==needs 未截断）仍走 budget_yield_count。
+        let mut small = PathFinder::new(BudgetPolicy { b: 1, g: 2 });
+        let mut b2 = TickBudget::new(8);
+        let _ = small.request_with_budget(&net, &coords, 0, 99, &mut b2);
+        assert_eq!(small.budget_yield_count, 1, "自身预算让步单独计数");
+        assert_eq!(small.quota_yield_count, 0, "未截断让步不计入配额让步");
+/*L591*/
+        // 决策5 截断归因回归：0<remaining<B_k 的截断让步归 quota_yield_count。
+        let mut b3 = TickBudget::new(1); // needs=2（第 2 档）被截为 1
+        let _ = small.request_with_budget(&net, &coords, 0, 99, &mut b3);
+        assert_eq!(small.quota_yield_count, 1, "截断让步计入配额让步");
+        assert_eq!(small.budget_yield_count, 1, "截断让步不得污染预算让步判据");
+    }
+}
+
+===== 原段落: PASTE-07 | 第 7 段 · 范围 A · 节选（第 1/3 部分） =====
+// FILE: crates/sim-core/src/budget.rs @1db87d2
+/*L1*/
+//! 预算注册表与确定性降级（ADR-NEW-14 C2 细化，Stage 2C C3a）。
+//!
+//! - 契约即代码：每系统在注册表声明计量单位/每 tick 上限/超限行为。
+//! - 降级触发只依赖确定性工作量单位（预算消耗比例），禁止墙钟/负载/帧率。
+//! - 降级等级与滚动预算是权威状态：入存档、入 GlobalDigest（G3 口径）。
+
+use sim_codec::CanonicalWriter;
+use sim_error::{ErrorCode, ErrorClass, SimError, SimErrorContext};
+
+/// 计量单位（确定性工作量单位，ADR-NEW-14）。
+/*L11*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkUnit {
+    /// A* 节点展开数（sim-pathfinding）。
+    NodeExpansions,
+    /// 事务应用数（sim-network）。
+    TxApplies,
+    /// 本 tick 更新实体数（sim-traffic 等）。
+    EntityUpdates,
+    /// 摘要/存档条目数（sim-save）。
+    DigestEntries,
+/*L21*/
+}
+
+/// 超限行为。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowBehavior {
+    /// 让步到下 tick 续算（寻路）。
+    YieldToNextTick,
+    /// 排队到下 tick（事务）。
+    QueueToNextTick,
+    /// 分片让步（实体更新）。
+/*L31*/
+    ShardYield,
+    /// Fatal：存档不可信（SAV-0003）。
+    FatalSaveCorrupt,
+}
+
+/// 单个系统的预算声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BudgetDecl {
+    pub system_id: u32,
+    pub unit: WorkUnit,
+/*L41*/
+    pub per_tick_cap: u64,
+    pub overflow: OverflowBehavior,
+}
+
+/// 降级等级（EC-04 L1/L2/L3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DegradationLevel {
+    Normal,
+    L1,
+    L2,
+/*L51*/
+    L3,
+}
+
+/// 降级阈值（候选占位：70/90/100 万分比 + 恢复 5000bp；ADR-NEW-14 C2 待负责人确认）。
+/// 2026-11-19 投票修复（Claude）：触发/恢复加连续 tick 要求，防单 tick 突发误触发/误恢复。
+#[derive(Debug, Clone, Copy)]
+pub struct DegradationThresholds {
+    /// 预算消耗比例 ≥ 此值触发（万分比：7000=70%）。触发比较为闭区间（>=）。
+    pub l1_bp: u32,
+    pub l2_bp: u32,
+/*L61*/
+    pub l3_bp: u32,
+    /// 恢复迟滞（万分比：5000=50%）。恢复比较为开区间（<）。
+    pub recover_bp: u32,
+    /// 进入降级所需连续超阈 tick 数（候选占位=2；单 tick 突发不触发）。
+    pub trigger_ticks: u32,
+    /// 恢复 Normal 所需连续低于 recover_bp 的 tick 数（候选占位=2）。
+    pub recover_ticks: u32,
+}
+
+impl Default for DegradationThresholds {
+/*L71*/
+    fn default() -> Self {
+        Self {
+            l1_bp: 7000,
+            l2_bp: 9000,
+            l3_bp: 10000,
+            recover_bp: 5000,
+            trigger_ticks: 2,
+            recover_ticks: 2,
+        }
+    }
+/*L81*/
+}
+
+/// 预算注册表 + 降级状态机。全部状态确定性、可入档。
+#[derive(Debug, Clone)]
+pub struct BudgetRegistry {
+    decls: Vec<BudgetDecl>,
+    /// 本 tick 各系统实耗（索引与 decls 对齐）。
+    spent: Vec<u64>,
+    /// 本 tick 各系统预算占比的最大值（万分比）。2026-11-19 投票修复（MiniMax/GPT-6）：
+    /// 聚合口径=逐系统比例取最严（旧口径按 cap 加权总和，单系统饱和会被空闲系统稀释）。
+/*L91*/
+    rolling_used_bp: u32,
+    /// 连续超阈 tick 计数（触发门）。
+    over_streak: u32,
+    /// 连续低于恢复线 tick 计数（恢复门）。
+    under_streak: u32,
+    /// 本 tick 外部需求压力（万分比，0..=10000；MFD→降级信号通道，ADR-NEW-26 草案）。
+    demand_bp: u32,
+    /// 本 tick 需求压力的归档口径（X5 审计修复：demand_bp 在 end_tick 清零，
+    /// 直接入档恒 0——last_demand_bp 跨 end_tick 保留供 encode_state 归档）。
+    last_demand_bp: u32,
+/*L101*/
+    /// 连续高需求 tick 计数（与 over_streak 同门限语义）。
+    demand_streak: u32,
+    /// 需求通道冻结开关（**默认冻结**——决策6 Z2 代码护栏 2026-11-22：MFD→降级
+    /// 用途冻结不只停在 ADR 文案；冻结时 note_demand_pressure 为 no-op，解冻须显式
+    /// unfreeze_demand_channel()（ADR-NEW-26 解冻裁决时启用）。冻结状态属配置不入档）。
+    demand_channel_frozen: bool,
+    pub level: DegradationLevel,
+    thresholds: DegradationThresholds,
+}
+
+/*L111*/
+impl BudgetRegistry {
+    pub fn new(decls: Vec<BudgetDecl>, thresholds: DegradationThresholds) -> Self {
+        let spent = vec![0; decls.len()];
+        Self {
+            decls,
+            spent,
+            rolling_used_bp: 0,
+            over_streak: 0,
+            under_streak: 0,
+            demand_bp: 0,
+/*L121*/
+            last_demand_bp: 0,
+            demand_streak: 0,
+            demand_channel_frozen: true,
+            level: DegradationLevel::Normal,
+            thresholds,
+        }
+    }
+
+    pub fn decls(&self) -> &[BudgetDecl] {
+        &self.decls
+/*L131*/
+    }
+
+    pub fn level(&self) -> DegradationLevel {
+        self.level
+    }
+
+    /// 记录实耗；返回是否超该系统每 tick 上限。
+    pub fn spend(&mut self, system_id: u32, amount: u64) -> bool {
+        let idx = self
+            .decls
+/*L141*/
+            .iter()
+            .position(|d| d.system_id == system_id)
+            .expect("undeclared system");
+        self.spent[idx] = self.spent[idx].saturating_add(amount);
+        self.spent[idx] > self.decls[idx].per_tick_cap
+    }
+
+    /// 记录本 tick 外部需求压力（万分比；确定性定点，来自权威状态导出——
+    /// 如 sim-traffic 密度/k_c 比值。ADR-NEW-26 草案通道；每 tick 末清零）。
+    /// **通道默认冻结**（决策6 Z2 护栏）：冻结期间本方法为 no-op，须显式
+/*L151*/
+    /// unfreeze_demand_channel() 后才生效——防误接权威降级路径。
+    pub fn note_demand_pressure(&mut self, pressure_bp: u32) {
+        if self.demand_channel_frozen {
+            return;
+        }
+        self.demand_bp = pressure_bp.min(10_000);
+        self.last_demand_bp = self.demand_bp;
+    }
+
+    /// 解冻需求通道（ADR-NEW-26 解冻裁决通过后由生产代码显式调用）。
+/*L161*/
+    pub fn unfreeze_demand_channel(&mut self) {
+        self.demand_channel_frozen = false;
+    }
+
+    /// 需求通道是否处于冻结状态（默认 true）。
+    pub fn demand_channel_frozen(&self) -> bool {
+        self.demand_channel_frozen
+    }
+
+    /// tick 边界：按确定性工作量单位更新降级等级，重置每 tick 计量。
+/*L171*/
+    /// 返回新等级。触发/恢复只依赖 spent/cap 比例（工作量单位），无墙钟。
+    ///
+    /// 2026-11-19 投票修复：
+    /// - 聚合口径=逐系统比例取最严（max_i spent_i/cap_i），单系统饱和不被稀释；
+    /// - 触发（Normal→降级）需连续 trigger_ticks 个超阈 tick（触发比较闭区间 >=）；
+    /// - 恢复（→Normal）需连续 recover_ticks 个低于 recover_bp 的 tick（开区间 <）；
+    /// - 升级（L1→L2→L3）保持即时（安全方向不加延迟）。
+    pub fn end_tick(&mut self) -> DegradationLevel {
+        let used_bp: u32 = self
+            .decls
+/*L181*/
+            .iter()
+            .zip(self.spent.iter())
+            .map(|(d, s)| {
+                if d.per_tick_cap == 0 {
+                    if *s > 0 { 10_000u32 } else { 0 }
+                } else {
+                    ((*s as u128).saturating_mul(10_000) / d.per_tick_cap as u128).min(10_000) as u32
+                }
+            })
+            .max()
+/*L191*/
+            .unwrap_or(0);
+        self.rolling_used_bp = used_bp;
+        let t = self.thresholds;
+        // 触发/恢复连续计数（确定性派生状态）：有效压力 = max(工作量占比, 外部需求压力)。
+        // 需求压力参与触发/恢复门，但单独触发时降级封顶 L1（模型形式未裁决=债务 #31，
+        // 限制影响面；工作量压力仍可推 L2/L3）。
+        let effective_bp = used_bp.max(self.demand_bp);
+        if effective_bp >= t.l1_bp {
+            self.over_streak = self.over_streak.saturating_add(1);
+            self.demand_streak = if self.demand_bp >= t.l1_bp {
+/*L201*/
+                self.demand_streak.saturating_add(1)
+            } else {
+                0
+            };
+        } else {
+            self.over_streak = 0;
+            self.demand_streak = 0;
+        }
+        if effective_bp < t.recover_bp {
+            self.under_streak = self.under_streak.saturating_add(1);
+/*L211*/
+        } else {
+            self.under_streak = 0;
+        }
+        let triggered = self.over_streak >= t.trigger_ticks;
+        let demand_only_trigger = triggered
+            && used_bp < t.l1_bp
+            && self.demand_streak >= t.trigger_ticks;
+        let recovered = self.under_streak >= t.recover_ticks;
+        self.level = match self.level {
+            DegradationLevel::Normal => {
+/*L221*/
+
+===== 原段落: PASTE-08 | 第 8 段 · 范围 A · 节选（第 2/3 部分） =====
+                if !triggered {
+                    DegradationLevel::Normal
+                } else if demand_only_trigger {
+                    DegradationLevel::L1
+                } else if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if used_bp >= t.l2_bp {
+                    DegradationLevel::L2
+                } else {
+                    DegradationLevel::L1
+/*L231*/
+                }
+            }
+            DegradationLevel::L1 => {
+                if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if used_bp >= t.l2_bp {
+                    DegradationLevel::L2
+                } else if recovered {
+                    DegradationLevel::Normal
+                } else {
+/*L241*/
+                    DegradationLevel::L1
+                }
+            }
+            DegradationLevel::L2 => {
+                if used_bp >= t.l3_bp {
+                    DegradationLevel::L3
+                } else if recovered {
+                    DegradationLevel::Normal
+                } else {
+                    DegradationLevel::L2
+/*L251*/
+                }
+            }
+            DegradationLevel::L3 => {
+                if recovered {
+                    DegradationLevel::Normal
+                } else {
+                    DegradationLevel::L3
+                }
+            }
+        };
+/*L261*/
+        self.spent.iter_mut().for_each(|s| *s = 0);
+        self.demand_bp = 0;
+        self.level
+    }
+
+    /// 编码入档/入摘要（字段序即 canonical 序，G3 口径）。
+    pub fn encode_state(&self, w: &mut CanonicalWriter) {
+        w.u32(self.rolling_used_bp);
+        w.u32(self.over_streak);
+        w.u32(self.under_streak);
+/*L271*/
+        w.u32(self.last_demand_bp);
+        w.u32(self.demand_streak);
+        w.u8(match self.level {
+            DegradationLevel::Normal => 0,
+            DegradationLevel::L1 => 1,
+            DegradationLevel::L2 => 2,
+            DegradationLevel::L3 => 3,
+        });
+    }
+
+/*L281*/
+    /// 超限错误（供 FatalSaveCorrupt 类超限使用）。
+    /// system_id 经 ctx.system/调用方日志定位（message 为 &'static str 无法插值）。
+    pub fn overflow_error(&self, _system_id: u32, ctx: SimErrorContext) -> SimError {
+        SimError {
+            class: ErrorClass::Fatal,
+            code: ErrorCode { module: "SAV", number: 3 },
+            message: "digest entries exceeded per-tick cap; save untrustworthy",
+            context: ctx,
+        }
+    }
+/*L291*/
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decls() -> Vec<BudgetDecl> {
+        vec![
+            BudgetDecl {
+                system_id: 1,
+/*L301*/
+                unit: WorkUnit::NodeExpansions,
+                per_tick_cap: 100,
+                overflow: OverflowBehavior::YieldToNextTick,
+            },
+            BudgetDecl {
+                system_id: 2,
+                unit: WorkUnit::TxApplies,
+                per_tick_cap: 10,
+                overflow: OverflowBehavior::QueueToNextTick,
+            },
+/*L311*/
+        ]
+    }
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(crate::authoritative());
+    }
+
+    #[test]
+    fn spend_and_overflow_flag() {
+/*L321*/
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        assert!(!r.spend(1, 100));
+        assert!(r.spend(1, 1)); // 101 > 100
+        assert!(!r.spend(2, 10));
+        assert!(r.spend(2, 1));
+    }
+
+    #[test]
+    fn degradation_levels_follow_workload_only() {
+        // trigger_ticks=1：纯比例路径（旧口径测试迁移）
+/*L331*/
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        // 逐系统取最严：系统 1 消耗 77/100 → 7700bp ≥7000 → L1
+        r.spend(1, 77);
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        // 重置后无消耗 → 恢复 Normal（< 5000bp）
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+        // 系统 1 消耗 110 → 10000bp → L3
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+/*L341*/
+        // 迟滞：60/100=6000bp ≥5000 → 保持 L3
+        r.spend(1, 60);
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        // 30/100=3000bp < 5000 → 恢复
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+    }
+
+    #[test]
+    fn single_system_saturation_is_not_diluted() {
+/*L351*/
+        // 2026-11-19 投票修复（MiniMax/GPT-6）回归：旧 cap 加权口径下
+        // 系统 2（cap=10）打满只贡献 10/110≈9%→永不触发；新口径取最严必须触发。
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        r.spend(2, 10); // 系统 2 满负荷 10000bp，系统 1 空闲
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+    }
+
+    #[test]
+    fn threshold_boundaries_are_closed_open() {
+/*L361*/
+        // GPT-6 边界要求：恰 70/90/100 触发（闭区间 >=），恰 50 不恢复（开区间 <）。
+        let th = DegradationThresholds { trigger_ticks: 1, recover_ticks: 1, ..Default::default() };
+        let mut r = BudgetRegistry::new(decls(), th);
+        r.spend(1, 70); // 7000bp 恰= l1
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+        r.spend(1, 90); // 9000bp 恰= l2
+        assert_eq!(r.end_tick(), DegradationLevel::L2);
+        r.spend(1, 100); // 10000bp 恰= l3
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        r.spend(1, 50); // 5000bp 恰= recover → 不恢复（开区间）
+/*L371*/
+        assert_eq!(r.end_tick(), DegradationLevel::L3);
+        r.spend(1, 49); // 4900bp < 5000 → 恢复
+        assert_eq!(r.end_tick(), DegradationLevel::Normal);
+    }
+
+    #[test]
+    fn trigger_and_recover_need_consecutive_ticks() {
+        // Claude：单 tick 突发不触发/不恢复（默认 trigger_ticks=recover_ticks=2）。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.spend(1, 110);
+/*L381*/
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 个超阈 tick：不触发
+        r.spend(1, 110);
+        assert_eq!(r.end_tick(), DegradationLevel::L3); // 第 2 个：触发
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::L3); // 第 1 个低消耗 tick：不恢复
+        r.spend(1, 30);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 2 个：恢复
+    }
+
+    #[test]
+/*L391*/
+    fn state_encoding_is_deterministic() {
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.spend(1, 90);
+        r.end_tick();
+        let mut w1 = CanonicalWriter::new("sim-core", "BudgetState");
+        r.encode_state(&mut w1);
+        let mut w2 = CanonicalWriter::new("sim-core", "BudgetState");
+        r.encode_state(&mut w2);
+        assert_eq!(w1.into_bytes(), w2.into_bytes());
+    }
+/*L401*/
+
+    #[test]
+    fn unknown_system_spend_panics() {
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            r.spend(99, 1);
+        }));
+        assert!(result.is_err());
+    }
+
+/*L411*/
+    #[test]
+    fn demand_pressure_triggers_l1_only_with_hysteresis() {
+
+===== 原段落: PASTE-09 | 第 9 段 · 范围 A · 节选（第 3/3 部分） =====
+        // MFD→降级通道（ADR-NEW-26 草案）：需求压力参与触发/恢复门（effective=max），
+        // 单独触发封顶 L1；恢复需需求与工作量同时回落。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.unfreeze_demand_channel();
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 1 tick：触发门未到
+        r.note_demand_pressure(10_000);
+        assert_eq!(r.end_tick(), DegradationLevel::L1);
+/*L421*/
+        r.note_demand_pressure(0);
+        assert_eq!(r.end_tick(), DegradationLevel::L1); // 第 1 个低需求 tick：不恢复
+        r.note_demand_pressure(0);
+        assert_eq!(r.end_tick(), DegradationLevel::Normal); // 第 2 个：恢复
+    }
+
+    #[test]
+    fn demand_alone_cannot_reach_l2_l3() {
+        // 需求压力单独触发封顶 L1（债务 #31 未裁决前限制影响面）；
+        // 工作量压力仍可推 L2/L3。
+/*L431*/
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+        r.unfreeze_demand_channel();
+        for _ in 0..2 {
+            r.note_demand_pressure(10_000);
+            assert_ne!(r.end_tick(), DegradationLevel::L2);
+        }
+        assert_eq!(r.level(), DegradationLevel::L1);
+        for _ in 0..2 {
+            r.spend(1, 2000);
+            r.end_tick();
+/*L441*/
+        }
+        assert_eq!(r.level(), DegradationLevel::L3);
+    }
+
+    #[test]
+    fn demand_state_is_covered_by_encode() {
+        // 需求通道状态入档/入摘要（G3）：demand_bp 敏感。
+        let mk = |demand: u32| {
+            let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+            r.unfreeze_demand_channel();
+/*L451*/
+            r.note_demand_pressure(demand);
+            let mut w = CanonicalWriter::new("sim-core", "BudgetState");
+            r.encode_state(&mut w);
+            w.into_bytes()
+        };
+        assert_ne!(mk(0), mk(10_000), "demand_bp must be covered");
+    }
+
+    #[test]
+    fn demand_archival_survives_end_tick() {
+/*L461*/
+        // X5 审计修复：encode_state 归档 last_demand_bp（end_tick 清零 demand_bp
+        // 后仍可归档——旧口径入档恒 0）。
+        let decls = vec![BudgetDecl { system_id: 1, unit: WorkUnit::NodeExpansions, per_tick_cap: 1000, overflow: OverflowBehavior::YieldToNextTick }];
+        let mk = |demand: u32| {
+            let mut r = BudgetRegistry::new(decls.clone(), DegradationThresholds::default());
+            r.unfreeze_demand_channel();
+            r.note_demand_pressure(demand);
+            r.end_tick(); // 清零 demand_bp 后归档
+            let mut w = CanonicalWriter::new("sim-core", "Budget");
+            r.encode_state(&mut w);
+/*L471*/
+            w.into_bytes()
+        };
+        assert_ne!(mk(0), mk(10_000), "last_demand_bp must survive end_tick");
+    }
+
+    #[test]
+    fn demand_channel_frozen_by_default() {
+        // 决策6 Z2 护栏（2026-11-22）：通道默认冻结，note_demand_pressure 为
+        // no-op；解冻须显式 unfreeze_demand_channel()（ADR-NEW-26 解冻裁决时启用）。
+        let mut r = BudgetRegistry::new(decls(), DegradationThresholds::default());
+/*L481*/
+        assert!(r.demand_channel_frozen());
+        for _ in 0..4 {
+            r.note_demand_pressure(10_000);
+            assert_eq!(r.end_tick(), DegradationLevel::Normal, "frozen channel must not degrade");
+        }
+        r.unfreeze_demand_channel();
+        assert!(!r.demand_channel_frozen());
+        r.note_demand_pressure(10_000);
+        r.end_tick();
+        r.note_demand_pressure(10_000);
+/*L491*/
+        assert_eq!(r.end_tick(), DegradationLevel::L1, "unfrozen channel must work");
+    }
+}
+
+===== 原段落: PASTE-10 | 第 10 段 · 范围 C · 节选（第 1/6 部分） =====
+// FILE: crates/sim-traffic/src/lib.rs @1db87d2
+/*L1*/
+//! 交通系统：MFD 微观基准 + 区域聚合采样（ADR-NEW-25，Stage 2C C3b）。
+//!
+//! - 权威 crate。确定性：BTreeMap 队列、车辆按 ID 全序、event_u64 派生 OD、
+//!   u64 tick 计数，无时钟/无浮点/无 HashMap（2.9）。
+//! - MFD 三角基本图（候选）：微观基准采样 (k, q) → 定点拟合 v_free/k_c/q_max/w。
+//! - T-Bench-1（ADR-NEW-25 决策 4）：40×40 双向网格、密度阶梯注入、每档稳定
+//!   200 tick 后采样；本文件以缩小档位实现，example 输出完整档位。
+
+use sim_codec::CanonicalWriter;
+use sim_digest::GlobalDigest;
+/*L11*/
+use sim_rng::event_u64;
+
+pub const LAYER: &str = "交通系统";
+pub const AUTHORITATIVE: bool = true;
+
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+/// 车辆（确定性：ID 即全序）。
+/*L21*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Vehicle {
+    pub id: u64,
+    pub x: u32,
+    pub y: u32,
+    pub goal_x: u32,
+    pub goal_y: u32,
+    pub edge_traversals: u64,
+}
+
+/*L31*/
+impl Vehicle {
+    pub fn arrived(&self) -> bool {
+        self.x == self.goal_x && self.y == self.goal_y
+    }
+}
+
+/// 网格交通基准（T-Bench-1）：W×H 双向网格，每边每 tick 容量 cap 辆。
+#[derive(Debug, Clone)]
+pub struct GridTraffic {
+    pub w: u32,
+/*L41*/
+    pub h: u32,
+    pub cap_per_edge_per_tick: u64,
+    pub tick: u64,
+    /// 等待进入路网的注入队列（按 (注入 tick, id) 全序）。
+    pending: Vec<Vehicle>,
+    pub vehicles: Vec<Vehicle>,
+    next_id: u64,
+    /// 本 tick 完成的边遍历数（流量采样）。
+    pub flow_this_tick: u64,
+    /// 本 tick 参与移动的车辆数（step 中移除到达车**之前**的人口；k 采样口径，
+/*L51*/
+    /// 与 flow 同群体 → q≤k 恒成立——审计修复 2026-11-20：旧口径 flow 含到达车
+    /// 末步、active_count 不含，q>k 违规点伪造误差地板）。
+    pub last_step_population: u64,
+    seed: u64,
+}
+
+impl GridTraffic {
+    pub fn new(w: u32, h: u32, cap: u64, seed: u64) -> Self {
+        Self {
+            w,
+/*L61*/
+            h,
+            cap_per_edge_per_tick: cap,
+            tick: 0,
+            pending: Vec::new(),
+            vehicles: Vec::new(),
+            next_id: 0,
+            flow_this_tick: 0,
+            last_step_population: 0,
+            seed,
+        }
+/*L71*/
+    }
+
+    /// 注入 n 辆车（OD 由 event_u64 确定性派生；曼哈顿路径，先 x 后 y）。
+    pub fn inject(&mut self, n: u64) {
+        for _ in 0..n {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.inject_with_id(id);
+        }
+    }
+/*L81*/
+
+    /// 显式 ID 注入（2026-11-19 投票修复：注入顺序无关性）。
+    /// 契约：ID 由集中分配点按稳定键分配（ADR-NEW-20 口径）；OD 派生只依赖 ID，
+    /// pending 入档/进网均按 id 稳定序 → 注入的物理顺序不影响任何权威状态。
+    /// 调用方负责 ID 唯一性（重复 ID 会产生两辆车，属调用方契约违例）。
+    pub fn inject_with_id(&mut self, id: u64) {
+        let sx = (event_u64(self.seed, "traffic.od", id, 0) % self.w as u64) as u32;
+        let sy = (event_u64(self.seed, "traffic.od", id, 1) % self.h as u64) as u32;
+        let gx = (event_u64(self.seed, "traffic.od", id, 2) % self.w as u64) as u32;
+        let gy = (event_u64(self.seed, "traffic.od", id, 3) % self.h as u64) as u32;
+/*L91*/
+        self.pending.push(Vehicle {
+            id,
+            x: sx,
+            y: sy,
+            goal_x: gx,
+            goal_y: gy,
+            edge_traversals: 0,
+        });
+    }
+
+/*L101*/
+    /// 推进一个 tick：注入进网、车辆沿曼哈顿路径前进一步（容量让行）。
+    /// 全序：车辆按 id 升序处理；同位置同 tick 内先到先行（id 序）。
+    pub fn step(&mut self) {
+        self.tick += 1;
+        self.flow_this_tick = 0;
+        // 注入进网（pending 已按 id 序）
+        let entering: Vec<Vehicle> = std::mem::take(&mut self.pending);
+        for v in entering {
+            self.vehicles.push(v);
+        }
+/*L111*/
+        self.vehicles.sort_by_key(|v| v.id);
+        // 容量记账：每个目标格每 tick 只放行 cap 辆（cap=1 时即逐格排队）
+        let mut admitted_at: std::collections::BTreeMap<(u32, u32), u64> =
+            std::collections::BTreeMap::new();
+        for v in self.vehicles.iter_mut() {
+            if v.arrived() {
+                continue;
+            }
+            let (nx, ny) = if v.x != v.goal_x {
+                (if v.x < v.goal_x { v.x + 1 } else { v.x - 1 }, v.y)
+/*L121*/
+            } else {
+                (v.x, if v.y < v.goal_y { v.y + 1 } else { v.y - 1 })
+            };
+            let slot = admitted_at.entry((nx, ny)).or_insert(0);
+            if *slot < self.cap_per_edge_per_tick {
+                *slot += 1;
+                v.x = nx;
+                v.y = ny;
+                v.edge_traversals += 1;
+                self.flow_this_tick += 1;
+/*L131*/
+            }
+        }
+        // k 采样口径（审计修复 2026-11-20）：人口在移除到达车之前计量，与
+        // flow_this_tick（含到达车末步）同群体 → q≤k 恒成立（每车每 tick ≤1 条边）。
+        self.last_step_population = self.vehicles.len() as u64;
+        // 已到达车辆出网（保持 vehicles=活跃车辆）
+        self.vehicles.retain(|v| !v.arrived());
+    }
+
+    /// 活跃车辆数（密度分子）。
+/*L141*/
+    /// 需求压力（万分比 0..=10000）= 当前密度 k 相对特征密度 k_ref_permille 的比值封顶。
+    /// 确定性定点（权威状态导出）；MFD→降级信号通道（ADR-NEW-26、ADR-NEW-25 3c）。
+    /// 决策4 修订：k_ref=特征密度（q 首次 ≥90%·q_max 密度，版本化）；k_ref==0 返回 0
+    /// （fail-safe 改向：分母未知时宁可不触发降级，原返回 10000 方向反）。
+    pub fn demand_pressure_bp(&self, k_ref_permille: u64) -> u32 {
+        if k_ref_permille == 0 || self.edge_count() == 0 {
+            return 0;
+        }
+        // 采样口径=last_step_population（与 q 同群体；审计修复 2026-11-20，
+        // MiMo #5：乘法走 u128 防 u64 环绕；edge_count==0 fail-safe 返回 0）。
+/*L151*/
+        let k = (self.last_step_population as u128 * 1000 / self.edge_count() as u128) as u64;
+        ((k as u128 * 10_000 / k_ref_permille as u128).min(10_000)) as u32
+    }
+
+    pub fn active_count(&self) -> u64 {
+        self.vehicles.len() as u64
+    }
+
+    /// 网格链接总数（双向边数；密度分母口径=边数）。
+    pub fn edge_count(&self) -> u64 {
+/*L161*/
+        (2 * self.w as u64 * (self.h as u64 - 1)) + (2 * self.h as u64 * (self.w as u64 - 1))
+    }
+
+    /// 逐 tick 折叠摘要（G3/确定性判据用）。
+    /// 覆盖全部权威状态（ADR-NEW-19 纳入范围）：配置、tick、pending 注入队列、
+    /// next_id 分配器、逐车全字段（含 goal 与 traversals）——2026-11-19 投票修复：
+    /// 补 goal_x/goal_y/next_id 等字段，消除强读档等价假通过风险。
+    pub fn fold_digest(&self, g: &mut GlobalDigest) {
+        let mut w = CanonicalWriter::new("sim-traffic", "TrafficTick");
+        w.u64(self.w as u64);
+/*L171*/
+        w.u64(self.h as u64);
+        w.u64(self.cap_per_edge_per_tick);
+        w.u64(self.seed);
+        w.u64(self.tick);
+        w.u64(self.next_id);
+        // pending 按 id 稳定序入档（注入顺序无关契约）
+        let mut pending_sorted: Vec<&Vehicle> = self.pending.iter().collect();
+        pending_sorted.sort_by_key(|v| v.id);
+        w.seq_len(pending_sorted.len());
+        for v in pending_sorted {
+/*L181*/
+            w.u64(v.id);
+            w.u32(v.x);
+            w.u32(v.y);
+            w.u32(v.goal_x);
+            w.u32(v.goal_y);
+            w.u64(v.edge_traversals);
+        }
+        w.u64(self.vehicles.len() as u64);
+        w.u64(self.flow_this_tick);
+        w.u64(self.last_step_population); // 决策5 豆包 R1：demand_pressure 的 k 来源，
+/*L191*/
+                                          // 权威输入必须入摘要（G3 覆盖），否则不同状态
+                                          // 同摘要而降级压力不同=强读档等价假通过风险
+        for v in &self.vehicles {
+            w.u64(v.id);
+            w.u32(v.x);
+            w.u32(v.y);
+            w.u32(v.goal_x);
+            w.u32(v.goal_y);
+            w.u64(v.edge_traversals);
+        }
+/*L201*/
+
+===== 原段落: PASTE-11 | 第 11 段 · 范围 C · 节选（第 2/6 部分） =====
+        g.record("sim-traffic", "TrafficTick", w.as_bytes());
+    }
+}
+
+/// 拟合误差报告（3a 独立参照验证口径；全定点‰，权威 crate 禁浮点）。
+/// 三区口径（2026-11-19 校准复核）：自由流 k<k_turn/2、转折区 [k_turn/2, 4·k_turn)、
+/// 饱和区 k≥4·k_turn（转折区宽度系试点数据 B 导出，须由确认集 C 复测）；
+/// k_c 位置偏差仅对三角型（descending_branch_observed）有意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FitErrorReport {
+/*L211*/
+    /// 自由流区（k < k_turn/2）最大相对误差（‰）
+    pub free_flow_max_err_permille: u64,
+    /// 转折区（k_turn/2 ≤ k < 4·k_turn）最大相对误差（‰）——只记录不设硬判据
+    pub transition_max_err_permille: u64,
+    /// 饱和区（k ≥ 4·k_turn）最大相对误差（‰）
+    pub saturated_max_err_permille: u64,
+    /// 临界密度位置误差（|k_c_拟合 − k_c_观测|，‰）；平台型标 N/A 不判
+    pub k_c_err_permille: u64,
+    /// 参与评估的留出样本点数
+    pub points_evaluated: usize,
+/*L221*/
+    /// 各区样本数（决策4(d)/决策5 共识：空区不得真空 PASS；<2 在判定层标警示）
+    pub free_n: usize,
+    pub trans_n: usize,
+    pub sat_n: usize,
+}
+
+/// 判据常量（单一来源，ADR-NEW-25 3a 判据与代码断言必须引用同一常量——
+/// 决策4 整改项 (f)：原 simulation 测试断言 250‰ 与判据 100‰ 门禁脱钩）。
+/// 复测协议（Set D+第二拓扑+预注册 fixture）后由决策4 复核回填。
+pub const FREE_FLOW_CRIT_PERMILLE: u64 = 100;
+/*L231*/
+pub const TRANSITION_CRIT_PERMILLE: u64 = 250;
+pub const SATURATED_CRIT_PERMILLE: u64 = 250;
+pub const K_C_CRIT_PERMILLE: u64 = 200;
+
+/// 模型流量 q_model(k)（‰）：平台型 min(v_free·k/1000, q_max)；
+/// 三角型在下降支 q_max − w·(k−k_c)（负值截 0）。
+/// （2026-11-19 决策4 整改：公开供 example/测试复用，删除 mfd3a.rs 内联副本。）
+pub fn q_model_permille(fit: &TriangleFit, k_permille: u64) -> u64 {
+    let q = fit.v_free_permille as u128 * k_permille as u128 / 1000;
+    let q = q.min(fit.q_max_permille as u128) as u64;
+/*L241*/
+    if fit.descending_branch_observed && k_permille > fit.k_c_permille {
+        let drop = fit.w_permille as u128 * (k_permille - fit.k_c_permille) as u128 / 1000;
+        q.saturating_sub(drop as u64)
+    } else {
+        q
+    }
+}
+
+/// 用留出样本（未参与拟合的密度点）评估拟合误差（ADR-NEW-25 3a 独立参照）。
+/// 误差=|q_model − q_obs|·1000 / max(q_obs, 1)（‰）；k_c 观测值=留出样本 argmax q 的密度。
+/*L251*/
+/// 分区（审计修复 2026-11-20）：预注册绝对带 ZoneBands（禁由被评参数导出，决策4 3a(a)）。
+pub fn evaluate_fit(
+    fit: &TriangleFit,
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    // 委托 evaluate_q_fn（X3 泛化核）：分区统计/计数单一实现（防双实现漂移）；
+    // 仅 k_c 位置误差为三角型特有。
+    let mut r = evaluate_q_fn(|k| q_model_permille(fit, k), holdout, bands);
+    let k_obs_peak = holdout
+/*L261*/
+        .iter()
+        .max_by_key(|s| s.q_permille)
+        .map(|s| s.k_permille)
+        .unwrap_or(0);
+    r.k_c_err_permille = fit.k_c_permille.abs_diff(k_obs_peak);
+    r
+}
+
+// ===========================================================================
+// 凹形有理饱和族（2026-11-19 决策4 定案默认族；ADR-NEW-25 决策 1）
+/*L271*/
+// q(k) = q_max · k / (k + k_half)；定点 +−×÷ only（禁 exp/log/powf）。
+// ===========================================================================
+
+/// 有理饱和拟合参数（定点整数）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RationalSaturationFit {
+    /// 渐近流量上界 q_max（‰）
+    pub q_max_permille: u64,
+    /// 半饱和密度 k_half（‰）——q(k_half)=q_max/2；零密度斜率=q_max·1000/k_half。
+    pub k_half_permille: u64,
+/*L281*/
+}
+
+impl RationalSaturationFit {
+    /// 零密度斜率（‰，q/k 放大 1000 倍）；物理上界=1000‰。
+    pub fn zero_density_slope_permille(&self) -> u64 {
+        if self.k_half_permille == 0 { return u64::MAX; }
+        (self.q_max_permille as u128 * 1000 / self.k_half_permille as u128) as u64
+    }
+}
+
+/*L291*/
+/// 定点模型流量 q(k)=q_max·k/(k+k_half)（‰），就近舍入（与 SimScalar 契约同口径）。
+pub fn q_rational_permille(fit: &RationalSaturationFit, k_permille: u64) -> u64 {
+    if k_permille == 0 { return 0; }
+    let num = fit.q_max_permille as u128 * k_permille as u128;
+    let den = k_permille as u128 + fit.k_half_permille as u128; // u128 先扩后加（GPT-6 E2 防 u64 环绕）
+    ((num + den / 2) / den) as u64
+}
+
+/// 辨识（确定性定点）：q_max 与 k_half **联合**整数网格最小化残差平方和
+/// （u128 定点；平局取先遇到的最小 (q_max, k_half)）。q_max 候选域=观测最大值
+/*L301*/
+/// 至其 4 倍+16（渐近值在未饱和数据下不可由观测最大值代表——W1 实测教训）；
+/// k_half 候选域=1..4·k_max。
+/// **越界判失败口径（决策4 条件⑧，审计修复 2026-11-20）**：先做无约束自由估计；
+/// 若零密度斜率超 1000‰（每车每 tick 至多一条边），**判定层直接 FAIL**（binding=true
+/// 即失败信号）；物理可行域回退解**仅作诊断披露与敏感性参考，不得参与 PASS/FAIL
+/// 判定**——旧口径"回退解参与判定"=把约束当估计用，与决策4 条件⑧相反，已废
+/// （旧 v_free=min(1000) 截断掩盖同样已废）。
+/// 返回 (拟合, 自由估计零密度斜率‰, 约束是否绑定)。
+pub fn fit_rational_saturation_detailed(
+    samples: &[MfdSample],
+/*L311*/
+    bands: &ZoneBands,
+) -> (RationalSaturationFit, u64, bool) {
+    assert!(!samples.is_empty(), "no samples");
+    // q≤k 不变量下沉到拟合器入口（决策5 豆包 R3）：示例外的任何调用方
+    // 亦不得喂入 q>k 样本（单位斜率物理界，违者=采样口径缺陷）。
+    assert!(
+        samples.iter().all(|s| s.q_permille <= s.k_permille),
+        "q>k sample violates unit-slope bound (sampling population mismatch)"
+    );
+    let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
+/*L321*/
+    let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
+    let mut best_free: Option<(u64, u64, u64)> = None;
+    let mut best_feasible: Option<(u64, u64, u64)> = None;
+    for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
+        for k_half in 1..=k_max.saturating_mul(4).max(1) {
+            let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+            // 目标=判据归一化分区最大相对误差（②′ 修测，2026-11-22）——
+            // 估计目标与判据同构（旧绝对 SSE/rel-SSE 均不同构，废）。
+            let loss = criterion_aligned_loss(|k| q_rational_permille(&fit, k), samples, bands);
+            if best_free.is_none_or(|(b, _, _)| loss < b) {
+/*L331*/
+                best_free = Some((loss, q_max, k_half));
+            }
+            if k_half >= q_max && best_feasible.is_none_or(|(b, _, _)| loss < b) {
+                best_feasible = Some((loss, q_max, k_half));
+            }
+        }
+    }
+    let (_, q_free, k_free) = best_free.unwrap();
+    let free_slope = (q_free as u128 * 1000 / k_free as u128) as u64;
+    if free_slope <= 1000 {
+/*L341*/
+        let fit = RationalSaturationFit { q_max_permille: q_free, k_half_permille: k_free };
+        return (fit, free_slope, false);
+    }
+    let (_, q_f, k_f) = best_feasible.expect("no physically feasible fit (slope<=1000‰)");
+    (
+        RationalSaturationFit { q_max_permille: q_f, k_half_permille: k_f },
+        free_slope,
+        true,
+    )
+}
+/*L351*/
+
+/// 便捷入口=详细版第 1 返回值（物理可行拟合）。
+pub fn fit_rational_saturation(samples: &[MfdSample], bands: &ZoneBands) -> RationalSaturationFit {
+    fit_rational_saturation_detailed(samples, bands).0
+}
+
+/// 广义凹形族（p-norm p=2）：q(k) = q_max·k / sqrt(k² + k0²)。
+/// X3 审计整改（豆包清单 d）：多族并行辨识，避免"单族以偏概全"——
+/// W3 转 C 的复测只用了有理族一支，豆包实证 p-norm p=2 在同数据上可全过。
+/// 定点 +−×÷ + 整数平方根（u128::isqrt），无超越函数（确定性红线保持）。
+/*L361*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PNormConcaveFit {
+    /// 渐近流量上界 q_max（‰）
+    pub q_max_permille: u64,
+    /// 尺度密度 k0（‰）——q(k0)=q_max/√2；零密度斜率=q_max·1000/k0。
+    pub k0_permille: u64,
+}
+
+impl PNormConcaveFit {
+    /// 零密度斜率（‰）；物理上界=1000‰。
+/*L371*/
+    pub fn zero_density_slope_permille(&self) -> u64 {
+        if self.k0_permille == 0 { return u64::MAX; }
+        (self.q_max_permille as u128 * 1000 / self.k0_permille as u128) as u64
+    }
+}
+
+
+===== 原段落: PASTE-12 | 第 12 段 · 范围 C · 节选（第 3/6 部分） =====
+/// 定点模型流量 q(k)=q_max·k/sqrt(k²+k0²)（‰），就近舍入。
+pub fn q_pnorm_permille(fit: &PNormConcaveFit, k_permille: u64) -> u64 {
+    if k_permille == 0 { return 0; }
+    let q_max = fit.q_max_permille as u128;
+/*L381*/
+    let k = k_permille as u128;
+    let k0 = fit.k0_permille as u128;
+    let den = (k * k + k0 * k0).isqrt().max(1);
+    let num = q_max * k;
+    ((num + den / 2) / den) as u64
+}
+
+/// p-norm 族辨识（目标判据同构：相对误差平方和；越界判失败口径同有理族）。
+/// q_max 候选域=观测最大值至 4 倍+16；k0 候选域=1..4·k_max；可行域 k0≥q_max。
+pub fn fit_pnorm_concave_detailed(
+/*L391*/
+    samples: &[MfdSample],
+    bands: &ZoneBands,
+) -> (PNormConcaveFit, u64, bool) {
+    assert!(!samples.is_empty(), "no samples");
+    // q≤k 不变量下沉到拟合器入口（决策5 豆包 R3）：示例外的任何调用方
+    // 亦不得喂入 q>k 样本（单位斜率物理界，违者=采样口径缺陷）。
+    assert!(
+        samples.iter().all(|s| s.q_permille <= s.k_permille),
+        "q>k sample violates unit-slope bound (sampling population mismatch)"
+    );
+/*L401*/
+    let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
+    let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
+    let mut best_free: Option<(u64, u64, u64)> = None;
+    let mut best_feasible: Option<(u64, u64, u64)> = None;
+    for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
+        for k0 in 1..=k_max.saturating_mul(4).max(1) {
+            let fit = PNormConcaveFit { q_max_permille: q_max, k0_permille: k0 };
+            // 目标=判据归一化分区最大相对误差（②′ 修测，2026-11-22，同有理族）。
+            let loss = criterion_aligned_loss(|k| q_pnorm_permille(&fit, k), samples, bands);
+            if best_free.is_none_or(|(b, _, _)| loss < b) {
+/*L411*/
+                best_free = Some((loss, q_max, k0));
+            }
+            if k0 >= q_max && best_feasible.is_none_or(|(b, _, _)| loss < b) {
+                best_feasible = Some((loss, q_max, k0));
+            }
+        }
+    }
+    let (_, q_free, k_free) = best_free.unwrap();
+    let free_slope = (q_free as u128 * 1000 / k_free as u128) as u64;
+    if free_slope <= 1000 {
+/*L421*/
+        return (PNormConcaveFit { q_max_permille: q_free, k0_permille: k_free }, free_slope, false);
+    }
+    let (_, q_f, k_f) = best_feasible.expect("no physically feasible fit (slope<=1000‰)");
+    (PNormConcaveFit { q_max_permille: q_f, k0_permille: k_f }, free_slope, true)
+}
+
+/// 便捷入口=详细版第 1 返回值。
+pub fn fit_pnorm_concave(samples: &[MfdSample], bands: &ZoneBands) -> PNormConcaveFit {
+    fit_pnorm_concave_detailed(samples, bands).0
+}
+/*L431*/
+
+/// 分区带（审计修复 2026-11-20：判定边界须为**预注册固定 fixture**，禁止由
+/// 被评模型参数导出——决策4 3a(a)；自指边界=同参 gaming，豆包实证：自指带
+/// 下 FAIL 的数据在绝对带上三区全 PASS）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneBands {
+    /// 自由流区上界（k < free_max_k，‰）
+    pub free_max_k: u64,
+    /// 转折区上界（free_max_k ≤ k < trans_max_k，‰）
+    pub trans_max_k: u64,
+/*L441*/
+}
+
+impl ZoneBands {
+    /// Set D 主判定带（预注册绝对密度边界，豆包审计复算带）。
+    /// 敏感性带（如 free=64/263）由调用方另行构造披露。
+    pub const SET_D: ZoneBands = ZoneBands { free_max_k: 100, trans_max_k: 2000 };
+}
+
+/// 用留出样本评估拟合（ADR-NEW-25 3a 独立参照；分区=预注册绝对带）。
+/// 泛化核：对任意模型 q(k) 评估（X3 审计整改：消除各族评估的双实现，
+/*L451*/
+/// 豆包/MiniMax 报告 q_model 副本漂移教训）。
+pub fn evaluate_q_fn(
+    q: impl Fn(u64) -> u64,
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    assert!(!holdout.is_empty(), "no holdout samples");
+    let mut free_max = 0u64;
+    let mut trans_max = 0u64;
+    let mut sat_max = 0u64;
+/*L461*/
+    let (mut free_n, mut trans_n, mut sat_n) = (0usize, 0usize, 0usize);
+    for s in holdout {
+        let qm = q(s.k_permille);
+        let err = (qm as u128).abs_diff(s.q_permille as u128) * 1000
+            / (s.q_permille.max(1) as u128);
+        let err = err as u64;
+        if s.k_permille < bands.free_max_k {
+            free_max = free_max.max(err);
+            free_n += 1;
+        } else if s.k_permille < bands.trans_max_k {
+/*L471*/
+            trans_max = trans_max.max(err);
+            trans_n += 1;
+        } else {
+            sat_max = sat_max.max(err);
+            sat_n += 1;
+        }
+    }
+    FitErrorReport {
+        free_flow_max_err_permille: free_max,
+        transition_max_err_permille: trans_max,
+/*L481*/
+        saturated_max_err_permille: sat_max,
+        k_c_err_permille: 0, // 平台/饱和族无峰值拐点，N/A
+        points_evaluated: holdout.len(),
+        free_n,
+        trans_n,
+        sat_n,
+    }
+}
+
+/// 判据归一化损失（②′ 确认轮预注册拟合目标，2026-11-22 决策6 Z3）：
+/*L491*/
+/// loss = max over 非空区 (区最大相对误差‰ × 1000 / 区判据‰)。
+/// **估计目标与判据同构**——杜绝"估计目标≠判据"第三次（决策4 绝对 SSE、
+/// 决策5 rel-SSE 均与分区判据不同构，反事实复算显示仅换目标即翻转判定）。
+/// 空区跳过；判定阈值=1000（即 100% 判据边界）。
+pub fn criterion_aligned_loss(
+    q: impl Fn(u64) -> u64,
+    samples: &[MfdSample],
+    bands: &ZoneBands,
+) -> u64 {
+    let r = evaluate_q_fn(q, samples, bands);
+/*L501*/
+    let mut loss = 0u64;
+    if r.free_n > 0 {
+        loss = loss.max(r.free_flow_max_err_permille * 1000 / FREE_FLOW_CRIT_PERMILLE);
+    }
+    if r.trans_n > 0 {
+        loss = loss.max(r.transition_max_err_permille * 1000 / TRANSITION_CRIT_PERMILLE);
+    }
+    if r.sat_n > 0 {
+        loss = loss.max(r.saturated_max_err_permille * 1000 / SATURATED_CRIT_PERMILLE);
+    }
+/*L511*/
+    loss
+}
+
+/// 每点分辨率下限（②′ 修测四项，MiMo/Claude 口径）：判据×q_obs ≥ 2 个采样
+/// 单位（‰ 量化）——相对判据在该点的绝对容差必须超过 ±2‰ 取整噪声；
+/// 不满足→该点"分辨率受限"，以绝对误差 |Δq|≤2‰ 复核并在证据中披露。
+pub fn point_resolution_ok(q_obs_permille: u64, crit_permille: u64) -> bool {
+    crit_permille.saturating_mul(q_obs_permille) >= 2 * 1000
+}
+
+/*L521*/
+/// 稳态判据（②′ 稳态硬门；文档与实现口径统一=双口径任一）：
+/// 窗口前后半 q 差 ≤2‰ **或** ≤15 辆。非稳态档位不得静默——单独报告
+/// （稳态率目标：自由流区 ≥50%，DeepSeek 口径）。
+pub fn steady_window(back_half_delta_permille: u64, back_half_delta_vehicles: u64) -> bool {
+    back_half_delta_permille <= 2 || back_half_delta_vehicles <= 15
+}
+
+/// 有理饱和族评估（evaluate_q_fn 委托）。
+pub fn evaluate_rational_fit(
+    fit: &RationalSaturationFit,
+/*L531*/
+    holdout: &[MfdSample],
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    evaluate_q_fn(|k| q_rational_permille(fit, k), holdout, bands)
+}
+
+/// p-norm 族评估（evaluate_q_fn 委托）。
+pub fn evaluate_pnorm_fit(
+    fit: &PNormConcaveFit,
+    holdout: &[MfdSample],
+/*L541*/
+    bands: &ZoneBands,
+) -> FitErrorReport {
+    evaluate_q_fn(|k| q_pnorm_permille(fit, k), holdout, bands)
+}
+
+/// (k, q) 采样点：k=活跃车辆/边（放大 1000 倍定点），q=边遍历/边每 tick（放大 1000 倍）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MfdSample {
+    pub k_permille: u64,
+    pub q_permille: u64,
+/*L551*/
+}
+
+/// 三角基本图拟合（定点；候选模型形式，ADR-NEW-25 决策 1）。
+/// 2026-11-19 投票修复：自由流斜率改 k≤k_c 点过原点定点最小二乘（原三点估计
+/// v_free=q_max/k_first 高估约 31 倍）；拥堵斜率仅在观测到下降支时辨识。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriangleFit {
+    /// 自由流斜率（q/k，放大 1000 倍；物理上界=1000，即每车每 tick 一条边）。
+    pub v_free_permille: u64,
+    /// 临界密度（峰值处 k，放大 1000 倍）。
+/*L561*/
+    pub k_c_permille: u64,
+    /// 峰值流量（放大 1000 倍）。
+    pub q_max_permille: u64,
+    /// 拥堵斜率绝对值（放大 1000 倍；未观测到下降支时为 0=不可辨识）。
+    pub w_permille: u64,
+    /// 是否观测到拥堵下降支（q 在 k>k_c 处低于 q_max）。false=数据呈单调饱和
+    /// 平台型，三角的 -w 分支不可辨识，模型应按平台型（单调饱和凹曲线）解读。
+    pub descending_branch_observed: bool,
+
+===== 原段落: PASTE-13 | 第 13 段 · 范围 C · 节选（第 4/6 部分） =====
+}
+
+/*L571*/
+/// 从采样序列拟合基本图（确定性：输入序即计算序）。
+/// 采样须按 k 升序传入（调用方排序，键相同按采样序稳定）。
+pub fn fit_triangle(samples: &[MfdSample]) -> TriangleFit {
+    assert!(!samples.is_empty(), "no samples");
+    // 注（决策5）：q≤k 采样不变量的真实数据保障在两个 detailed 拟合器入口断言
+    // 与 example 采集点 fail-fast；fit_triangle 为遗留估计器，其 clamp 语义
+    // （v_free.min(1000)）需要越界合成数据才能测试，故此处不断言。
+    let mut peak = samples[0];
+    for s in samples {
+        if s.q_permille > peak.q_permille {
+/*L581*/
+            peak = *s;
+        }
+    }
+    let k_c = peak.k_permille.max(1);
+    let q_max = peak.q_permille;
+    // 自由流斜率=相邻采样点最大割线斜率 max(Δq/Δk)（k 升序输入）。
+    // 语义=零密度导数的可观测上界；对三角数据与平台型数据均正确。
+    // （2026-11-19 二次修正：过原点全点最小二乘在单调饱和数据下被高 k 点拉低。）
+    let mut v_free = if samples[0].k_permille > 0 {
+        (samples[0].q_permille as u128 * 1000 / samples[0].k_permille as u128) as u64
+/*L591*/
+    } else {
+        0
+    };
+    for pair in samples.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if b.k_permille > a.k_permille {
+            let slope = ((b.q_permille.saturating_sub(a.q_permille)) as u128 * 1000
+                / (b.k_permille - a.k_permille) as u128) as u64;
+            if slope > v_free {
+                v_free = slope;
+/*L601*/
+            }
+        }
+    }
+    // 物理上界截断：本微观模型每车每 tick 至多一条边 → v_free ≤ 1000‰；
+    // 离散化下割线斜率可短暂越界（如 Δq/Δk≈1010‰），按契约截 0~1000。
+    let v_free = v_free.min(1000);
+    // 拥堵斜率：仅当 k>k_c 处存在 q<q_max 的下降支样本才可辨识；
+    // 对 k>k_c 点拟合 q ≈ q_max - w·(k-k_c)：w = Σ(Δk·Δq)/Σ(Δk²)（负值截 0）。
+    let descending = samples
+        .iter()
+/*L611*/
+        .any(|s| s.k_permille > k_c && s.q_permille < q_max);
+    let mut w = 0u64;
+    if descending {
+        let (mut n2, mut d2) = (0i128, 0i128);
+        for s in samples {
+            if s.k_permille > k_c {
+                let dk = (s.k_permille - k_c) as i128;
+                let dq = q_max as i128 - s.q_permille as i128;
+                n2 += dk * dq;
+                d2 += dk * dk;
+/*L621*/
+            }
+        }
+        if d2 > 0 && n2 > 0 {
+            w = (n2 * 1000 / d2) as u64;
+        }
+    }
+    TriangleFit {
+        v_free_permille: v_free,
+        k_c_permille: k_c,
+        q_max_permille: q_max,
+/*L631*/
+        w_permille: w,
+        descending_branch_observed: descending,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn small_run(densities: &[u64]) -> (GlobalDigest, Vec<MfdSample>) {
+/*L641*/
+        let mut g = GlobalDigest::new();
+        let mut samples = Vec::new();
+        for &inj in densities {
+            let mut gt = GridTraffic::new(8, 8, 1, 0x00C0_FFEE_1234_5678);
+            for t in 0..260u64 {
+                // 密度阶梯=持续注入；200 tick 后进入稳态采样
+                gt.inject(inj);
+                let _ = t;
+                gt.step();
+                gt.fold_digest(&mut g);
+/*L651*/
+            }
+            samples.push(MfdSample {
+                k_permille: gt.active_count() * 1000 / gt.edge_count(),
+                q_permille: gt.flow_this_tick * 1000 / gt.edge_count(),
+            });
+        }
+        (g, samples)
+    }
+
+    #[test]
+/*L661*/
+    fn role_is_pinned() {
+        assert!(authoritative());
+    }
+
+    #[test]
+    fn tbench_same_seed_two_runs_agree() {
+        let (g1, s1) = small_run(&[1, 2, 4]);
+        let (g2, s2) = small_run(&[1, 2, 4]);
+        assert_eq!(g1.finalize(), g2.finalize());
+        assert_eq!(s1, s2);
+/*L671*/
+    }
+
+    #[test]
+    fn mfd_shape_basic() {
+        let (_, samples) = small_run(&[1, 2, 4, 8, 16]);
+        // q 非负、峰值存在、k 单调可排
+        assert!(samples.iter().any(|s| s.q_permille > 0));
+        let peak = samples.iter().max_by_key(|s| s.q_permille).unwrap();
+        assert!(peak.q_permille > 0);
+    }
+/*L681*/
+
+    #[test]
+    fn triangle_fit_is_deterministic() {
+        let (_, mut samples) = small_run(&[1, 2, 4, 8]);
+        samples.sort_by_key(|s| s.k_permille);
+        let f1 = fit_triangle(&samples);
+        let f2 = fit_triangle(&samples);
+        assert_eq!(f1, f2);
+        assert!(f1.q_max_permille > 0);
+        assert!(f1.k_c_permille > 0);
+/*L691*/
+    }
+
+    // —— 2026-11-19 投票修复回归 ——
+
+    #[test]
+    fn free_flow_slope_is_physically_bounded() {
+        // 物理上界：每车每 tick 至多一条边 → v_free ≤ 1000‰。
+        // 旧三点估计（q_max/k_first）高估约 31 倍，此测试为回归护栏。
+        let (_, mut samples) = small_run(&[1, 2, 4, 8, 16]);
+        samples.sort_by_key(|s| s.k_permille);
+/*L701*/
+        let f = fit_triangle(&samples);
+        assert!(f.v_free_permille > 0, "v_free = {}", f.v_free_permille);
+        assert!(
+            f.v_free_permille <= 1000,
+            "v_free = {}‰ exceeds physical bound 1000‰",
+            f.v_free_permille
+        );
+    }
+
+    #[test]
+/*L711*/
+    fn monotone_saturation_reports_no_descending_branch() {
+        // 点队列模型无 spillback，(k,q) 单调饱和 → 三角 -w 分支不可辨识，
+        // 拟合须显式报告 descending_branch_observed=false（平台型解读）。
+        let (_, mut samples) = small_run(&[2, 4, 8, 16, 32]);
+        samples.sort_by_key(|s| s.k_permille);
+        let f = fit_triangle(&samples);
+        if samples.iter().filter(|s| s.k_permille > f.k_c_permille).all(|s| s.q_permille >= f.q_max_permille)
+        {
+            assert!(!f.descending_branch_observed);
+            assert_eq!(f.w_permille, 0);
+/*L721*/
+        }
+    }
+
+    #[test]
+    fn synthetic_triangle_is_recovered() {
+        // 人工合成精确三角：v_free=1000‰、k_c=100‰、q_max=100‰、w=500‰。
+        let samples = vec![
+            MfdSample { k_permille: 10, q_permille: 10 },
+            MfdSample { k_permille: 50, q_permille: 50 },
+            MfdSample { k_permille: 100, q_permille: 100 },
+/*L731*/
+            MfdSample { k_permille: 200, q_permille: 50 },
+            MfdSample { k_permille: 300, q_permille: 0 },
+        ];
+        let f = fit_triangle(&samples);
+        assert_eq!(f.v_free_permille, 1000);
+        assert_eq!(f.k_c_permille, 100);
+        assert_eq!(f.q_max_permille, 100);
+        assert!(f.descending_branch_observed);
+        assert_eq!(f.w_permille, 500);
+    }
+/*L741*/
+
+    #[test]
+    fn explicit_id_injection_is_order_independent() {
+        // 2026-11-19 投票修复：同一 ID 集合以不同物理顺序注入，权威状态（摘要）必须一致。
+        let run = |order: &[u64]| {
+            let mut gt = GridTraffic::new(8, 8, 1, 0x00C0_FFEE_1234_5678);
+            for &id in order {
+                gt.inject_with_id(id);
+            }
+            let mut g = GlobalDigest::new();
+/*L751*/
+            gt.fold_digest(&mut g);
+            for _ in 0..10u64 {
+                gt.step();
+                gt.fold_digest(&mut g);
+            }
+            g.finalize()
+        };
+        let d1 = run(&[3, 1, 2, 5, 4]);
+        let d2 = run(&[1, 2, 3, 4, 5]);
+        let d3 = run(&[5, 4, 3, 2, 1]);
+/*L761*/
+        assert_eq!(d1, d2, "injection order must not matter");
+        assert_eq!(d2, d3, "injection order must not matter");
+    }
+
+    #[test]
+    fn fold_digest_covers_goal_and_next_id() {
+        // 强读档等价护栏：goal 与 next_id 属权威状态，摘要必须敏感。
+        let base = |mut gt: GridTraffic| {
+            for _ in 0..5u64 {
+                gt.inject(3);
+/*L771*/
+                gt.step();
+
+===== 原段落: PASTE-14 | 第 14 段 · 范围 C · 节选（第 5/6 部分） =====
+            }
+            let mut g = GlobalDigest::new();
+            gt.fold_digest(&mut g);
+            g.finalize()
+        };
+        let d1 = base(GridTraffic::new(8, 8, 1, 7));
+        let d2 = base(GridTraffic::new(8, 8, 1, 7));
+        assert_eq!(d1, d2);
+
+/*L781*/
+        // next_id 敏感
+        let mut gt = GridTraffic::new(8, 8, 1, 7);
+        for _ in 0..5u64 {
+            gt.inject(3);
+            gt.step();
+        }
+        gt.next_id += 1;
+        let mut g = GlobalDigest::new();
+        gt.fold_digest(&mut g);
+        assert_ne!(d1, g.finalize(), "next_id must be covered");
+/*L791*/
+
+        // goal 敏感
+        let mut gt = GridTraffic::new(8, 8, 1, 7);
+        for _ in 0..5u64 {
+            gt.inject(3);
+            gt.step();
+        }
+        if let Some(v) = gt.vehicles.first_mut() {
+            v.goal_x = v.goal_x.wrapping_add(1);
+        }
+/*L801*/
+        let mut g = GlobalDigest::new();
+        gt.fold_digest(&mut g);
+        assert_ne!(d1, g.finalize(), "vehicle goal must be covered");
+    }
+
+    #[test]
+    fn synthetic_holdout_meets_adr25_criteria() {
+        // 精确三角（v_free=1000‰, k_c=100‰, q_max=100‰, w=500‰）：
+        // 拟合用 (10,100,300) 三点，留出 (50,200) 两点——独立于拟合集评估。
+        let fit_in = vec![
+/*L811*/
+            MfdSample { k_permille: 10, q_permille: 10 },
+            MfdSample { k_permille: 100, q_permille: 100 },
+            MfdSample { k_permille: 300, q_permille: 0 },
+        ];
+        let holdout = vec![
+            MfdSample { k_permille: 50, q_permille: 50 },
+            MfdSample { k_permille: 200, q_permille: 50 },
+        ];
+        let f = fit_triangle(&fit_in);
+        assert!(f.descending_branch_observed);
+/*L821*/
+        assert_eq!(f.v_free_permille, 1000);
+        assert_eq!(f.w_permille, 500);
+        let r = evaluate_fit(&f, &holdout, &ZoneBands::SET_D);
+        // ADR-NEW-25 3a 判据（原 10/20/25% 三区重分）：自由流 ≤100‰、饱和区 ≤250‰、
+        // k_c ≤200‰（三角）；转折区只记录不设硬判据。
+        assert!(r.free_flow_max_err_permille <= 100, "{}", r.free_flow_max_err_permille);
+        assert!(r.k_c_err_permille <= 200, "{}", r.k_c_err_permille);
+        assert!(r.saturated_max_err_permille <= 250, "{}", r.saturated_max_err_permille);
+    }
+
+/*L831*/
+    #[test]
+    #[ignore = "债务 #31 审计退回（2026-11-20）：保持 ignore，直至口径修复后 Set D 复测通过并经负责人追认（FAIL 翻转则按重投裁决处置）"]
+    fn simulation_holdout_free_flow_is_accurate() {
+        // 两次独立小场景（同种子不同密度阶梯）：A 拟合、B 留出——独立密度点评估。
+        let (_, mut a) = small_run(&[1, 2, 4, 8]);
+        let (_, b) = small_run(&[3, 6, 12]);
+        a.sort_by_key(|s| s.k_permille);
+        let f = fit_triangle(&a);
+        let r = evaluate_fit(&f, &b, &ZoneBands::SET_D);
+        assert!(r.points_evaluated >= 2);
+/*L841*/
+        // 门禁对齐（决策4 整改）：断言引用判据常量（100‰），不再用 250‰ 脱钩阈值。
+        // 当前点队列模型自由流实测 190‰ FAIL——债务 #31（凹形扩展）Set D 复测通过前
+        // 本测试标 ignore，避免"FAIL 仍绿"掩盖真实状态（豆包/GPT-6 指出）。
+        assert!(
+            r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE,
+            "free-flow err {}‰",
+            r.free_flow_max_err_permille
+        );
+    }
+
+/*L851*/
+    // ---- 凹形有理饱和族（决策4 W1）----
+
+    fn rational_samples(q_max: u64, k_half: u64, ks: &[u64]) -> Vec<MfdSample> {
+        let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+        ks.iter()
+            .map(|&k| MfdSample { k_permille: k, q_permille: q_rational_permille(&fit, k) })
+            .collect()
+    }
+
+    #[test]
+/*L861*/
+    fn synthetic_rational_is_recovered() {
+        // 人工合成精确有理饱和图（q_max=200‰、k_half=150‰）→辨识恢复。
+        let ks: Vec<u64> = (1..=40).map(|i| i * 25).collect();
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        assert_eq!(fit.q_max_permille, 200);
+        assert_eq!(fit.k_half_permille, 250);
+    }
+
+    #[test]
+    fn rational_identification_is_deterministic() {
+/*L871*/
+        let ks: Vec<u64> = (1..=30).map(|i| i * 17).collect();
+        let a = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        let b = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn rational_zero_density_slope_is_bounded() {
+        let ks: Vec<u64> = (1..=30).map(|i| i * 33).collect();
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+/*L881*/
+        assert!(fit.zero_density_slope_permille() <= 1000);
+    }
+
+    #[test]
+    fn rational_bound_violation_is_disclosed_and_constrained() {
+        // 越界判失败口径（决策4）：自由估计越界→披露幅度+物理可行解回退，
+        // 不 panic 不截断。合成 (500,50) 自由斜率 10000‰ 必越界。
+        // 样本取 k≥500 保证 q≤k（采样不变量断言下合法），模型越界仍成立。
+        let ks: Vec<u64> = vec![500, 1000, 2000];
+        let (fit, free_slope, binding) =
+/*L891*/
+            fit_rational_saturation_detailed(&rational_samples(500, 50, &ks), &ZoneBands::SET_D);
+        assert!(binding, "bound must bind");
+        assert_eq!(free_slope, 10_000, "violation magnitude must be disclosed");
+        assert!(fit.zero_density_slope_permille() <= 1000);
+    }
+
+    #[test]
+    fn rational_holdout_meets_criteria_on_synthetic() {
+        // 合成数据留出评估：三区判据应全过（常量单一来源）。
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+/*L901*/
+        let fit = fit_rational_saturation(&rational_samples(200, 250, &ks), &ZoneBands::SET_D);
+        let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
+        let r = evaluate_rational_fit(&fit, &rational_samples(200, 250, &holdout), &ZoneBands::SET_D);
+        assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
+        assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
+        assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);
+    }
+
+    // ===== X3：p-norm p=2 族（豆包清单 d：多族并行辨识） =====
+
+/*L911*/
+    fn pnorm_samples(q_max: u64, k0: u64, ks: &[u64]) -> Vec<MfdSample> {
+        let fit = PNormConcaveFit { q_max_permille: q_max, k0_permille: k0 };
+        ks.iter()
+            .map(|&k| MfdSample { k_permille: k, q_permille: q_pnorm_permille(&fit, k) })
+            .collect()
+    }
+
+    #[test]
+    fn synthetic_pnorm_is_recovered() {
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+/*L921*/
+        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(200, 250, &ks), &ZoneBands::SET_D);
+        assert_eq!(fit, PNormConcaveFit { q_max_permille: 200, k0_permille: 250 });
+        assert_eq!(free_slope, 800);
+        assert!(!binding);
+    }
+
+    #[test]
+    fn pnorm_identification_is_deterministic() {
+        let ks: Vec<u64> = (1..=16).map(|i| i * 40).collect();
+        let s = pnorm_samples(300, 400, &ks);
+/*L931*/
+        assert_eq!(fit_pnorm_concave_detailed(&s, &ZoneBands::SET_D), fit_pnorm_concave_detailed(&s, &ZoneBands::SET_D));
+    }
+
+    #[test]
+    fn pnorm_bound_violation_is_disclosed_and_constrained() {
+
+===== 原段落: PASTE-15 | 第 15 段 · 范围 C · 节选（第 6/6 部分） =====
+        // 自由估计斜率超界（500/50=10000‰）→binding=true 即失败信号；
+        // 可行解回退仅诊断，zero_density_slope≤1000‰。样本 k≥500 保证 q≤k。
+        let ks: Vec<u64> = vec![500, 1000, 2000];
+        let (fit, free_slope, binding) = fit_pnorm_concave_detailed(&pnorm_samples(500, 50, &ks), &ZoneBands::SET_D);
+        assert!(binding);
+/*L941*/
+        assert!(free_slope > 1000);
+        assert!(fit.zero_density_slope_permille() <= 1000);
+    }
+
+    #[test]
+    fn pnorm_holdout_meets_criteria_on_synthetic() {
+        let ks: Vec<u64> = (1..=24).map(|i| i * 30).collect();
+        let fit = fit_pnorm_concave(&pnorm_samples(200, 250, &ks), &ZoneBands::SET_D);
+        let holdout: Vec<u64> = (1..=12).map(|i| i * 40 + 13).collect();
+        let r = evaluate_pnorm_fit(&fit, &pnorm_samples(200, 250, &holdout), &ZoneBands::SET_D);
+/*L951*/
+        assert!(r.free_flow_max_err_permille <= FREE_FLOW_CRIT_PERMILLE, "{}", r.free_flow_max_err_permille);
+        assert!(r.transition_max_err_permille <= TRANSITION_CRIT_PERMILLE, "{}", r.transition_max_err_permille);
+        assert!(r.saturated_max_err_permille <= SATURATED_CRIT_PERMILLE, "{}", r.saturated_max_err_permille);
+    }
+
+    #[test]
+    fn pnorm_isqrt_rounding_golden() {
+        // isqrt 舍入黄金（决策5 共识收口条件）：手算定点期望值钉死语义——
+        // q = round(q_max·k·1000 / isqrt((k²+k0²)·10⁶))，就近舍入 ((num+den/2)/den)。
+        let f = PNormConcaveFit { q_max_permille: 200, k0_permille: 250 };
+/*L961*/
+        // 注意 isqrt floor 偏差披露（决策5）：den 先取整再除，使结果较真值
+        // 有 +0~+1‰ 的系统性上偏（如 k=250 真值 141.42→定点 142）。
+        assert_eq!(q_pnorm_permille(&f, 0), 0);
+        // k=250：真值 141.42‰，定点就近→142（isqrt floor 偏差）
+        assert_eq!(q_pnorm_permille(&f, 250), 142);
+        // k=1000：真值 194.03‰ → 194
+        assert_eq!(q_pnorm_permille(&f, 1000), 194);
+        // k=2500：真值 198.03‰，定点→199（isqrt floor 偏差）
+        assert_eq!(q_pnorm_permille(&f, 2500), 199);
+    }
+/*L971*/
+
+    #[test]
+    fn criterion_aligned_loss_is_zero_on_exact_fit() {
+        // ②′ 修测：拟合目标=判据归一化分区最大相对误差；精确参数合成数据下
+        // loss≈0（仅舍入级），且非精确参数 loss 严格更大（目标可辨识）。
+        let ks: Vec<u64> = (1..=24).map(|i| i * 40).collect();
+        let s = rational_samples(200, 250, &ks);
+        let exact = RationalSaturationFit { q_max_permille: 200, k_half_permille: 250 };
+        let loss_exact =
+            criterion_aligned_loss(|k| q_rational_permille(&exact, k), &s, &ZoneBands::SET_D);
+/*L981*/
+        let off = RationalSaturationFit { q_max_permille: 200, k_half_permille: 200 };
+        let loss_off =
+            criterion_aligned_loss(|k| q_rational_permille(&off, k), &s, &ZoneBands::SET_D);
+        assert!(loss_exact <= 10, "exact loss {}", loss_exact);
+        assert!(loss_off > loss_exact, "identifiability: {} vs {}", loss_off, loss_exact);
+    }
+
+    #[test]
+    fn point_resolution_floor_edges() {
+        // ②′ 修测：判据×q_obs ≥ 2000（即相对容差 ≥2‰ 采样单位）。
+/*L991*/
+        assert!(point_resolution_ok(20, 100)); // 20‰×100%=20‰… 100×20=2000 边界达标
+        assert!(!point_resolution_ok(19, 100)); // 1900<2000 分辨率受限
+        assert!(point_resolution_ok(8, 250)); // 250×8=2000 边界达标
+        assert!(!point_resolution_ok(7, 250)); // 1750<2000 分辨率受限
+    }
+
+    #[test]
+    fn steady_window_dual_criteria() {
+        // ②′ 稳态硬门：双口径任一（≤2‰ 或 ≤15 辆）。
+        assert!(steady_window(2, 100)); // ‰ 口径达标
+/*L1001*/
+        assert!(steady_window(30, 15)); // 辆口径达标
+        assert!(!steady_window(30, 16)); // 双不达标
+        assert!(steady_window(2, 16)); // 边界
+    }
+}
+
+===== 原段落: PASTE-16 | 第 16 段 · 范围 C · 节选（第 1/3 部分） =====
+// FILE: crates/sim-traffic/examples/mfd_prime.rs @1db87d2
+/*L1*/
+//! ②′ 确认轮（债务 #31 修测一轮定生死；ADR-NEW-25"②′ 确认轮预注册规格"
+//! 2026-11-22 决策6 Z3 预注册于 7160955，本文件=fixture 实装，先落盘后取数）。
+//!
+//! 预注册 fixture（**运行前声明，先于 ②′ 数据**）：
+//! - 种子段=0x00C0_FFEE_4444_0000 + i，三段独立：fit +0..8 / holdout +8..16 /
+//!   back-half fit +16..24、back-half holdout +24..32（与 V1/Set D/Set E 段不相交）；
+//! - 拓扑：40×40 + 32×32 + 64×64（三拓扑全跑）；
+//! - 密度阶梯**低密几何加密**（②′ 修测：自由流区判定点 n≥5，抗单点杠杆）：
+//!   拟合集 18 档、留出集 18 档（×~1.4 交错）；
+//! - 每档 260 tick，末 60 tick 窗口均值；稳态判据=sim-traffic::steady_window
+/*L11*/
+//!   双口径（≤2‰ 或 ≤15 辆，文档与实现统一）；非稳态档单独报告不静默；
+//! - 每档 8 种子平均；分区边界=ZoneBands::SET_D 预注册绝对带（k<100 / 100..2000 /
+//!   ≥2000‰）；判据（常量单一来源=sim-traffic）：自由流 ≤100‰、转折 ≤250‰、
+//!   饱和 ≤250‰；每点分辨率下限=point_resolution_ok，不满足标"分辨率受限"
+//!   并以绝对误差 |Δq|≤2‰ 复核披露；
+//! - 族集冻结={rational, pnorm-p2}（扩族须重新投票——决策5 共识）；
+//! - 预选（Q3）=物理可行域内**判据归一化损失**（criterion_aligned_loss）
+//!   最小者一次锁定，不得回退；全 binding→无族可选=FAIL。
+//!
+//! **终止条款（焊死）**：任一拓扑任一区 FAIL → 自动落 ①（追认转 C，MFD 永久纯
+/*L21*/
+//! 统计），无须再投票；全部 PASS → #31 核销、3a 记通过（解冻另走 ADR-NEW-26）。
+//!
+//! 运行：SETD_COMMIT=$(git rev-parse HEAD) cargo run --release --example mfd_prime -p sim-traffic
+
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+
+use sim_traffic::{
+    criterion_aligned_loss, evaluate_pnorm_fit, evaluate_rational_fit,
+    fit_pnorm_concave_detailed, fit_rational_saturation_detailed, point_resolution_ok,
+    q_pnorm_permille, q_rational_permille, steady_window, FitErrorReport, GridTraffic, MfdSample,
+/*L31*/
+    RationalSaturationFit, ZoneBands, FREE_FLOW_CRIT_PERMILLE,
+    SATURATED_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE,
+};
+
+const SEED_BASE: u64 = 0x00C0_FFEE_4444_0000;
+const N_SEEDS: u64 = 8;
+const TICKS: usize = 260;
+const WINDOW: usize = 60;
+/// 低密几何加密（②′ 修测：自由流区 n≥5）。
+const FIT_LADDER: [u64; 18] =
+/*L41*/
+    [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512];
+/// 留出集阶梯（×~1.4 交错，与拟合集同密度范围覆盖三区）。
+const HOLDOUT_LADDER: [u64; 18] =
+    [2, 3, 5, 7, 9, 13, 18, 26, 36, 52, 72, 104, 144, 208, 288, 416, 576, 768];
+
+fn zone_crit(k_permille: u64) -> u64 {
+    if k_permille < 100 {
+        FREE_FLOW_CRIT_PERMILLE
+    } else if k_permille < 2000 {
+        TRANSITION_CRIT_PERMILLE
+/*L51*/
+    } else {
+        SATURATED_CRIT_PERMILLE
+    }
+}
+
+/// 单运行：返回 (k̄, q̄) 窗口均值与稳态判定（steady_window 双口径统一）。
+fn run_density_seed(w: u32, h: u32, inj: u64, seed: u64) -> (u64, u64, bool) {
+    let mut gt = GridTraffic::new(w, h, 1, seed);
+    let mut k_sum = 0u64;
+    let mut q_sum = 0u64;
+/*L61*/
+    let mut q_front = 0u64;
+    let mut q_back = 0u64;
+    for t in 0..TICKS {
+        gt.inject(inj);
+        gt.step();
+        if t >= TICKS - WINDOW {
+            assert!(
+                gt.flow_this_tick <= gt.last_step_population,
+                "q>k impossible under same-population accounting"
+            );
+/*L71*/
+            k_sum += gt.last_step_population * 1000 / gt.edge_count();
+            q_sum += gt.flow_this_tick * 1000 / gt.edge_count();
+            if t >= TICKS - WINDOW / 2 {
+                q_back += gt.flow_this_tick;
+            } else {
+                q_front += gt.flow_this_tick;
+            }
+        }
+    }
+    let n = WINDOW as u64;
+/*L81*/
+    let delta = q_front.abs_diff(q_back);
+    let delta_permille = delta * 1000 / (q_front + q_back).max(1);
+    (k_sum / n, q_sum / n, steady_window(delta_permille, delta))
+}
+
+/// 窗口后半采样（back-half 敏感性）。
+fn run_density_seed_back_half(w: u32, h: u32, inj: u64, seed: u64) -> (u64, u64) {
+    let mut gt = GridTraffic::new(w, h, 1, seed);
+    let mut k_sum = 0u64;
+    let mut q_sum = 0u64;
+/*L91*/
+    for t in 0..TICKS {
+        gt.inject(inj);
+        gt.step();
+        if t >= TICKS - WINDOW / 2 {
+            k_sum += gt.last_step_population * 1000 / gt.edge_count();
+            q_sum += gt.flow_this_tick * 1000 / gt.edge_count();
+        }
+    }
+    let n = (WINDOW / 2) as u64;
+    (k_sum / n, q_sum / n)
+/*L101*/
+}
+
+/// 多种子平均采样。返回 (样本, 逐档稳态标记)。
+fn sample_ladder(w: u32, h: u32, ladder: &[u64], seed_off: u64) -> (Vec<MfdSample>, Vec<bool>) {
+    let mut flags = Vec::new();
+    let samples = ladder
+        .iter()
+        .map(|&inj| {
+            let (mut k, mut q, mut steady) = (0u64, 0u64, true);
+            for i in 0..N_SEEDS {
+/*L111*/
+                let (k1, q1, s1) = run_density_seed(w, h, inj, SEED_BASE + seed_off + i);
+                k += k1;
+                q += q1;
+                steady &= s1;
+            }
+            flags.push(steady);
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    (samples, flags)
+/*L121*/
+}
+
+type QModelFn<'a> = Box<dyn Fn(u64) -> u64 + 'a>;
+
+fn rel_sse(q: impl Fn(u64) -> u64, samples: &[MfdSample]) -> u128 {
+    let mut sse = 0u128;
+    for s in samples {
+        let e = q(s.k_permille) as i128 - s.q_permille as i128;
+        let er = (e * 1000) / (s.q_permille.max(1) as i128);
+        sse += (er * er) as u128;
+/*L131*/
+    }
+    sse
+}
+
+/// 单一判定核（含转折硬判据+空区 FAIL；binding 即 FAIL=决策4 条件⑧）。
+fn family_verdict(binding: bool, r: &FitErrorReport) -> &'static str {
+    if binding
+        || r.free_flow_max_err_permille > FREE_FLOW_CRIT_PERMILLE
+        || r.transition_max_err_permille > TRANSITION_CRIT_PERMILLE
+        || r.saturated_max_err_permille > SATURATED_CRIT_PERMILLE
+/*L141*/
+        || r.free_n == 0
+        || r.trans_n == 0
+        || r.sat_n == 0
+    {
+        "FAIL"
+    } else {
+        "PASS"
+    }
+}
+
+/*L151*/
+/// 归因对照专用（P3，非判定路径）：旧 rel-SSE 目标网格辨识（明确标注控制组）。
+fn fit_rational_rel_sse_control(samples: &[MfdSample]) -> RationalSaturationFit {
+    let q_obs_max = samples.iter().map(|s| s.q_permille).max().unwrap().max(1);
+    let k_max = samples.iter().map(|s| s.k_permille).max().unwrap().max(1);
+    let mut best: Option<(u128, u64, u64)> = None;
+    for q_max in q_obs_max..=q_obs_max.saturating_mul(4).saturating_add(16) {
+        for k_half in 1..=k_max.saturating_mul(4).max(1) {
+            let fit = RationalSaturationFit { q_max_permille: q_max, k_half_permille: k_half };
+            let sse = rel_sse(|k| q_rational_permille(&fit, k), samples);
+            if best.is_none_or(|(b, _, _)| sse < b) {
+/*L161*/
+                best = Some((sse, q_max, k_half));
+            }
+        }
+    }
+    let (_, q, k) = best.unwrap();
+    RationalSaturationFit { q_max_permille: q, k_half_permille: k }
+}
+
+/// 逐点行后缀：分辨率标注（②′ 修测）。
+fn res_tag(k: u64, q_obs: u64, q_model: u64) -> String {
+/*L171*/
+    if point_resolution_ok(q_obs, zone_crit(k)) {
+        "res=ok".to_string()
+    } else {
+        format!(
+            "res=LIMITED(abs_err={}‰, |Δq|≤2‰ 复核{})",
+            q_model.abs_diff(q_obs),
+            if q_model.abs_diff(q_obs) <= 2 { ":PASS" } else { ":FAIL" }
+        )
+    }
+}
+/*L181*/
+
+fn report_topology(w: u32, h: u32, out: &mut Vec<String>) {
+    let mut emit = |l: String| out.push(l);
+    emit(format!("=== topology {w}x{h} (②′ seeds {SEED_BASE:#x}+0..{N_SEEDS}) ==="));
+
+===== 原段落: PASTE-17 | 第 17 段 · 范围 C · 节选（第 2/3 部分） =====
+    let (mut fit_samples, fit_flags) = sample_ladder(w, h, &FIT_LADDER, 0);
+    fit_samples.sort_by_key(|s| s.k_permille);
+    let (holdout, hold_flags) = sample_ladder(w, h, &HOLDOUT_LADDER, 8);
+    let steady_fit = fit_flags.iter().filter(|&&s| s).count();
+    let steady_hold = hold_flags.iter().filter(|&&s| s).count();
+    emit(format!(
+/*L191*/
+        "steady: fit {}/{} holdout {}/{} (dual criterion steady_window; unsteady ladders: fit {:?} holdout {:?})",
+        steady_fit,
+        FIT_LADDER.len(),
+        steady_hold,
+        HOLDOUT_LADDER.len(),
+        FIT_LADDER
+            .iter()
+            .zip(&fit_flags)
+            .filter(|(_, s)| !**s)
+            .map(|(i, _)| *i)
+/*L201*/
+            .collect::<Vec<_>>(),
+        HOLDOUT_LADDER
+            .iter()
+            .zip(&hold_flags)
+            .filter(|(_, s)| !**s)
+            .map(|(i, _)| *i)
+            .collect::<Vec<_>>(),
+    ));
+
+    // ===== 辨识两族（判据归一化损失目标，P1 修测）=====
+/*L211*/
+    let (fit, free_slope, binding) =
+        fit_rational_saturation_detailed(&fit_samples, &ZoneBands::SET_D);
+    let (pfit, p_slope, p_binding) =
+        fit_pnorm_concave_detailed(&fit_samples, &ZoneBands::SET_D);
+    emit(format!(
+        "fit rational: q_max={}‰ k_half={}‰ slope={}‰ (free est {}‰ binding={})",
+        fit.q_max_permille,
+        fit.k_half_permille,
+        fit.zero_density_slope_permille(),
+        free_slope,
+/*L221*/
+        binding
+    ));
+    emit(format!(
+        "fit pnorm-p2: q_max={}‰ k0={}‰ slope={}‰ (free est {}‰ binding={})",
+        pfit.q_max_permille,
+        pfit.k0_permille,
+        pfit.zero_density_slope_permille(),
+        p_slope,
+        p_binding
+    ));
+/*L231*/
+
+    // ===== Q3 预选（判据归一化损失，一次锁定；fit-set 逐点归档）=====
+    let qf_tab: Vec<(&str, QModelFn<'_>)> = vec![
+        ("rational", Box::new(|k: u64| q_rational_permille(&fit, k))),
+        ("pnorm-p2", Box::new(|k: u64| q_pnorm_permille(&pfit, k))),
+    ];
+    for (tag, qf) in &qf_tab {
+        for s in &fit_samples {
+            let qm = qf(s.k_permille);
+            emit(format!(
+/*L241*/
+                "  [fit-set {tag}] k {:>5}‰ q_obs {:>4}‰ q_model {:>4}‰ {}",
+                s.k_permille,
+                s.q_permille,
+                qm,
+                res_tag(s.k_permille, s.q_permille, qm)
+            ));
+        }
+    }
+    let loss_r =
+        criterion_aligned_loss(|k| q_rational_permille(&fit, k), &fit_samples, &ZoneBands::SET_D);
+/*L251*/
+    let loss_p =
+        criterion_aligned_loss(|k| q_pnorm_permille(&pfit, k), &fit_samples, &ZoneBands::SET_D);
+    let sse_r = rel_sse(|k| q_rational_permille(&fit, k), &fit_samples);
+    let sse_p = rel_sse(|k| q_pnorm_permille(&pfit, k), &fit_samples);
+    let selected: Option<&str> = match (binding, p_binding) {
+        (true, true) => None,
+        (false, true) => Some("rational"),
+        (true, false) => Some("pnorm-p2"),
+        (false, false) => Some(if loss_p < loss_r { "pnorm-p2" } else { "rational" }),
+    };
+/*L261*/
+    emit(format!(
+        "  [family pre-selection] criterion-loss rational={loss_r} pnorm={loss_p} (rel-SSE disclosure r={sse_r} p={sse_p}) binding(r={binding},p={p_binding}) -> selected={} (Q3 feasible-domain criterion-loss rule; locked before holdout)",
+        selected.unwrap_or("NONE (all binding)")
+    ));
+
+    // ===== 留出集逐点表（双族并列+分辨率标注）=====
+    for s in &holdout {
+        let q_r = q_rational_permille(&fit, s.k_permille);
+        let q_p = q_pnorm_permille(&pfit, s.k_permille);
+        emit(format!(
+/*L271*/
+            "  k {:>5}‰ q_obs {:>4}‰ | rational q {:>4}‰ {} | pnorm-p2 q {:>4}‰ {}",
+            s.k_permille,
+            s.q_permille,
+            q_r,
+            res_tag(s.k_permille, s.q_permille, q_r),
+            q_p,
+            res_tag(s.k_permille, s.q_permille, q_p)
+        ));
+    }
+
+/*L281*/
+    let r = evaluate_rational_fit(&fit, &holdout, &ZoneBands::SET_D);
+    let rp = evaluate_pnorm_fit(&pfit, &holdout, &ZoneBands::SET_D);
+    emit(format!(
+        "  [rational] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        r.free_flow_max_err_permille,
+        r.free_n,
+        r.transition_max_err_permille,
+        r.trans_n,
+        r.saturated_max_err_permille,
+        r.sat_n,
+/*L291*/
+        binding,
+        family_verdict(binding, &r)
+    ));
+    emit(format!(
+        "  [pnorm-p2] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        rp.free_flow_max_err_permille,
+        rp.free_n,
+        rp.transition_max_err_permille,
+        rp.trans_n,
+        rp.saturated_max_err_permille,
+/*L301*/
+        rp.sat_n,
+        p_binding,
+        family_verdict(p_binding, &rp)
+    ));
+    emit(format!(
+        "  Prime outcome (selected family {}) = {}",
+        selected.unwrap_or("NONE"),
+        match selected {
+            Some("pnorm-p2") => family_verdict(p_binding, &rp),
+            Some(_) => family_verdict(binding, &r),
+/*L311*/
+            None => "FAIL (no feasible family: all binding)",
+        }
+    ));
+
+    // ===== back-half 敏感性（独立种子段 +16..24 / +24..32）=====
+    let back_fit: Vec<MfdSample> = FIT_LADDER
+        .iter()
+        .map(|&inj| {
+            let (mut k, mut q) = (0u64, 0u64);
+            for i in 0..N_SEEDS {
+/*L321*/
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SEED_BASE + 16 + i);
+                k += k1;
+                q += q1;
+            }
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    let back_hold: Vec<MfdSample> = HOLDOUT_LADDER
+        .iter()
+        .map(|&inj| {
+/*L331*/
+            let (mut k, mut q) = (0u64, 0u64);
+            for i in 0..N_SEEDS {
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SEED_BASE + 24 + i);
+                k += k1;
+                q += q1;
+            }
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    let (fit_b, _, binding_b) = fit_rational_saturation_detailed(&back_fit, &ZoneBands::SET_D);
+/*L341*/
+    let r_b = evaluate_rational_fit(&fit_b, &back_hold, &ZoneBands::SET_D);
+    emit(format!(
+        "  [back-half rational] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        r_b.free_flow_max_err_permille,
+        r_b.free_n,
+        r_b.transition_max_err_permille,
+        r_b.trans_n,
+        r_b.saturated_max_err_permille,
+        r_b.sat_n,
+        binding_b,
+/*L351*/
+        family_verdict(binding_b, &r_b)
+    ));
+    let (pfit_b, _, p_binding_b) = fit_pnorm_concave_detailed(&back_fit, &ZoneBands::SET_D);
+    let rp_b = evaluate_pnorm_fit(&pfit_b, &back_hold, &ZoneBands::SET_D);
+    emit(format!(
+        "  [back-half pnorm-p2] free={}‰(n={}) trans={}‰(n={}) sat={}‰(n={}) binding={} -> {}",
+        rp_b.free_flow_max_err_permille,
+        rp_b.free_n,
+        rp_b.transition_max_err_permille,
+        rp_b.trans_n,
+/*L361*/
+        rp_b.saturated_max_err_permille,
+        rp_b.sat_n,
+        p_binding_b,
+
+===== 原段落: PASTE-18 | 第 18 段 · 范围 C · 节选（第 3/3 部分） =====
+        family_verdict(p_binding_b, &rp_b)
+    ));
+
+    // ===== P3 双跑归因分解表（逐项开关对本拓扑 free 值贡献）=====
+    emit(format!("  [attribution {w}x{h} free-zone]"));
+    emit(format!(
+        "    full new pipeline (criterion loss + dense ladder + independent seeds): free={}‰",
+/*L371*/
+        rp.free_flow_max_err_permille.min(r.free_flow_max_err_permille)
+    ));
+    let ctrl = fit_rational_rel_sse_control(&fit_samples);
+    let r_ctrl = evaluate_rational_fit(&ctrl, &holdout, &ZoneBands::SET_D);
+    emit(format!(
+        "    objective=rel-SSE control (old target, same samples): free={}‰ (Δ={})",
+        r_ctrl.free_flow_max_err_permille,
+        (r_ctrl.free_flow_max_err_permille as i64)
+            - (r.free_flow_max_err_permille as i64)
+    ));
+/*L381*/
+    // 梯度密度因子：旧阶梯（2→256 倍增 8 档）+ 新目标。
+    let old_ladder: [u64; 8] = [2, 4, 8, 16, 32, 64, 128, 256];
+    let (old_samples, _) = sample_ladder(w, h, &old_ladder, 0);
+    let (fit_old_ladder, _, bind_ol) =
+        fit_rational_saturation_detailed(&old_samples, &ZoneBands::SET_D);
+    let r_ol = evaluate_rational_fit(&fit_old_ladder, &holdout, &ZoneBands::SET_D);
+    emit(format!(
+        "    ladder=old 8-step (new objective): free={}‰ binding={} (Δ={})",
+        r_ol.free_flow_max_err_permille,
+        bind_ol,
+/*L391*/
+        (r_ol.free_flow_max_err_permille as i64) - (r.free_flow_max_err_permille as i64)
+    ));
+    // 取整因子：|q_round − q_floor| 上界逐点最大（≤1‰ 结构性）。
+    let mut round_max = 0u64;
+    for s in &holdout {
+        let num = pfit.q_max_permille as u128 * s.k_permille as u128;
+        let den = ((s.k_permille as u128).pow(2) + (pfit.k0_permille as u128).pow(2)).isqrt().max(1);
+        let q_floor = (num / den) as u64;
+        let q_round = q_pnorm_permille(&pfit, s.k_permille);
+        round_max = round_max.max(q_floor.abs_diff(q_round));
+/*L401*/
+    }
+    emit(format!(
+        "    rounding (|round−floor| per point, pnorm-p2): max {round_max}‰ (structural ≤1‰)"
+    ));
+    // back-half 种子因子：独立段 vs 旧误用 holdout 段（+8..16）。
+    let old_bug_hold: Vec<MfdSample> = HOLDOUT_LADDER
+        .iter()
+        .map(|&inj| {
+            let (mut k, mut q) = (0u64, 0u64);
+            for i in 0..N_SEEDS {
+/*L411*/
+                let (k1, q1) = run_density_seed_back_half(w, h, inj, SEED_BASE + 8 + i);
+                k += k1;
+                q += q1;
+            }
+            MfdSample { k_permille: k / N_SEEDS, q_permille: q / N_SEEDS }
+        })
+        .collect();
+    let (fit_ob, _, bind_ob) = fit_rational_saturation_detailed(&back_fit, &ZoneBands::SET_D);
+    let r_ob = evaluate_rational_fit(&fit_ob, &old_bug_hold, &ZoneBands::SET_D);
+    emit(format!(
+/*L421*/
+        "    back-half seeds=reused holdout segment (old bug emulation): free={}‰ binding={} vs independent {free_ind}‰",
+        r_ob.free_flow_max_err_permille,
+        bind_ob,
+        free_ind = r_b.free_flow_max_err_permille
+    ));
+}
+
+fn main() {
+    let mut out: Vec<String> = Vec::new();
+    out.push(
+/*L431*/
+        "②′ confirmation round (debt #31; pre-registered 7160955; one-shot termination: any FAIL -> disposition ① automatically)"
+            .to_string(),
+    );
+    out.push(format!(
+        "evidence commit: {}",
+        option_env!("SETD_COMMIT").unwrap_or("(unset — build with SETD_COMMIT env)")
+    ));
+    out.push(format!(
+        "criteria: free<={}‰ transition<={}‰ saturated<={}‰ (single source = sim-traffic consts); families frozen = {{rational, pnorm-p2}}",
+        FREE_FLOW_CRIT_PERMILLE, TRANSITION_CRIT_PERMILLE, SATURATED_CRIT_PERMILLE
+/*L441*/
+    ));
+    report_topology(40, 40, &mut out);
+    report_topology(32, 32, &mut out);
+    report_topology(64, 64, &mut out);
+    let failed = out.iter().any(|l| l.contains("outcome (selected family") && l.ends_with("FAIL"))
+        || out
+            .iter()
+            .any(|l| l.contains("outcome (selected family") && l.contains("= FAIL"));
+    out.push(format!(
+        "②′ AUTO-DISPOSITION: {}",
+/*L451*/
+        if failed {
+            "FAIL -> disposition ① (追认转 C, MFD 永久纯统计) — applied automatically per pre-registered termination clause"
+        } else {
+            "PASS -> #31 核销、3a 记通过（解冻另走 ADR-NEW-26 评审）"
+        }
+    ));
+    for l in &out {
+        println!("{l}");
+    }
+}
+
+===== 原段落: PASTE-19 | 第 19 段 · 范围 C · 节选（第 1/2 部分） =====
+// FILE: docs/architecture/adr/ADR-NEW-25-MFD交通模型与验证方案.md @1db87d2
+/*L1*/
+# ADR-NEW-25：MFD 交通模型与验证方案
+
+- 编号：ADR-NEW-25（暂定，入仓正式重编号时保留映射）
+- 状态：Proposed（草案，待第 7 章评审流程正式裁决）
+- 日期：2026-11-19
+- 关联主文档章节：2.6（交通流量模型）、2.1（MFD 行）、Stage 2C（MFD 模型验证、交通模型可复现验证场景）
+- 来源：Stage 2C 实施（C1）；设计审计"验证只有一句话无场景无指标"处置
+- 裁决人：项目负责人（可委托外部评审，遵循 review/REVIEW-CONVENTIONS.md）
+
+## 背景
+/*L11*/
+
+主文档将 MFD（Macroscopic Fundamental Diagram，宏观基本图）列为交通流量模拟候选模型
+（2.6："交通流量模型以 MFD 为候选设计方向。MFD 的适用范围、参数校准、与微观 Agent
+交通行为之间的耦合方式，需要通过独立测试确认"），但全文没有验证场景、指标与判据。
+设计审计与外部评审均指出：无场景无指标的"待验证"无法执行。本 ADR 给出验证方案本身
+（模型形式仍为候选，参数仍待校准）。
+
+## 问题
+
+1. MFD 曲线形式未定（三角基本图 vs 二次凹曲线 vs 分段拟合）。
+/*L21*/
+2. "适用范围、参数校准、耦合方式"三项要求（2.6）无验证场景与判据。
+3. MFD 输出是否反馈权威模拟（影响路径选择/降级）未定——反馈则必须满足 2.9 确定性边界。
+4. 交通模型本身（sim-traffic）无任何实现，"交通模型具备可复现验证场景"（Stage 2C 退出条件）
+   无从谈起。
+
+## 决策
+
+1. **模型形式（2026-11-19 决策4 投票定案：凹形饱和扩展，A7:B2:C1）**：区域级基本图
+   q(k) 的自由流段改为**凹形饱和分支**（不再假设线性自由流）：
+   - **函数族写死（不得停留候选括号）**：单调凹饱和族 q(0)=0、零密度斜率自由估计
+/*L31*/
+     但**越界判失败**（物理上界 1000‰；禁止"把约束当估计"——豆包）、渐近可估、
+     纯幂律 q=c·k^p（p<1）**排除**（k→0 导数发散，豆包/Kimi）。默认候选=**有理饱和式
+     q=q_max·k/(k+k_half)**（定点友好 +−×÷ 可实现；多家复算 C 各点 15–83‰），备选=
+     定点对数/指数饱和（超越函数须定点实现保确定性红线，MiMo/Claude）。
+   - **k_turn 显式衔接参数保留**（B 家意见吸收，DeepSeek/Kimi/Grok）：自由流凹段与
+     平台段经显式衔接参数连接，禁止两段硬接（硬接会退化为现平台型复现缺陷）。
+   - 可选下降支保留（`descending_branch_observed` 语义迁移到新族）。
+   - 拟合=族内**自由估计**+定点实现（i64/i128、舍入平局规则入黄金测试）。
+   - 参数仍由决策 3 校准流程从微观基准采样得出。
+   - **决策5 投票修订（2026-11-21，Q2 采纳 2/有条件 8/延后 1）**：默认候选族=
+/*L41*/
+     **pnorm-p2**（q=q_max·k/√(k²+k0²)，定点 isqrt 就近舍入；黄金已钉+floor 偏差披露）；
+     MiMo 异议记录：pnorm 是"淘汰赛冠军"——拟合集 rel-SSE 劣于有理族、转折区误差更大，
+     胜出靠物理可行性（binding 语义）非拟合优度。转定案条件=isqrt 黄金✅、拟合集逐点
+     归档✅、back-half✅、**Set E 确认轮全过（未达成：2026-11-21 2/3，32×32 free 133‰）**。
+   （依据：决策4 十家投票；根因=点队列 q(k) 凹形、平台型/三角型线性自由流假设失效。
+   少数异议如实保留：MiniMax-C/E（基准无交通物理语义，拟合的是产物非定律，应先修
+   微观基准）、Claude 基准漂移疑云（已核对 main 当前 mfd-tbench1.txt v_free=1000‰，
+   疑云不成立）。）
+2. **MFD 的权威性边界（2026-11-19 投票修订：三层拆分）**：
+   - 微观交通状态（sim-traffic 车辆/位置/容量记账）= **权威状态**（入档入摘要）；
+/*L51*/
+   - MFD 样本 (k,q) 与拟合参数 = **非权威派生统计**（仅展示/校准用途）；
+   - 降级等级（BudgetRegistry）= **权威状态**，但触发只依赖确定性工作量单位
+     （ADR-NEW-14 投票定案口径）——MFD 信号若接入降级输入，必须经确定性定点口径
+     并入权威路径并走"注入延迟/线程数不改变摘要"验证，且另行 ADR 修订。
+   不直接反馈权威路径选择；反馈需另行 ADR。理由：反馈回路会把 MFD 参数误差放大进
+   权威状态，且 2.6 明令"不得在缺少验证的情况下将 MFD 的理论表现直接当作实际引擎性能"。
+   （投票依据：千问Go!/MiniMax 指出"降级等级是权威状态"原措辞自相矛盾。）
+3. **三项独立验证**（2.6 原文要求，逐项给场景+指标+判据）：
+   - 3a 适用范围（2026-11-19 投票修订：独立参照防同义反复）：MFD 聚合与微观实测同源
+     恒等不构成验证。判据须基于**独立参照**：①人工合成精确基本图（已知参数注入→拟合
+/*L61*/
+     恢复，见 sim-traffic `synthetic_triangle_is_recovered`）；②留出验证集（拟合与
+     评估用不同密度档）；③（二期）CTM/LWR 解析模型对照。判据=自由流区相对误差 ≤10%、
+     临界密度位置偏差 ≤20%、拥堵区误差 ≤25%（阈值为占位候选，校准后复核）。
+     （投票依据：MiniMax/千问Go!/Claude——"循环验证/同义反复"。）
+     **2026-11-19 校准复核（V1 实测，docs/benchmarks/mfd-3a-reference.txt）**：
+     判据三区分立定案=自由流 k<k_turn/2 ≤10%、饱和区 k≥4·k_turn ≤25%、k_c ≤20%
+     （仅三角型；平台型 N/A 无峰值）、转折区只记录；三集协议=拟合 A / 试点 B（区域
+     边界导出，披露口径）/ 确认 C（裁决集）+多 seed 平均（N=8，非权威统计方差缩减）。
+     确认集实测：饱和区 102‰ **通过**、自由流区 190‰ **未通过**（判据 100‰）、
+     转折区 521‰ 记录。未通过根因=点队列 q(k) 自 k≈34–54‰ 起即凹形、无独立线性自由流
+/*L71*/
+     段（A 组 (76,67) 已偏 134‰、(205,135) 偏 519‰（Claude 口径勘误）），属**模型形式**缺陷——平台型/三角型
+     均假设线性自由流分支。处置=决策4 投票（A7:B2:C1）凹形扩展已定案（见决策 1）。原模型形式扩展条目（凹形自由
+     流分支）立债务 #31 已由决策4 裁决处置=凹形扩展启动，待 Set D 复测完成后核销。
+     **2026-11-19 决策4 判据修订（去自指，8 家共识）**：(a) 判据与模型解耦——分区
+     边界 k_turn 由固定 fixture 预注册（复测前声明，禁止由被评模型参数导出；MiniMax
+     敏感性实证 k_turn/4 下 190→48‰ 全过=同参 gaming）；(b) 转折区设硬判据 ≤250‰
+     （521‰ 原只记录恰豁免最坏点）；(c) 复测协议=凹形族预注册+新确认集 Set D（种子
+     段与 A/B/C 不相交；C 已参与 V1 判定耗损）+第二拓扑（24×24 或 64×64）+多 seed
+     逐 seed 披露；(d) 各区样本数下限防虚假 PASS；(e) 复测报最差点非均值；(f) 判据
+     常量单一来源（代码断言与 ADR 判据引用同一常量——门禁脱钩已立整改）。终止条件：
+/*L81*/
+     Set D 或第二拓扑任一 FAIL → 转 C（放弃 MFD→降级）关闭，不再延后。3a 转 Verified 条件仍未清（如实记录）。
+   - **Set D 复测结果（2026-11-20，预注册 fixture 执行完毕）**：两拓扑自由流判据均 FAIL
+     （40×40：自由流最大误差 148‰ > 100‰；64×64：142‰ > 100‰；转折 70/137‰、饱和 28/44‰
+     均 PASS）→ **按预注册终止条件裁决：转 C（放弃 MFD→降级输入），不再延后**。附带证据：
+     自由估计零密度斜率 1242/1271‰ 超物理界 1000‰（约束绑定回退后仍 FAIL）——微观基准
+     初始斜率 >1 车/边/tick 的现象本身即 MiniMax"基准无交通物理语义（E 议题）"的实证，
+     E 项修基（车辆在途/路段存储、有向边独立容量）若未来立项，可重新评估本判定。
+     稳态诊断：持续注入下高密度档不稳态（40×40 仅 1/8、64×64 0/8 档稳态，已披露）。
+     数据文件：docs/benchmarks/mfd-3a-setd.txt。
+   - 3b 参数校准：v_free/k_c/q_max/w 按决策 1 拟合口径（最大割线+下降支最小二乘，
+/*L91*/
+     定点实现）产生，拟合输入输出全部落 docs/benchmarks/（T-Bench-1 已输出样本表+拟合值）；
+     同种子重校准必须逐位一致（确定性约束）。
+   - 3c 耦合方式（2026-11-19 投票修订：明确代码路径）：MFD→降级/背压输入路径
+     （如区域密度超 k_c 触发降级信号）须有**生产代码路径**（当前 BudgetRegistry 尚无
+     生产调用方——条件未清不得开工该模块）+专用"MFD→降级信号"线程无关测试
+     （通用并行证据不替代耦合验证）。验证口径=Stage 2B chaos 模式（注入延迟/线程数
+     变化不改变摘要）。
+   - 3a/3b/3c 各自产出独立指标文件入 docs/benchmarks/mfd-*.txt（GPT-6）。
+4. **可复现验证场景（交通基准场景 T-Bench-1；2026-11-19 与实装一致化）**：40×40 双向
+   网格路网、固定种子 0x00C0_FFEE_1234_5678、OD 对由 sim-rng event_u64 派生、车辆
+/*L101*/
+   按密度阶梯持续注入（2→256 倍增 8 档）、每档 260 tick、**采样=末 60 tick 窗口均值**
+   （稳态判据：窗口前后半 q 差 ≤2‰）、上升/下降双向扫描（滞回判据：同注入点
+   |q_up−q_down| ≤2‰）。场景全部参数进 fixture（sim-test-support 口径），逐 tick 折叠
+   GlobalDigest（覆盖全部权威状态含 goal/next_id/pending——投票修复项）。
+5. **确定性判据**：同种子两跑逐点 (k, q) 序列一致（GlobalDigest 相等）；
+   注入顺序无关性（同一 ID 集不同注入顺序→终态摘要一致；已实装
+   `explicit_id_injection_is_order_independent`，ID 由集中分配点分配=ADR-NEW-20 口径）。
+
+## 考虑过的替代方案
+
+/*L111*/
+| 备选 | 处置 | 理由 |
+| --- | --- | --- |
+| 二次凹曲线 q(k) | 备选 | 拟合自由度高但外推危险；三角基线更保守 |
+| MFD 反馈路径选择 | 否决（默认） | 参数误差放大进权威状态；2.6 验证前禁止 |
+| 纯统计不建模 | 否决 | 无法支撑降级输入与"交通流量模拟"定位 |
+| 直接采用 CS 系列交通口径 | 否决 | 无公开数据可复现；T-Bench-1 自建基准 |
+
+## 影响
+
+- sim-traffic（当前空骨架）获得最小实现范围：微观基准（车辆沿最短路行驶+路段容量排队）
+/*L121*/
+  +区域聚合采样器+基本图拟合（定点）。
+- EC-01/EC-04：降级信号增加"区域密度"输入源（须走确定性工作量单位口径，见 ADR-NEW-14）。
+- 债务 #6（坐标/单位/角度）部分收窄：密度单位=辆/格（网格路网），流量单位=辆/tick。
+
+## 验证方法
+
+1. T-Bench-1 场景实现并通过确定性判据（决策 5）——已实装（sim-traffic 4+5 测试、
+   tbench1 双向扫描、逐 tick GlobalDigest）。
+2. 3a/3b/3c 三项各自产出指标文件入 docs/benchmarks/mfd-*.txt（当前 tbench1 数据见
+   docs/benchmarks/mfd-tbench1.txt）。
+/*L131*/
+3. 3a 独立参照、3c 生产代码路径为转 Verified 的条件（条件未清不得开工对应模块）。
+
+## 3a 复测结果（2026-11-20，X1-X4 整改后；证据 commit ce4a705）
+
+- 口径修复（k/q 同群体、预注册绝对带 ZoneBands::SET_D{100,2000}、越界判失败、
+  目标判据同构）后重跑 Set D，**判定翻转**：
+  - 40×40：rational 三区 83/118/56‰ 全 PASS（自由估计斜率 1095‰ 越界→族淘汰）；
+    **pnorm-p2 三区 83/189/12‰ 全 PASS**（斜率 932‰ 物理可行）。
+  - 64×64：rational 三区 80/112/89‰ 全 PASS（越界 1092‰→族淘汰）；
+    **pnorm-p2 三区 48/120/20‰ 全 PASS**（斜率 944‰）。
+/*L141*/
+  - 原"自由流 148/142‰ FAIL"系 q>k 测量 bug 的误差地板（豆包复算 |7−6|/7=142.86‰
+    恰为旧 FAIL 值），修复后消失。
+- 结论：**"凹形不可救→转 C"不成立**——存在物理可行凹形族（p-norm p=2）两拓扑三区
+  全过。按豆包 A2 预注册路径：转 C 终局回滚，凹形扩展继续，**重新投票确认**
+  （转 C 回滚 / pnorm-p2 入决策 1 / 族预选规则=物理可行域内拟合集 rel-SSE 最小）。
+- 遗留：pnorm back-half 稳态敏感性未单跑（rational back-half 与全窗结论一致）；
+  稳态诊断两拓扑 0-1/8 档（持续注入固有，已披露）。
+
+## 正式裁决（2026-11-19，决策2 投票）
+
+/*L151*/
+- **裁决：有条件采纳 → Accepted（附条件）**（10/10 票有条件采纳，零拒绝零延后；
+  裁决人=项目负责人组织的 10 家署名投票，维护者代录）。
+- 理由：验证方案框架（三项独立验证+T-Bench-1+确定性判据）方向正确且已实装落地；
+  投票共识的 11 项硬伤中代码面 5 项已修复并回归（拟合重写、fold_digest 补字段、
+  窗口均值采样、双向扫描、注入顺序无关性），协议面已修订（模型形态辨识二选一、
+  权威性三层拆分、3a 独立参照、3c 代码路径条件、协议与实装一致化）。
+- 验证条件（转 Verified 前置，未清不得开工对应模块）：
+  1. 3a 独立参照验证（人工合成图+留出验证集，二期 CTM/LWR 对照）完成并回填误差阈值；
+  2. 3c 生产代码路径（MFD→降级信号）实装+专用耦合线程无关测试通过；
+  3. 拟合阈值/参数经校准复核回填（当前 10%/20%/25% 为占位）；
+
+===== 原段落: PASTE-20 | 第 20 段 · 范围 C · 节选（第 2/2 部分） =====
+/*L161*/
+  4. R3/R4 与并发场景下 MFD 采样口径复验（豆包保留票、DeepSeek 附条件）。
+- 修订记录：本节决议含 2026-11-19 决策2 投票 10 家裁决要求的全部协议面修订；
+  代码面修复见 crates/sim-traffic、crates/sim-core/budget.rs、crates/sim-network
+  对应提交与回归测试。
+
+## 3a Set E 确认轮（2026-11-21；预注册 fixture 9a73ee0，证据 mfd-3a-sete.txt）
+
+- fixture：新种子段 0x00C0_FFEE_3333_0000（fit +0..7 / holdout +8..15 种子不共用）、
+  拟合/留出阶梯交错不相交、拓扑 40×40 / **32×32（第三拓扑）** / 64×64、族与选族规则
+  继承冻结实现（先落盘后取数）。
+/*L171*/
+- 结果：40×40 pnorm-p2 83/190/12 PASS；**32×32 133/148/46 FAIL（自由流 133‰ > 100‰）**；
+  64×64 48/120/20 PASS。三拓扑预选均按 Q3 规则选中 pnorm-p2（rational 全
+  binding=true 被正确排除——预选修复生效）。back-half pnorm 40×40 66/120/20 PASS。
+- 判定：**Set E 未全过（2/3 拓扑），凹形扩展（pnorm-p2 单族）未获确认轮通过**。
+  按预注册纪律不得事后调判据/减样本救场；32×32 free 区 n=3 小样本与 ‰ 取整舍入
+  敏感性（Claude/豆包精度异议）如实披露。处置候选（待负责人裁决）：①追认转 C；
+  ②MiniMax E 议题（微观基准交通物理语义修基）后扩族再战再投。
+- 稳态诊断：0-1/8 档稳态（持续注入固有，已披露）。
+
+## ②′ 确认轮预注册规格（2026-11-22 决策6 裁决 Z3；一轮定生死）
+/*L181*/
+
+决策6（11 票，②系 8:①系 3）裁决：Set E 的 133‰ FAIL 不构成终局否决——**原证据无效**
+（估计目标与判据不同构、采样取整偏置、拟合集单点杠杆；反事实复算显示同 fixture 仅换
+估计目标即 32×32 66‰ 全过）。本节为修复测量侧后的**确认轮规格预注册**（先本节入仓、
+后实现 fixture 提交、再取数；判据与终止条款不得在取数后改动）。
+
+1. **修测四项（测量侧，不动微观基准物理语义）**：
+   - 估计目标对齐预注册判据：拟合损失改为**按判据归一化的分区最大相对误差**
+     （minimize max(free_err/100, trans_err/250, sat_err/250)）——杜绝"估计目标≠判据"
+     第四次漂移（决策4 SSE、决策5 rel-SSE 同缺陷）；
+/*L191*/
+   - 低密阶梯加密：自由流区判定点 n≥5（抗单点杠杆），密度阶梯按几何加密至低密度段；
+   - 每点分辨率下限：相对判据 × q_obs 必须 ≥2 个采样单位（‰ 取整），否则该点标注
+     "分辨率受限"并以绝对误差判据复核（MiMo/Claude 口径并记）；
+   - 稳态硬门/可稳态基座：稳态判据（前后半 q 差 ≤2‰ 或 ≤15 辆双口径，文档口径统一）
+     不满足的档位标注"非稳态"并单独报告；目标=自由流区稳态 ≥50%（DeepSeek 建议）。
+2. **fixture 预注册**：新种子段 0x00C0_FFEE_4444_0000+i（fit/holdout/back-half 三段
+   独立）；拓扑 32×32+40×40+64×64 三拓扑全跑；族集冻结={rational, pnorm-p2}（扩族须
+   重新投票——决策5 共识）；预选规则=物理可行域内拟合集归一化损失（一次锁定，不得回退）。
+3. **判据不变**：free ≤100‰、trans ≤250‰、sat ≤250‰；n 下限 free≥5、sat≥3（随修测
+   四项自动满足）；输出双族并列逐行留出表（已实装）+分带敏感性表。
+/*L201*/
+4. **终止条款（焊死）**：该轮任一拓扑任一区 FAIL→**自动落 ①（追认转 C，MFD 永久纯
+   统计），无须再投票**；全部 PASS→#31 核销、3a 记通过、MFD→降级解冻另行按 ADR-NEW-26
+   解冻流程评审。
+5. **双跑归因分解表**（Qwen 判别性诊断）：修复前后各跑一轮，逐项开关（估计目标/取整/
+   梯度密度/back-half 种子）列出各对 32×32 free 值的贡献，作为"133→66"归因证据。
+6. **E 议题解耦**：在途行程时间/有向边独立容量/准入规则三件**独立立项**（Stage 2D+
+   路线图），不挂 #31、不阻塞本确认轮。
+
+## ②′ 确认轮结果（2026-11-22；预注册 7160955；证据 docs/benchmarks/mfd-3a-prime.txt，SETD_COMMIT 自标）
+
+/*L211*/
+按上节预注册规格实装取数（修测四项+种子段 0x4444+18 档低密加密+族集冻结+判据不变）：
+
+| 拓扑 | 选中族 | 判定 | free/trans/sat |
+| --- | --- | --- | --- |
+| 40×40 | pnorm-p2 | PASS | 83‰ / — / — |
+| 32×32 | pnorm-p2 | **FAIL** | **111‰** / — / — |
+| 64×64 | pnorm-p2 | PASS | 74‰ / — / — |
+
+**按预注册终止条款（焊死）自动执行：任一拓扑任一区 FAIL → ①（追认转 C）**——
+MFD 永久仅作非权威统计展示，不作降级/背压触发依据；无须再投票。
+/*L221*/
+
+归因分解（P3，如实记录）：32×32 free 全管线 111‰ vs rel-SSE 控制目标 71‰——
+**估计目标敏感性仍主导判定**（判据归一化 minimax 目标在留出集自由流上反而劣于
+rel-SSE）；取整贡献 ≤1‰（结构性）；梯度密度/back-half 种子为次要因子；自由流区
+稳态率 4-6/18（低密档持续注入非稳态），测量基座结构性弱点保留记录。结论按条款
+执行，不以归因结果回改判定（防裁决购物）。
+
+## 当前状态
+
+- **Accepted（附条件）**（2026-11-19 决策2 投票裁决；条件清单见上节）。
+/*L231*/
+- 实施面：T-Bench-1 已实装并通过确定性判据（Stage 2C 退出核对 6/6）；3a/3c 条件
+  为转 Verified 前置。后续：独立参照验证 → 阈值回填 → 转 Verified。
+- **转 Verified 条件进展（2026-11-19 V1–V5 实测）**：
+  - 3a 独立参照验证：**部分通过**——饱和 102‰ PASS、自由流 190‰ FAIL（判据 100‰），
+    模型形式凹形缺陷立债务 #31；处置=债务 #31 裁决前 MFD 仅统计展示不作降级触发依据
+    （证据 docs/benchmarks/mfd-3a-reference.txt）。
+  - 3c 生产代码路径+耦合验证：**半达成**——需求压力通道已实装（ADR-NEW-26 草案）
+    + mfd_coupling 三路摘要一致（1/2/8 线程、混沌注入、串行参考）；触发收益验证
+    随债务 #31。
+  - 阈值校准回填：**候选已出**——债务 #27 三场景基线实测、候选判据=单次尝试展开
+/*L241*/
+    >4096 或让步≥8 切机制 A，数值随 G2 定案（docs/benchmarks/G5-threshold-baseline.txt）。
+  - R3/R4 复验：R3 已过（Stage 2B）；R4 移交发布门禁。
+- **终局（2026-11-20 Set D 复测 FAIL → 预注册终止条件触发）：转 C**——MFD 永久仅作
+  非权威统计展示，**不作降级/背压触发依据**；本 ADR 的"模型扩展"部分（凹形饱和族）已
+  实装并通过合成恢复测试，但真实点队列数据两拓扑自由流判据均 FAIL（见上节 Set D 结果），
+  按终止条件关闭、不再延后。MFD→降级解禁的唯一重开路径=MiniMax E 议题（微观基准交通
+  物理语义修基）立项后重新验证，且须重新走投票裁决。ADR-NEW-26 需求压力通道同步冻结
+  （见其当前状态）。
+- **决策6 裁决（2026-11-22，11 票 ②系 8:①系 3）**：上述"终局：转 C"被**撤销**——Set E
+  的 133‰ FAIL 系原证据无效（估计目标≠判据、取整偏置、单点杠杆；反事实复算同 fixture
+/*L251*/
+  仅换估计目标即 32×32 66‰ 全过），不构成终局否决。#31 不核销、不追认：按本 ADR
+  "②′ 确认轮预注册规格"修测一轮定生死（仍 FAIL→自动落 ① 追认转 C，无须再投票）。
+  MFD→降级继续冻结（ADR-NEW-26 通道已加代码级冻结护栏）。理由记录=原证据无效，
+  非"复测已 PASS"；回滚≠解禁。
+- **终局（2026-11-22 ②′ 确认轮）：转 C**——修测一轮定生死条款执行：32×32 free
+  111‰ FAIL → 自动落 ①。#31 核销（转 C 终局）；本 ADR"模型扩展"部分与 3a 验证
+  以失败告终（归因记录见上节），MFD 永久纯统计。E 议题三件独立立项（解耦）。

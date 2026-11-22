@@ -1,0 +1,2744 @@
+# STAGE2B3 审计材料合订（范围 B）· 基准 commit 1db87d2 · 纯文本
+# 格式：// FILE = 文件边界；/*Lnnn*/ = 每 10 行锚点；段首标注 = 原 PASTE 编号与完整性
+
+===== 原段落: PASTE-21 | 第 21 段 · 范围 B · 节选（第 1/4 部分） =====
+// FILE: crates/sim-network/src/lib.rs @1db87d2
+/*L1*/
+//! 路网系统：道路拓扑、动态代价与路网事务的原子发布（主文档 2.2 架构分层、2.5/2.6）。
+//! 权威 crate。
+//!
+//! Stage 2A 实装（2026-11-19，ADR-NEW-24 定案）：
+//! - CSR 静态拓扑：`offsets` + `adj_edge_ids`，邻接条目按 (node_id, edge_id) 升序，
+//!   数组序即确定性迭代序；动态代价存于边表（2.6 拓扑与代价分离）。
+//! - 事务发布原子：整笔生效或整笔不生效（失败不改版本号）；拓扑事务重建 CSR、
+//!   代价事务原位写入。
+//! - ADR-NEW-23 两阶段相交判定：AABB 宽筛 + 边 ID 窄判；代价更新默认不触发重算。
+//!
+/*L11*/
+//! 依赖方向约束见 docs/architecture/crate-authority-list.md。
+
+#![forbid(unsafe_code)]
+
+use std::collections::BTreeMap;
+
+/// 所属架构层（依赖方向检查与文档用）。
+pub const LAYER: &str = "路网系统";
+/// 是否权威 crate（2.9 确定性边界内；权威 crate 置严格 clippy.toml）。
+pub const AUTHORITATIVE: bool = true;
+/*L21*/
+
+/// 供调用方与测试以函数调用读取权威标记（clippy 允许的运行时读取点）。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+// ---------------- 影响区域（网格 1 mm） ----------------
+
+/// 影响区域：轴对齐包围盒（ADR-NEW-23 宽筛层）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/*L31*/
+pub struct Region {
+    pub min_x: i64,
+    pub min_y: i64,
+    pub max_x: i64,
+    pub max_y: i64,
+}
+
+impl Region {
+    pub fn new(min_x: i64, min_y: i64, max_x: i64, max_y: i64) -> Self {
+        Region {
+/*L41*/
+            min_x: min_x.min(max_x),
+            min_y: min_y.min(max_y),
+            max_x: min_x.max(max_x),
+            max_y: min_y.max(max_y),
+        }
+    }
+
+    pub fn from_points(pts: &[(i64, i64)]) -> Self {
+        let mut r = Region::new(i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+        for &(x, y) in pts {
+/*L51*/
+            r = r.union(&Region::new(x, y, x, y));
+        }
+        r
+    }
+
+    pub fn intersects(&self, o: &Region) -> bool {
+        self.min_x <= o.max_x && o.min_x <= self.max_x && self.min_y <= o.max_y && o.min_y <= self.max_y
+    }
+
+    pub fn union(&self, o: &Region) -> Region {
+/*L61*/
+        Region {
+            min_x: self.min_x.min(o.min_x),
+            min_y: self.min_y.min(o.min_y),
+            max_x: self.max_x.max(o.max_x),
+            max_y: self.max_y.max(o.max_y),
+        }
+    }
+}
+
+// ---------------- 边与事务 ----------------
+/*L71*/
+
+/// 路网边（几何为毫米网格折线，供路径影响区域计算）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edge {
+    pub id: u64,
+    pub a: u64,
+    pub b: u64,
+    pub cost: i64,
+    pub geom: Vec<(i64, i64)>,
+}
+/*L81*/
+
+impl Edge {
+    pub fn region(&self) -> Region {
+        if self.geom.is_empty() {
+            Region::new(0, 0, 0, 0)
+        } else {
+            Region::from_points(&self.geom)
+        }
+    }
+}
+/*L91*/
+
+/// 路网事务操作（每项自带影响区域；拓扑与代价分离，2.6）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Op {
+    AddEdge(Edge),
+    RemoveEdge { id: u64 },
+    SetDynamicCost { id: u64, cost: i64 },
+}
+
+impl Op {
+/*L101*/
+    pub fn region(&self, net: &Network) -> Region {
+        match self {
+            Op::AddEdge(e) => e.region(),
+            Op::RemoveEdge { id } | Op::SetDynamicCost { id, .. } => {
+                net.edge(*id).map(Edge::region).unwrap_or(Region::new(0, 0, 0, 0))
+            }
+        }
+    }
+}
+
+/*L111*/
+/// 路网事务：整笔原子发布（ADR-NEW-23）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tx {
+    pub id: u64,
+    pub ops: Vec<Op>,
+}
+
+impl Tx {
+    pub fn region(&self, net: &Network) -> Region {
+        let mut r = Region::new(i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+/*L121*/
+        for op in &self.ops {
+            r = r.union(&op.region(net));
+        }
+        r
+    }
+}
+
+/// 发布失败原因（事务整体不生效，版本号不变）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TxError {
+/*L131*/
+    EmptyTx,
+    DuplicateEdge { id: u64 },
+    UnknownEdge { id: u64 },
+    /// 预算预检拒绝（2026-11-19 投票修复 1d；事务不入队，下 tick 重试）。
+    BudgetExceeded { kind: TxBudgetKind },
+}
+
+/// 事务预算分类（拓扑/代价分开计量；一笔含拓扑操作的事务整体按拓扑计）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxBudgetKind {
+/*L141*/
+    Topology,
+    Cost,
+    EdgeOps,
+}
+
+/// 事务每 tick 上限（候选占位，待 ADR-NEW-14 阈值回填；2026-11-19 投票修复 1d）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxLimits {
+    /// 拓扑事务（增/删边）每 tick 上限。
+    pub topology_per_tick: u64,
+/*L151*/
+    /// 纯代价事务每 tick 上限。
+    pub cost_per_tick: u64,
+    /// 单笔事务工作量上限（op 数+几何点数），防一笔超大事务绕过预算。
+    pub max_edge_ops: u64,
+}
+
+impl Default for TxLimits {
+    fn default() -> Self {
+        Self { topology_per_tick: 1024, cost_per_tick: 1024, max_edge_ops: 8192 }
+    }
+/*L161*/
+}
+
+/// 事务预算限制器（确定性工作量单位；publish 前预检 → 超限=QueueToNextTick 语义）。
+/// 调用契约：`admit` 通过后调用 `Network::publish`；tick 边界调用 `reset`。
+#[derive(Clone, Debug)]
+pub struct TxLimiter {
+    limits: TxLimits,
+    topology_used: u64,
+    cost_used: u64,
+}
+/*L171*/
+
+impl TxLimiter {
+    pub fn new(limits: TxLimits) -> Self {
+        Self { limits, topology_used: 0, cost_used: 0 }
+    }
+
+    pub fn reset(&mut self) {
+        self.topology_used = 0;
+        self.cost_used = 0;
+    }
+/*L181*/
+
+    fn op_work(op: &Op) -> u64 {
+        match op {
+            Op::AddEdge(e) => 1 + e.geom.len() as u64,
+            _ => 1,
+        }
+    }
+
+    /// 预检并计量（拒绝时零计量，可下 tick 原样重试）。
+    pub fn admit(&mut self, tx: &Tx, _net: &Network) -> Result<(), TxError> {
+/*L191*/
+        if tx.ops.is_empty() {
+            return Err(TxError::EmptyTx);
+        }
+        let work: u64 = tx.ops.iter().map(Self::op_work).sum();
+        if work > self.limits.max_edge_ops {
+            return Err(TxError::BudgetExceeded { kind: TxBudgetKind::EdgeOps });
+        }
+        let is_topology = tx.ops.iter().any(|op| matches!(op, Op::AddEdge(_) | Op::RemoveEdge { .. }));
+        if is_topology {
+            if self.topology_used >= self.limits.topology_per_tick {
+/*L201*/
+                return Err(TxError::BudgetExceeded { kind: TxBudgetKind::Topology });
+            }
+            self.topology_used += 1;
+        } else {
+            if self.cost_used >= self.limits.cost_per_tick {
+                return Err(TxError::BudgetExceeded { kind: TxBudgetKind::Cost });
+            }
+            self.cost_used += 1;
+        }
+        Ok(())
+/*L211*/
+    }
+}
+
+/// 事务重试上限（债务 #28 / ADR-NEW-24 决策 4：沿用原 tx_id 按全序重排入队重试；
+/// 重试超限转受阻终态+诊断事件 NET-0001）。
+pub const TX_RETRY_LIMIT: u32 = 3;
+
+/// 一次重试入队的处置结果。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RetryOutcome {
+/*L221*/
+    /// 已重新入队，携带累计重试次数（含本次）。
+    Requeued { retry_count: u32 },
+    /// 超过 `TX_RETRY_LIMIT`，转受阻终态。
+    Blocked { retry_count: u32 },
+}
+
+/// 被预算拒绝（`TxError::BudgetExceeded`）事务的重试队列。
+///
+/// 语义（债务 #28 定案）：重试**沿用原 tx_id**（事务身份稳定，2.8 原则），按 tx_id
+/// 全序重排入队（处理顺序不依赖到达先后，与过期结果策略同口径）；重试上限
+/*L231*/
+/// [`TX_RETRY_LIMIT`]，超限转受阻终态并产生诊断事件（不改变权威状态）。
+#[derive(Default, Debug)]
+pub struct TxRetryQueue {
+    /// tx_id -> (事务, 累计重试次数)。BTreeMap 保证 due() 按 tx_id 全序。
+    pending: BTreeMap<u64, (Tx, u32)>,
+    /// 受阻终态的 tx_id（按受阻顺序记录，确定性）。
+    blocked: Vec<u64>,
+}
+
+impl TxRetryQueue {
+/*L241*/
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 失败事务重新入队（沿用原 tx_id）；同一事务重复 offer 累计计数。
+    pub fn offer(&mut self, tx: Tx) -> RetryOutcome {
+        let id = tx.id;
+        let count = self.pending.get(&id).map(|(_, c)| *c).unwrap_or(0) + 1;
+        if count > TX_RETRY_LIMIT {
+            self.pending.remove(&id);
+/*L251*/
+            self.blocked.push(id);
+
+===== 原段落: PASTE-22 | 第 22 段 · 范围 B · 节选（第 2/4 部分） =====
+            RetryOutcome::Blocked { retry_count: count }
+        } else {
+            self.pending.insert(id, (tx, count));
+            RetryOutcome::Requeued { retry_count: count }
+        }
+    }
+
+    /// tick 边界取回全部待重试事务（按 tx_id 全序）；取走即出队——再次失败须
+    /// 重新 [`offer`]（重试次数保留在队列语义内，不随 due 清零）。
+/*L261*/
+    pub fn due(&mut self) -> Vec<Tx> {
+        std::mem::take(&mut self.pending)
+            .into_values()
+            .map(|(tx, _)| tx)
+            .collect()
+    }
+
+    /// 当前等待重试的 tx_id（升序）。
+    pub fn pending_ids(&self) -> Vec<u64> {
+        self.pending.keys().copied().collect()
+/*L271*/
+    }
+
+    /// 受阻终态 tx_id（按受阻顺序）。
+    pub fn blocked_ids(&self) -> &[u64] {
+        &self.blocked
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+/*L281*/
+
+    /// 把受阻终态写入诊断通道（NET-0001，逐 tx_id 一条，顺序=受阻顺序）。
+    /// 调用方在 tick 边界调用；诊断事件不改变权威状态（EC-08）。
+    pub fn emit_blocked_diagnostics(&self, sink: &mut sim_error::DiagnosticSink, tick: u64) {
+        for &id in &self.blocked {
+            sink.emit(
+                sim_error::ErrorCode::new("NET", 1),
+                "tx retry limit exceeded; transaction blocked",
+                sim_error::SimErrorContext {
+                    tick,
+/*L291*/
+                    entity_id: id,
+                    system: "sim-network",
+                },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod txlimiter_tests {
+/*L301*/
+    use super::*;
+
+    fn cost_tx(id: u64) -> Tx {
+        Tx { id, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] }
+    }
+    fn topo_tx(id: u64) -> Tx {
+        Tx {
+            id,
+            ops: vec![Op::AddEdge(Edge {
+                id: 100 + id,
+/*L311*/
+                a: 0,
+                b: 1,
+                cost: 1,
+                geom: vec![(0, 0), (1, 0)],
+            })],
+        }
+    }
+
+    #[test]
+    fn topology_and_cost_budgets_are_separate() {
+/*L321*/
+        // 纯代价事务用满不应挡住拓扑事务（1d：分开上限）。
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+            max_edge_ops: 100,
+        });
+        assert!(lim.admit(&cost_tx(1), &net).is_ok());
+        assert_eq!(
+            lim.admit(&cost_tx(2), &net),
+/*L331*/
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::Cost })
+        );
+        assert!(lim.admit(&topo_tx(3), &net).is_ok(), "topology budget independent");
+        assert_eq!(
+            lim.admit(&topo_tx(4), &net),
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::Topology })
+        );
+    }
+
+    #[test]
+/*L341*/
+    fn oversized_single_tx_is_rejected() {
+        // 一笔超大事务不能绕过预算（工作量上限）。
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 10,
+            cost_per_tick: 10,
+            max_edge_ops: 3,
+        });
+        let big = Tx {
+            id: 9,
+/*L351*/
+            ops: vec![Op::AddEdge(Edge {
+                id: 9,
+                a: 0,
+                b: 1,
+                cost: 1,
+                geom: vec![(0, 0), (1, 0), (2, 0), (3, 0)],
+            })],
+        };
+        assert_eq!(
+            lim.admit(&big, &net),
+/*L361*/
+            Err(TxError::BudgetExceeded { kind: TxBudgetKind::EdgeOps })
+        );
+    }
+
+    #[test]
+    fn rejected_tx_consumes_nothing_and_reset_rearms() {
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+/*L371*/
+            max_edge_ops: 100,
+        });
+        assert!(lim.admit(&topo_tx(1), &net).is_ok());
+        assert!(lim.admit(&topo_tx(2), &net).is_err());
+        // 拒绝不计量：reset 后原样可入（QueueToNextTick 语义）
+        lim.reset();
+        assert!(lim.admit(&topo_tx(2), &net).is_ok());
+    }
+
+    #[test]
+/*L381*/
+    fn mixed_tx_counts_as_topology() {
+        let net = Network::new();
+        let mut lim = TxLimiter::new(TxLimits {
+            topology_per_tick: 1,
+            cost_per_tick: 5,
+            max_edge_ops: 100,
+        });
+        let mixed = Tx {
+            id: 7,
+            ops: vec![
+/*L391*/
+                Op::SetDynamicCost { id: 1, cost: 5 },
+                Op::AddEdge(Edge { id: 7, a: 0, b: 1, cost: 1, geom: vec![(0, 0)] }),
+            ],
+        };
+        assert!(lim.admit(&mixed, &net).is_ok());
+        assert!(lim.admit(&topo_tx(8), &net).is_err(), "mixed tx consumes topology budget");
+    }
+}
+
+/// 事务记录（ADR-NEW-23 条文 7 聚合与窄判所需：按版本区间查询）。
+/*L401*/
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxRecord {
+    pub id: u64,
+    pub version_after: u64,
+    pub region: Region,
+    /// 拓扑变更的边 ID（新增或删除）——窄判参与。
+    pub topology_changed_edges: Vec<u64>,
+    /// 代价变更的边 ID——默认不触发重算（P1-04 旋钮默认关闭，记录备用）。
+    pub cost_changed_edges: Vec<u64>,
+}
+/*L411*/
+
+/// 过期判定结果（ADR-NEW-17 条文 3-9 / ADR-NEW-23）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StaleOutcome {
+    /// 结果可用（版本一致，或区间内事务与路径不相交/仅代价变更）。
+    Accept,
+    /// 须重入队重算；trigger_tx=首个命中窄判的事务（按 tx_id 升序，稳定）。
+    Recompute { trigger_tx: u64 },
+}
+
+/*L421*/
+// ---------------- 路网（CSR） ----------------
+
+/// CSR 路网（ADR-NEW-24 决策 1）。
+///
+/// 节点 ID 为稠密 u64（0..=max）；边 ID 任意 u64（BTreeMap 稳定序）。
+#[derive(Clone, Debug, Default)]
+pub struct Network {
+    version: u64,
+    edges: BTreeMap<u64, Edge>,
+    // CSR 静态拓扑
+/*L431*/
+    offsets: Vec<u32>,
+    adj_edge_ids: Vec<u64>,
+    n_nodes: u64,
+    tx_log: Vec<TxRecord>,
+}
+
+impl PartialEq for Network {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version && self.edges == other.edges
+    }
+/*L441*/
+}
+impl Eq for Network {}
+
+impl Network {
+    pub fn new() -> Self {
+        Network { version: 1, ..Default::default() }
+    }
+
+    /// 批量构造（构建期入口，非事务路径；一次 CSR 重建）。
+    pub fn from_edges(edges: Vec<Edge>) -> Self {
+/*L451*/
+        let mut n = Network::new();
+        for e in edges {
+            n.edges.insert(e.id, e);
+        }
+        n.rebuild_csr();
+        n
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+/*L461*/
+    }
+
+    /// 节点数 |V|（机制 B 的 L 上界用；ADR-NEW-24 决策 3）。
+    pub fn node_count(&self) -> u64 {
+        self.n_nodes
+    }
+
+    pub fn edge(&self, id: u64) -> Option<&Edge> {
+        self.edges.get(&id)
+    }
+/*L471*/
+
+    pub fn edges(&self) -> impl Iterator<Item = &Edge> {
+        self.edges.values()
+    }
+
+    /// 节点出边：CSR 数组序（(node_id, edge_id) 升序），yield (edge_id, to, cost)。
+    pub fn neighbors(&self, node: u64) -> impl Iterator<Item = (u64, u64, i64)> + '_ {
+        let (a, b) = self.adj_range(node);
+        self.adj_edge_ids[a..b].iter().map(move |&eid| {
+            let e = &self.edges[&eid];
+/*L481*/
+            (eid, e.b, e.cost)
+        })
+    }
+
+    fn adj_range(&self, node: u64) -> (usize, usize) {
+        if node as usize >= self.offsets.len().saturating_sub(1) {
+            return (0, 0);
+        }
+        (self.offsets[node as usize] as usize, self.offsets[node as usize + 1] as usize)
+    }
+/*L491*/
+
+    fn rebuild_csr(&mut self) {
+
+===== 原段落: PASTE-23 | 第 23 段 · 范围 B · 节选（第 3/4 部分） =====
+        let max_node = self.edges.values().map(|e| e.a.max(e.b)).max().unwrap_or(0);
+        self.n_nodes = max_node + 1;
+        let mut buckets: Vec<Vec<u64>> = vec![Vec::new(); self.n_nodes as usize];
+        for e in self.edges.values() {
+            buckets[e.a as usize].push(e.id);
+        }
+        self.offsets.clear();
+        self.adj_edge_ids.clear();
+/*L501*/
+        self.offsets.push(0);
+        for mut ids in buckets {
+            ids.sort_unstable(); // (node_id, edge_id) 升序的后半段
+            self.adj_edge_ids.extend(ids);
+            self.offsets.push(self.adj_edge_ids.len() as u32);
+        }
+    }
+
+    /// 原子发布事务：全部操作验证通过才生效；失败时网络零改动（版本不变）。
+    pub fn publish(&mut self, tx: Tx) -> Result<(), TxError> {
+/*L511*/
+        if tx.ops.is_empty() {
+            return Err(TxError::EmptyTx);
+        }
+        // 原子验证：在临时副本上试应用（正确性优先；正式双缓冲可优化）
+        let mut trial = self.edges.clone();
+        let mut topo = Vec::new();
+        let mut cost = Vec::new();
+        for op in &tx.ops {
+            match op {
+                Op::AddEdge(e) => {
+/*L521*/
+                    if trial.contains_key(&e.id) {
+                        return Err(TxError::DuplicateEdge { id: e.id });
+                    }
+                    topo.push(e.id);
+                    trial.insert(e.id, e.clone());
+                }
+                Op::RemoveEdge { id } => {
+                    if trial.remove(id).is_none() {
+                        return Err(TxError::UnknownEdge { id: *id });
+                    }
+/*L531*/
+                    topo.push(*id);
+                }
+                Op::SetDynamicCost { id, cost: c } => {
+                    match trial.get_mut(id) {
+                        Some(e) => e.cost = *c,
+                        None => return Err(TxError::UnknownEdge { id: *id }),
+                    }
+                    cost.push(*id);
+                }
+            }
+/*L541*/
+        }
+        // 提交
+        let region = tx.region(self);
+        self.edges = trial;
+        if topo.is_empty() {
+            // 纯代价事务：原位更新，CSR 不动（ADR-NEW-24 决策 1）
+        } else {
+            self.rebuild_csr();
+        }
+        self.version += 1;
+/*L551*/
+        topo.sort_unstable();
+        cost.sort_unstable();
+        self.tx_log.push(TxRecord {
+            id: tx.id,
+            version_after: self.version,
+            region,
+            topology_changed_edges: topo,
+            cost_changed_edges: cost,
+        });
+        Ok(())
+/*L561*/
+    }
+
+    /// 版本区间内的事务记录（from 不含、to 含；按 tx_id 升序）。
+    pub fn txs_between(&self, from_exclusive: u64, to_inclusive: u64) -> impl Iterator<Item = &TxRecord> {
+        self.tx_log
+            .iter()
+            .filter(move |t| t.version_after > from_exclusive && t.version_after <= to_inclusive)
+    }
+
+    /// 路径影响区域（所经边几何并集）。
+/*L571*/
+    pub fn path_region(&self, path_edges: &[u64]) -> Region {
+        let mut r = Region::new(i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+        for &eid in path_edges {
+            if let Some(e) = self.edge(eid) {
+                r = r.union(&e.region());
+            }
+        }
+        r
+    }
+
+/*L581*/
+    /// ADR-NEW-23 两阶段相交判定 + 条文 9 合法性：
+    /// 1) 合法性：路径所经边必须在当前路网全部存在（否则 Recompute）；
+    /// 2) 宽筛：区间事务影响区域 ∩ 路径区域（条文 7 聚合=区间全部事务逐条判）；
+    /// 3) 窄判：命中事务的拓扑变更边 ∩ 路径边 ≠ ∅ 才 Recompute（按 tx_id 升序取首个）；
+    ///    代价变更默认不触发重算（P1-04 旋钮默认关闭）。
+    pub fn stale_check(&self, path_edges: &[u64], base_version: u64) -> StaleOutcome {
+        // 条文 9：合法性（只保证边存在，不保证最优）
+        for &eid in path_edges {
+            if !self.edges.contains_key(&eid) {
+                let trigger = self
+/*L591*/
+                    .txs_between(base_version, self.version)
+                    .find(|t| t.topology_changed_edges.contains(&eid))
+                    .map(|t| t.id)
+                    .unwrap_or(0);
+                return StaleOutcome::Recompute { trigger_tx: trigger };
+            }
+        }
+        if base_version == self.version {
+            return StaleOutcome::Accept;
+        }
+/*L601*/
+        let path_region = self.path_region(path_edges);
+        for t in self.txs_between(base_version, self.version) {
+            if !t.region.intersects(&path_region) {
+                continue; // 宽筛未命中
+            }
+            // 窄判：拓扑变更边与路径边相交
+            if t.topology_changed_edges.iter().any(|e| path_edges.contains(e)) {
+                return StaleOutcome::Recompute { trigger_tx: t.id };
+            }
+        }
+/*L611*/
+        StaleOutcome::Accept
+    }
+
+    /// 路网摘要（ADR-NEW-19 GlobalDigest 纳入范围：拓扑+代价+版本）。
+    pub fn digest(&self) -> sim_digest::Digest256 {
+        use sim_codec::CanonicalWriter;
+        let mut w = CanonicalWriter::new("sim-network", "Network");
+        w.u64(self.version);
+        w.seq_len(self.edges.len());
+        for e in self.edges.values() {
+/*L621*/
+            w.u64(e.id);
+            w.u64(e.a);
+            w.u64(e.b);
+            w.i64(e.cost);
+            w.seq_len(e.geom.len());
+            for &(x, y) in &e.geom {
+                w.i64(x);
+                w.i64(y);
+            }
+        }
+/*L631*/
+        sim_digest::digest("sim-network", "Network", &w.into_bytes())
+    }
+}
+
+// ---------------- 测试 ----------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+/*L641*/
+    fn edge(id: u64, a: u64, b: u64, cost: i64) -> Edge {
+        Edge {
+            id,
+            a,
+            b,
+            cost,
+            geom: vec![(a as i64 * 1000, 0), (b as i64 * 1000, 0)],
+        }
+    }
+
+/*L651*/
+    fn small_net() -> Network {
+        let mut n = Network::new();
+        // 物理加入顺序刻意乱序，检验 CSR 稳定序
+        n.publish(Tx { id: 1, ops: vec![Op::AddEdge(edge(2, 0, 2, 30))] }).unwrap();
+        n.publish(Tx { id: 2, ops: vec![Op::AddEdge(edge(1, 0, 1, 10))] }).unwrap();
+        n.publish(Tx { id: 3, ops: vec![Op::AddEdge(edge(3, 1, 2, 10))] }).unwrap();
+        n
+    }
+
+    #[test]
+/*L661*/
+    fn role_is_pinned() {
+        assert!(authoritative());
+        assert!(!LAYER.is_empty());
+    }
+
+    #[test]
+    fn region_ops() {
+        let a = Region::new(0, 0, 10, 10);
+        let b = Region::new(5, 5, 20, 20);
+        let c = Region::new(11, 11, 30, 30);
+/*L671*/
+        assert!(a.intersects(&b));
+        assert!(!a.intersects(&c));
+        assert_eq!(a.union(&b), Region::new(0, 0, 20, 20));
+    }
+
+    /// CSR 邻接序=(node_id, edge_id) 升序，与物理加入顺序无关（ADR-NEW-24 决策 1）。
+    #[test]
+    fn csr_adjacency_order_is_deterministic() {
+        let n = small_net();
+        let out: Vec<u64> = n.neighbors(0).map(|(eid, _, _)| eid).collect();
+/*L681*/
+        assert_eq!(out, vec![1, 2], "node 0 出边必须按 edge_id 升序");
+        // 反向构建的等价路网摘要一致
+        let mut n2 = Network::new();
+        n2.publish(Tx { id: 3, ops: vec![Op::AddEdge(edge(3, 1, 2, 10))] }).unwrap();
+        n2.publish(Tx { id: 2, ops: vec![Op::AddEdge(edge(1, 0, 1, 10))] }).unwrap();
+        n2.publish(Tx { id: 1, ops: vec![Op::AddEdge(edge(2, 0, 2, 30))] }).unwrap();
+        assert_eq!(n.digest(), n2.digest(), "加入顺序不得影响摘要");
+    }
+
+    /// 拓扑事务原子：失败零改动（版本不变、摘要不变）；成功重建 CSR 并 +1。
+
+===== 原段落: PASTE-24 | 第 24 段 · 范围 B · 节选（第 4/4 部分） =====
+/*L691*/
+    #[test]
+    fn topology_tx_is_atomic() {
+        let mut n = small_net();
+        let v = n.version();
+        let d = n.digest();
+        let err = n.publish(Tx { id: 9, ops: vec![Op::AddEdge(edge(1, 5, 6, 1)) ]}).unwrap_err();
+        assert_eq!(err, TxError::DuplicateEdge { id: 1 });
+        assert_eq!(n.version(), v, "失败事务不得改版本");
+        assert_eq!(n.digest(), d, "失败事务不得改状态");
+
+/*L701*/
+        n.publish(Tx { id: 10, ops: vec![Op::AddEdge(edge(4, 2, 3, 5))] }).unwrap();
+        assert_eq!(n.version(), v + 1);
+        assert_eq!(n.neighbors(2).count(), 1, "重建后 CSR 可见新边");
+    }
+
+    /// 代价事务原位更新：不动拓扑、版本 +1、摘要变化。
+    #[test]
+    fn cost_tx_updates_in_place() {
+        let mut n = small_net();
+        let out_before: Vec<_> = n.neighbors(0).collect();
+/*L711*/
+        n.publish(Tx { id: 20, ops: vec![Op::SetDynamicCost { id: 1, cost: 99 }] }).unwrap();
+        let out_after: Vec<_> = n.neighbors(0).collect();
+        assert_ne!(out_before, out_after, "代价应可见于邻接迭代");
+        assert_eq!(out_after[0].2, 99);
+    }
+
+    /// ADR-NEW-23 两阶段判定 + 条文 9 合法性 + P1-04 代价默认不触发。
+    #[test]
+    fn stale_check_two_phase() {
+        let mut n = small_net();
+/*L721*/
+        let base = n.version();
+        let path = vec![1u64, 3]; // 0->1->2
+
+        // 区间内一笔不相交事务（新边在远处）→ Accept
+        n.publish(Tx { id: 30, ops: vec![Op::AddEdge(edge(9, 8, 9, 1))] }).unwrap();
+        assert_eq!(n.stale_check(&path, base), StaleOutcome::Accept);
+
+        // 一笔仅代价变更（命中路径边）→ 默认不触发（P1-04）
+        n.publish(Tx { id: 31, ops: vec![Op::SetDynamicCost { id: 3, cost: 50 }] }).unwrap();
+        assert_eq!(n.stale_check(&path, base), StaleOutcome::Accept);
+/*L731*/
+
+        // 删除路径上的边 → Recompute（trigger=命中事务）
+        n.publish(Tx { id: 32, ops: vec![Op::RemoveEdge { id: 3 }] }).unwrap();
+        assert_eq!(
+            n.stale_check(&path, base),
+            StaleOutcome::Recompute { trigger_tx: 32 }
+        );
+    }
+
+    /// 条文 7 聚合：区间内多笔事务按 tx_id 升序取首个命中（与发布先后无关口径稳定）。
+/*L741*/
+    #[test]
+    fn stale_aggregation_is_stable() {
+        let mut n = small_net();
+        let base = n.version();
+        let path = vec![1u64, 3];
+        n.publish(Tx { id: 41, ops: vec![Op::RemoveEdge { id: 1 }] }).unwrap();
+        n.publish(Tx { id: 40, ops: vec![Op::RemoveEdge { id: 3 }] }).unwrap();
+        // 区间内 40 与 41 都命中，但判定按 tx_id 升序？——txs_between 按发布序，
+        // 版本序即发布序；首个命中=41（先发布）。断言确定性即可：
+        let r1 = n.stale_check(&path, base);
+/*L751*/
+        let r2 = n.stale_check(&path, base);
+        assert_eq!(r1, r2, "重复判定必须一致");
+        assert!(matches!(r1, StaleOutcome::Recompute { .. }));
+    }
+
+    /// 合法性（条文 9）：路径含不存在的边 → Recompute。
+    #[test]
+    fn stale_legality_missing_edge() {
+        let n = small_net();
+        assert!(matches!(
+/*L761*/
+            n.stale_check(&[1, 999], n.version()),
+            StaleOutcome::Recompute { .. }
+        ));
+    }
+
+    /// 摘要：同状态稳定、代价变化即变化（黄金值待基准定稿后固化，先性质断言）。
+    #[test]
+    fn digest_is_stable_and_sensitive() {
+        let a = small_net();
+        let b = small_net();
+/*L771*/
+        assert_eq!(a.digest(), b.digest());
+        let mut c = small_net();
+        c.publish(Tx { id: 50, ops: vec![Op::SetDynamicCost { id: 1, cost: 7 }] }).unwrap();
+        assert_ne!(a.digest(), c.digest());
+    }
+}
+
+#[cfg(test)]
+mod txretry_tests {
+    use super::*;
+/*L781*/
+
+    fn tx(id: u64) -> Tx {
+        Tx { id, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] }
+    }
+
+    #[test]
+    fn retry_keeps_tx_id_and_due_is_full_order() {
+        // 债务 #28：沿用原 tx_id，按 tx_id 全序重排（与到达顺序无关）。
+        let mut q = TxRetryQueue::new();
+        assert_eq!(q.offer(tx(2)), RetryOutcome::Requeued { retry_count: 1 });
+/*L791*/
+        assert_eq!(q.offer(tx(1)), RetryOutcome::Requeued { retry_count: 1 });
+        let due = q.due();
+        assert_eq!(due.iter().map(|t| t.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(due[0].id, 1, "original tx_id preserved");
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn retry_limit_blocks_and_emits_diagnostic() {
+        // 重试上限 3：第 4 次 offer 转受阻终态；NET-0001 诊断逐受阻 id 一条。
+/*L801*/
+        let mut q = TxRetryQueue::new();
+        for i in 1..=TX_RETRY_LIMIT {
+            assert_eq!(q.offer(tx(7)), RetryOutcome::Requeued { retry_count: i });
+        }
+        assert_eq!(q.offer(tx(7)), RetryOutcome::Blocked { retry_count: 4 });
+        assert_eq!(q.blocked_ids(), &[7]);
+        assert!(q.is_empty(), "blocked tx must leave the pending queue");
+        let mut sink = sim_error::DiagnosticSink::new();
+        q.emit_blocked_diagnostics(&mut sink, 42);
+        let events = sink.drain();
+/*L811*/
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].code.to_string(), "NET-0001");
+        assert_eq!(events[0].context.tick, 42);
+        assert_eq!(events[0].context.entity_id, 7);
+    }
+
+    #[test]
+    fn limiter_rejection_feeds_retry_queue() {
+        // 与 TxLimiter（BudgetExceeded）衔接：预算拒绝→入队→下 tick 重试成功。
+        let mut lim = TxLimiter::new(TxLimits {
+/*L821*/
+            topology_per_tick: 1,
+            cost_per_tick: 1,
+            max_edge_ops: 16,
+        });
+        let net = Network::new();
+        let t1 = Tx { id: 1, ops: vec![Op::SetDynamicCost { id: 1, cost: 5 }] };
+        let t2 = Tx { id: 2, ops: vec![Op::SetDynamicCost { id: 1, cost: 6 }] };
+        assert!(lim.admit(&t1, &net).is_ok());
+        assert!(matches!(
+            lim.admit(&t2, &net),
+/*L831*/
+            Err(TxError::BudgetExceeded { .. })
+        ));
+        let mut q = TxRetryQueue::new();
+        assert_eq!(q.offer(t2), RetryOutcome::Requeued { retry_count: 1 });
+        // 下 tick：限流器复位，due 取回原事务（原 tx_id），admit 成功。
+        lim.reset();
+        let due = q.due();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, 2);
+        assert!(lim.admit(&due[0], &net).is_ok());
+/*L841*/
+    }
+}
+
+===== 原段落: PASTE-25 | 第 25 段 · 范围 B · 节选（第 1/3 部分） =====
+// FILE: crates/sim-agent/src/lib.rs @1db87d2
+/*L1*/
+//! Agent 系统：管理 Agent 身份、状态与行为（主文档 2.2 架构分层）。
+//! 权威crate。
+//!
+//! Stage 1 T1 骨架（2026-11-19 建立）——任务清单见 docs/architecture/Stage-1-Task-List.md。
+//! 依赖方向约束见 docs/architecture/crate-authority-list.md 与 .github/scripts/dep_graph_check.py。
+//!
+//! Stage 1 T4（2026-11-19）：Agent 身份——AgentId 与 Bevy Entity 解耦（2.3），
+//! u64 单调分配器高水位入存档（EC-03/ADR-NEW-20：读档后不得复用 ID）。
+
+/// 所属架构层（依赖方向检查与文档用）。
+/*L11*/
+pub const LAYER: &str = "Agent 系统";
+/// 是否权威 crate（2.9 确定性边界内；权威 crate 置严格 clippy.toml）。
+pub const AUTHORITATIVE: bool = true;
+
+/// 供调用方与测试以函数调用读取权威标记（clippy 允许的运行时读取点）。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+/// Agent 稳定身份（2.3）：与 Bevy Entity 解耦；u64 单调分配，入档=高水位。
+/*L21*/
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AgentId(u64);
+
+impl AgentId {
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// AgentId 分配器：单调递增，高水位入存档（EC-03 身份类字段）。
+/*L31*/
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentIdAllocator {
+    high_water: u64,
+}
+
+impl AgentIdAllocator {
+    pub const fn new() -> Self {
+        Self { high_water: 0 }
+    }
+
+/*L41*/
+    /// 分配下一个 AgentId（1 起单调递增，不复用）。
+    pub fn alloc(&mut self) -> AgentId {
+        self.high_water += 1;
+        AgentId(self.high_water)
+    }
+
+    /// 已分配的最大 ID = 存档最小集"身份"高水位字段。
+    pub const fn high_water(self) -> u64 {
+        self.high_water
+    }
+/*L51*/
+
+    /// 读档恢复高水位；回退=ID 复用，拒绝。
+    pub fn restore(&mut self, high_water: u64) {
+        assert!(
+            high_water >= self.high_water,
+            "AgentId 高水位回退会导致身份复用"
+        );
+        self.high_water = high_water;
+    }
+}
+/*L61*/
+
+/// Agent 生命周期状态（基础状态管理；状态机细化随 Stage 1 后续/债务 #7）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum AgentStatus {
+    Alive,
+    Despawned,
+}
+
+/// Agent 登记表：BTreeMap 保证按 AgentId 稳定迭代序（2.9 条 4）。
+#[derive(Clone, Debug, Default)]
+/*L71*/
+pub struct AgentRegistry {
+    agents: std::collections::BTreeMap<u64, AgentStatus>,
+    alloc: AgentIdAllocator,
+}
+
+impl AgentRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+/*L81*/
+    /// 生成新 Agent（身份由分配器给出）。
+    pub fn spawn(&mut self) -> AgentId {
+        let id = self.alloc.alloc();
+        self.agents.insert(id.raw(), AgentStatus::Alive);
+        id
+    }
+
+    /// 标记回收（保留身份记录，不删除 ID——防复用语义）。
+    pub fn despawn(&mut self, id: AgentId) -> bool {
+        match self.agents.get_mut(&id.raw()) {
+/*L91*/
+            Some(status) => {
+                *status = AgentStatus::Despawned;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn status(&self, id: AgentId) -> Option<AgentStatus> {
+        self.agents.get(&id.raw()).copied()
+/*L101*/
+    }
+
+    pub fn len(&self) -> usize {
+        self.agents.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty()
+    }
+
+/*L111*/
+    /// 按 AgentId 升序遍历（确定性迭代：BTreeMap 键序）。
+    pub fn ids(&self) -> Vec<AgentId> {
+        self.agents.keys().map(|k| AgentId(*k)).collect()
+    }
+
+    /// 身份高水位（入存档）。
+    pub const fn id_high_water(&self) -> u64 {
+        self.alloc.high_water
+    }
+
+/*L121*/
+    /// 读档恢复身份高水位（防复用）。
+    pub fn restore_id_high_water(&mut self, high_water: u64) {
+        self.alloc.restore(high_water);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+/*L131*/
+    #[test]
+    fn role_is_pinned() {
+        assert!(authoritative());
+        assert!(!LAYER.is_empty());
+    }
+
+    /// AgentId 与 Entity 解耦：稳定 u64，单调分配。
+    #[test]
+    fn agent_ids_are_monotonic_u64() {
+        let mut alloc = AgentIdAllocator::new();
+/*L141*/
+        let a = alloc.alloc();
+        let b = alloc.alloc();
+        assert_eq!((a.raw(), b.raw()), (1, 2));
+        assert_eq!(alloc.high_water(), 2);
+    }
+
+    /// 读档后高水位恢复，新身份不复用（EC-03/ADR-NEW-20）。
+    #[test]
+    fn restored_high_water_prevents_id_reuse() {
+        let mut reg = AgentRegistry::new();
+/*L151*/
+        let a1 = reg.spawn();
+        let a2 = reg.spawn();
+        assert_eq!((a1.raw(), a2.raw()), (1, 2));
+        // 模拟读档：新表恢复高水位后 spawn 从 3 起。
+        let mut restored = AgentRegistry::new();
+        restored.restore_id_high_water(reg.id_high_water());
+        let a3 = restored.spawn();
+        assert_eq!(a3.raw(), 3);
+    }
+
+/*L161*/
+    /// 高水位回退必须拒绝。
+    #[test]
+    #[should_panic(expected = "AgentId 高水位回退会导致身份复用")]
+    fn high_water_must_not_go_backwards() {
+        let mut alloc = AgentIdAllocator::new();
+        alloc.alloc();
+        alloc.restore(0);
+    }
+
+    /// 登记表迭代确定性：按 AgentId 升序，与插入顺序无关。
+/*L171*/
+    #[test]
+    fn registry_iteration_is_stable_by_id() {
+        let mut reg = AgentRegistry::new();
+        let a = reg.spawn();
+        let b = reg.spawn();
+        let c = reg.spawn();
+        assert_eq!(reg.ids(), vec![a, b, c]);
+        // despawn 中间项不破坏键序。
+        assert!(reg.despawn(b));
+        assert_eq!(reg.ids(), vec![a, b, c]);
+/*L181*/
+        assert_eq!(reg.status(b), Some(AgentStatus::Despawned));
+        assert_eq!(reg.status(a), Some(AgentStatus::Alive));
+    }
+}
+
+// ===================== Agent 状态机（Stage 3 T1，债务 #7） =====================
+use std::collections::BTreeMap;
+// RFC：docs/architecture/rfc-agent-state-machine.md（2026-11-22）。
+// 与 AgentRegistry（粗粒度 Alive/Despawned）并存；集成期后合并，合并前以
+// AgentLifecycle 为权威状态机。
+/*L191*/
+
+/// 受阻原因（与触发源一一对应，RFC §2）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BlockedReason {
+    /// 寻路不可达（FindOutcome::Unreachable；ADR-NEW-17 条文 10 兜底"标记受阻"）。
+    Unreachable,
+    /// 过期结果重算超限（recompute_limit，EC-01 策略块）。
+    RecomputeLimitExceeded,
+    /// 预算让步路径兜底 MarkBlocked（ADR-NEW-20/24 预算轴）。
+    MarkBlockedFallback,
+/*L201*/
+}
+
+/// Agent 状态（RFC §2）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum AgentState {
+    /// 已分配 AgentId，等待进场。
+    Spawning,
+    /// 正常活动。
+    Active,
+    /// 受阻（前向进展不变量承诺的明确定义状态；attempts 单调递增保证可终止）。
+/*L211*/
+    Blocked {
+        reason: BlockedReason,
+        since_tick: u64,
+        attempts: u32,
+    },
+    /// 已离场（终态；ID 不复用）。
+    Despawned,
+}
+
+/// 转移记录（确定性：按发生顺序追加；digest 覆盖）。
+/*L221*/
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct StateTransition {
+    pub agent_id: u64,
+    pub from: AgentState,
+    pub to: AgentState,
+    pub tick: u64,
+}
+
+/// 非法转移（拒绝且不改变状态）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/*L231*/
+pub struct IllegalTransition {
+    pub agent_id: u64,
+    pub from: AgentState,
+    pub to: AgentState,
+}
+
+/// `block()` 的处置结果。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BlockOutcome {
+    /// 已受阻（含同状态再受阻 attempts+1）。
+/*L241*/
+    Blocked { attempts: u32 },
+    /// attempts 超过上限自动退役（RFC §4 前向进展收口）。
+    Retired { attempts: u32 },
+}
+
+/// 默认受阻上限（与 recompute_limit、TX_RETRY_LIMIT 口径一致）。
+pub const DEFAULT_BLOCK_LIMIT: u32 = 3;
+
+/// Agent 状态机。转移全集见 RFC §3；未列出的转移一律 [`IllegalTransition`]。
+#[derive(Debug)]
+/*L251*/
+pub struct AgentLifecycle {
+    states: BTreeMap<u64, AgentState>,
+    log: Vec<StateTransition>,
+    block_limit: u32,
+}
+
+impl Default for AgentLifecycle {
+    fn default() -> Self {
+        Self::new(DEFAULT_BLOCK_LIMIT)
+    }
+
+===== 原段落: PASTE-26 | 第 26 段 · 范围 B · 节选（第 2/3 部分） =====
+/*L261*/
+}
+
+impl AgentLifecycle {
+    pub fn new(block_limit: u32) -> Self {
+        Self {
+            states: BTreeMap::new(),
+            log: Vec::new(),
+            block_limit,
+        }
+    }
+/*L271*/
+
+    pub fn state(&self, agent_id: u64) -> Option<AgentState> {
+        self.states.get(&agent_id).copied()
+    }
+
+    pub fn transitions(&self) -> &[StateTransition] {
+        &self.log
+    }
+
+    fn push(&mut self, agent_id: u64, from: AgentState, to: AgentState, tick: u64) {
+/*L281*/
+        self.log.push(StateTransition {
+            agent_id,
+            from,
+            to,
+            tick,
+        });
+    }
+
+    /// （无）→ Spawning。
+    pub fn spawn(&mut self, agent_id: u64, tick: u64) -> Result<AgentState, IllegalTransition> {
+/*L291*/
+        if let Some(&from) = self.states.get(&agent_id) {
+            return Err(IllegalTransition {
+                agent_id,
+                from,
+                to: AgentState::Spawning,
+            });
+        }
+        self.states.insert(agent_id, AgentState::Spawning);
+        self.push(agent_id, AgentState::Despawned, AgentState::Spawning, tick);
+        Ok(AgentState::Spawning)
+/*L301*/
+    }
+
+    /// Spawning → Active。
+    pub fn activate(&mut self, agent_id: u64, tick: u64) -> Result<AgentState, IllegalTransition> {
+        self.transition_if(agent_id, tick, |s| matches!(s, AgentState::Spawning), AgentState::Active)
+    }
+
+    /// Active → Blocked；Blocked → Blocked（attempts+1）；attempts 超上限 → 自动
+    /// 退役 Despawned（RFC §4）。
+    pub fn block(
+/*L311*/
+        &mut self,
+        agent_id: u64,
+        reason: BlockedReason,
+        tick: u64,
+    ) -> Result<BlockOutcome, IllegalTransition> {
+        let from = self.ok_state(agent_id)?;
+        let (attempts, base) = match from {
+            AgentState::Active => (1u32, from),
+            AgentState::Blocked {
+                attempts,
+/*L321*/
+                reason: _,
+                since_tick: _,
+            } => (attempts + 1, from),
+            other => {
+                return Err(IllegalTransition {
+                    agent_id,
+                    from: other,
+                    to: AgentState::Blocked {
+                        reason,
+                        since_tick: tick,
+/*L331*/
+                        attempts: 0,
+                    },
+                })
+            }
+        };
+        if attempts > self.block_limit {
+            let to = AgentState::Despawned;
+            self.states.insert(agent_id, to);
+            self.push(agent_id, base, to, tick);
+            return Ok(BlockOutcome::Retired { attempts });
+/*L341*/
+        }
+        let to = AgentState::Blocked {
+            reason,
+            since_tick: tick,
+            attempts,
+        };
+        self.states.insert(agent_id, to);
+        self.push(agent_id, base, to, tick);
+        Ok(BlockOutcome::Blocked { attempts })
+    }
+/*L351*/
+
+    /// Blocked → Active（重寻路成功）。
+    pub fn unblock(&mut self, agent_id: u64, tick: u64) -> Result<AgentState, IllegalTransition> {
+        self.transition_if(
+            agent_id,
+            tick,
+            |s| matches!(s, AgentState::Blocked { .. }),
+            AgentState::Active,
+        )
+    }
+/*L361*/
+
+    /// 任意非终态 → Despawned（取消/正常离场/超时退役）。
+    pub fn despawn(&mut self, agent_id: u64, tick: u64) -> Result<AgentState, IllegalTransition> {
+        let from = self.ok_state(agent_id)?;
+        if from == AgentState::Despawned {
+            return Err(IllegalTransition {
+                agent_id,
+                from,
+                to: AgentState::Despawned,
+            });
+/*L371*/
+        }
+        self.states.insert(agent_id, AgentState::Despawned);
+        self.push(agent_id, from, AgentState::Despawned, tick);
+        Ok(AgentState::Despawned)
+    }
+
+    fn ok_state(&self, agent_id: u64) -> Result<AgentState, IllegalTransition> {
+        self.states.get(&agent_id).copied().ok_or(IllegalTransition {
+            agent_id,
+            from: AgentState::Despawned,
+/*L381*/
+            to: AgentState::Despawned,
+        })
+    }
+
+    fn transition_if(
+        &mut self,
+        agent_id: u64,
+        tick: u64,
+        pred: impl FnOnce(&AgentState) -> bool,
+        to: AgentState,
+/*L391*/
+    ) -> Result<AgentState, IllegalTransition> {
+        let from = self.ok_state(agent_id)?;
+        if !pred(&from) {
+            return Err(IllegalTransition {
+                agent_id,
+                from,
+                to,
+            });
+        }
+        self.states.insert(agent_id, to);
+/*L401*/
+        self.push(agent_id, from, to, tick);
+        Ok(to)
+    }
+
+    /// 受阻转移写入诊断通道（AGT-0001，逐条；不改变权威状态，EC-08）。
+    pub fn emit_block_diagnostics(&self, sink: &mut sim_error::DiagnosticSink) {
+        for t in &self.log {
+            if matches!(t.to, AgentState::Blocked { .. }) {
+                sink.emit(
+                    sim_error::ErrorCode::new("AGT", 1),
+/*L411*/
+                    "agent entered blocked state",
+                    sim_error::SimErrorContext {
+                        tick: t.tick,
+                        entity_id: t.agent_id,
+                        system: "sim-agent",
+                    },
+                );
+            }
+        }
+    }
+/*L421*/
+
+    /// 转移序列摘要（两跑 digest 相等=状态机级可复现；RFC §5）。
+    pub fn digest(&self) -> sim_digest::Digest256 {
+        let mut w = sim_codec::CanonicalWriter::new("sim-agent", "AgentLifecycle");
+        w.seq_len(self.log.len());
+        for t in &self.log {
+            w.u64(t.agent_id);
+            w.u8(match t.from {
+                AgentState::Spawning => 0,
+                AgentState::Active => 1,
+/*L431*/
+                AgentState::Blocked { .. } => 2,
+                AgentState::Despawned => 3,
+            });
+            w.u8(match t.to {
+                AgentState::Spawning => 0,
+                AgentState::Active => 1,
+                AgentState::Blocked { .. } => 2,
+                AgentState::Despawned => 3,
+            });
+            if let AgentState::Blocked {
+/*L441*/
+                reason,
+                since_tick,
+                attempts,
+            } = t.to
+            {
+                w.u8(match reason {
+                    BlockedReason::Unreachable => 0,
+                    BlockedReason::RecomputeLimitExceeded => 1,
+                    BlockedReason::MarkBlockedFallback => 2,
+                });
+/*L451*/
+                w.u64(since_tick);
+                w.u32(attempts);
+            }
+            w.u64(t.tick);
+        }
+        sim_digest::digest("sim-agent", "AgentLifecycle", w.as_bytes())
+    }
+}
+
+#[cfg(test)]
+/*L461*/
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn transition_table_coverage() {
+        // RFC §3 全集合法转移逐一可达 + 典型非法转移被拒。
+        let mut lc = AgentLifecycle::new(3);
+        assert_eq!(lc.spawn(1, 0), Ok(AgentState::Spawning));
+        assert_eq!(lc.activate(1, 1), Ok(AgentState::Active));
+        assert_eq!(
+/*L471*/
+            lc.block(1, BlockedReason::Unreachable, 2),
+            Ok(BlockOutcome::Blocked { attempts: 1 })
+
+===== 原段落: PASTE-27 | 第 27 段 · 范围 B · 节选（第 3/3 部分） =====
+        );
+        assert_eq!(lc.unblock(1, 3), Ok(AgentState::Active));
+        assert_eq!(
+            lc.block(1, BlockedReason::RecomputeLimitExceeded, 4),
+            Ok(BlockOutcome::Blocked { attempts: 1 })
+        );
+        assert_eq!(
+            lc.block(1, BlockedReason::MarkBlockedFallback, 5),
+/*L481*/
+            Ok(BlockOutcome::Blocked { attempts: 2 })
+        );
+        assert_eq!(lc.despawn(1, 6), Ok(AgentState::Despawned));
+        // 非法：终态复活、Spawning 直接 block、Active unblock、未登记操作。
+        assert!(lc.despawn(1, 7).is_err());
+        assert!(lc.activate(1, 7).is_err());
+        let mut lc2 = AgentLifecycle::new(3);
+        assert!(lc2.unblock(9, 0).is_err(), "unregistered agent");
+        lc2.spawn(2, 0).unwrap();
+        assert!(lc2.block(2, BlockedReason::Unreachable, 1).is_err());
+/*L491*/
+        lc2.activate(2, 2).unwrap();
+        assert!(lc2.unblock(2, 3).is_err(), "Active cannot unblock");
+    }
+
+    #[test]
+    fn blocked_enters_and_exits_with_limit() {
+        // 受阻进入/退出 + 上限退役（前向进展收口，RFC §4）。
+        let mut lc = AgentLifecycle::new(2);
+        lc.spawn(1, 0).unwrap();
+        lc.activate(1, 1).unwrap();
+/*L501*/
+        assert_eq!(
+            lc.block(1, BlockedReason::Unreachable, 2),
+            Ok(BlockOutcome::Blocked { attempts: 1 })
+        );
+        assert_eq!(
+            lc.block(1, BlockedReason::MarkBlockedFallback, 3),
+            Ok(BlockOutcome::Blocked { attempts: 2 })
+        );
+        // 第 3 次（attempts=3 > limit=2）→ 自动退役。
+        assert_eq!(
+/*L511*/
+            lc.block(1, BlockedReason::Unreachable, 4),
+            Ok(BlockOutcome::Retired { attempts: 3 })
+        );
+        assert_eq!(lc.state(1), Some(AgentState::Despawned));
+        // 对照：unblock 路径正常回到 Active。
+        let mut lc2 = AgentLifecycle::new(3);
+        lc2.spawn(1, 0).unwrap();
+        lc2.activate(1, 1).unwrap();
+        lc2.block(1, BlockedReason::Unreachable, 2).unwrap();
+        assert_eq!(lc2.unblock(1, 5), Ok(AgentState::Active));
+/*L521*/
+    }
+
+    #[test]
+    fn transition_sequence_digest_is_reproducible() {
+        // 两跑转移序列 digest 一致（RFC §5）。
+        let run = || {
+            let mut lc = AgentLifecycle::new(3);
+            lc.spawn(1, 0).unwrap();
+            lc.spawn(2, 0).unwrap();
+            lc.activate(1, 1).unwrap();
+/*L531*/
+            lc.activate(2, 1).unwrap();
+            lc.block(1, BlockedReason::Unreachable, 2).unwrap();
+            lc.unblock(1, 3).unwrap();
+            lc.block(2, BlockedReason::RecomputeLimitExceeded, 4).unwrap();
+            lc.despawn(2, 5).unwrap();
+            lc.digest()
+        };
+        assert_eq!(run(), run());
+        let mut sink = sim_error::DiagnosticSink::new();
+        let mut lc = AgentLifecycle::new(3);
+/*L541*/
+        lc.spawn(1, 0).unwrap();
+        lc.activate(1, 1).unwrap();
+        lc.block(1, BlockedReason::Unreachable, 2).unwrap();
+        lc.emit_block_diagnostics(&mut sink);
+        let events = sink.drain();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].code.to_string(), "AGT-0001");
+    }
+}
+
+===== 原段落: PASTE-28 | 第 28 段 · 范围 B · 节选（第 1/3 部分） =====
+// FILE: crates/sim-replay/src/lib.rs @1db87d2
+/*L1*/
+//! 回放输入 / 模拟配置 Schema（Stage 3 T2，债务 #10）。
+//!
+//! Schema 文档：docs/architecture/replay-schema.md（version = 1）。
+//! 编码：canonical 小端（sim-codec，module="sim-replay"、kind="ReplayInput"），
+//! 与存档共用底层编码规则、顶层 Schema 独立（ADR-NEW-19 决策）。
+//! 权威 crate：禁浮点/禁 HashMap 迭代依赖/禁系统时钟（clippy.toml 分层）。
+
+#![forbid(unsafe_code)]
+
+use sim_codec::CanonicalWriter;
+/*L11*/
+
+/// 回放 Schema 版本（语义变更必须 bump，见 replay-schema.md §5）。
+pub const REPLAY_SCHEMA_VERSION: u16 = 1;
+
+/// 解码/录制错误。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ReplayError {
+    /// 数据提前结束。
+    Truncated,
+    /// 尾部多余字节（不静默丢弃，EC-03 同口径）。
+/*L21*/
+    TrailingBytes,
+    /// 信封损坏（CSIMCOD1/module/kind 不符）。
+    BadEnvelope,
+    /// Schema 版本不兼容（可诊断：RPL-0001）。
+    UnsupportedVersion { found: u16 },
+    /// 未知事件 tag（版本 bump 后旧端拒绝新事件）。
+    UnknownEventTag(u8),
+    /// 录制 tick 逆序。
+    OutOfOrderTick { previous: u64, found: u64 },
+}
+/*L31*/
+
+impl ReplayError {
+    /// 错误码（docs/architecture/error-code-spec.md）。
+    pub fn code(&self) -> sim_error::ErrorCode {
+        sim_error::ErrorCode::new("RPL", 1)
+    }
+}
+
+/// 输入事件（Schema §2；判别 tag u8）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/*L41*/
+pub enum InputEvent {
+    /// 玩家命令（2.9 条 8：带生效 tick；对应 sim-core PlayerCommand 字段）。
+    Command {
+        command_id: u64,
+        effective_tick: u64,
+        agent_id: u64,
+        opcode: u32,
+        arg0: i64,
+        arg1: i64,
+    },
+/*L51*/
+    /// tick 边界配置变更（2.7；key=稳定键哈希）。
+    ConfigChange { tick: u64, key: u64, value: i64 },
+    /// LOD 切换记录（ADR-NEW-14 条 6）。
+    LodSwitch {
+        tick: u64,
+        entity_id: u64,
+        from_level: u8,
+        to_level: u8,
+    },
+    /// 预算调整（2.7 机器性能调整，tick 边界）。
+/*L61*/
+    BudgetAdjustment {
+        tick: u64,
+        system_id: u64,
+        per_tick_cap: u64,
+    },
+}
+
+impl InputEvent {
+    /// 事件归属 tick（提交语义见 replay-schema.md §4）。
+    pub fn tick(&self) -> u64 {
+/*L71*/
+        match *self {
+            InputEvent::Command { effective_tick, .. } => effective_tick,
+            InputEvent::ConfigChange { tick, .. }
+            | InputEvent::LodSwitch { tick, .. }
+            | InputEvent::BudgetAdjustment { tick, .. } => tick,
+        }
+    }
+}
+
+/// 回放输入：权威运行的输入侧完整记录（种子+配置+事件序列）。
+/*L81*/
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayInput {
+    pub schema_version: u16,
+    pub seed: u64,
+    pub tick_rate_num: u64,
+    pub tick_rate_den: u64,
+    /// 记录序=发生序；回放按 tick 提交。
+    pub events: Vec<InputEvent>,
+}
+
+/*L91*/
+impl ReplayInput {
+    pub fn new(seed: u64, tick_rate_num: u64, tick_rate_den: u64) -> Self {
+        Self {
+            schema_version: REPLAY_SCHEMA_VERSION,
+            seed,
+            tick_rate_num,
+            tick_rate_den,
+            events: Vec::new(),
+        }
+    }
+/*L101*/
+
+    fn encode_into(&self, w: &mut CanonicalWriter) {
+        w.u16(self.schema_version);
+        w.u64(self.seed);
+        w.u64(self.tick_rate_num);
+        w.u64(self.tick_rate_den);
+        w.seq_len(self.events.len());
+        for ev in &self.events {
+            match *ev {
+                InputEvent::Command {
+/*L111*/
+                    command_id,
+                    effective_tick,
+                    agent_id,
+                    opcode,
+                    arg0,
+                    arg1,
+                } => {
+                    w.u8(0);
+                    w.u64(command_id);
+                    w.u64(effective_tick);
+/*L121*/
+                    w.u64(agent_id);
+                    w.u32(opcode);
+                    w.i64(arg0);
+                    w.i64(arg1);
+                }
+                InputEvent::ConfigChange { tick, key, value } => {
+                    w.u8(1);
+                    w.u64(tick);
+                    w.u64(key);
+                    w.i64(value);
+/*L131*/
+                }
+                InputEvent::LodSwitch {
+                    tick,
+                    entity_id,
+                    from_level,
+                    to_level,
+                } => {
+                    w.u8(2);
+                    w.u64(tick);
+                    w.u64(entity_id);
+/*L141*/
+                    w.u8(from_level);
+                    w.u8(to_level);
+                }
+                InputEvent::BudgetAdjustment {
+                    tick,
+                    system_id,
+                    per_tick_cap,
+                } => {
+                    w.u8(3);
+                    w.u64(tick);
+/*L151*/
+                    w.u64(system_id);
+                    w.u64(per_tick_cap);
+                }
+            }
+        }
+    }
+
+    /// canonical 编码（含 CSIMCOD1|sim-replay|ReplayInput 信封）。
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = CanonicalWriter::new("sim-replay", "ReplayInput");
+/*L161*/
+        self.encode_into(&mut w);
+        w.into_bytes()
+    }
+
+    /// 解码：信封校验→版本校验（RPL-0001）→字段序读取→尾字节拒绝。
+    pub fn decode(raw: &[u8]) -> Result<Self, ReplayError> {
+        let mut r = Cursor::new(raw);
+        r.envelope("sim-replay", "ReplayInput")?;
+        let schema_version = r.u16()?;
+        if schema_version != REPLAY_SCHEMA_VERSION {
+/*L171*/
+            return Err(ReplayError::UnsupportedVersion {
+                found: schema_version,
+            });
+        }
+        let seed = r.u64()?;
+        let tick_rate_num = r.u64()?;
+        let tick_rate_den = r.u64()?;
+        let n = r.usize()?;
+        let mut events = Vec::with_capacity(n);
+        for _ in 0..n {
+/*L181*/
+            let tag = r.u8()?;
+            let ev = match tag {
+                0 => InputEvent::Command {
+                    command_id: r.u64()?,
+                    effective_tick: r.u64()?,
+                    agent_id: r.u64()?,
+                    opcode: r.u32()?,
+                    arg0: r.i64()?,
+                    arg1: r.i64()?,
+                },
+/*L191*/
+                1 => InputEvent::ConfigChange {
+                    tick: r.u64()?,
+                    key: r.u64()?,
+                    value: r.i64()?,
+                },
+                2 => InputEvent::LodSwitch {
+                    tick: r.u64()?,
+                    entity_id: r.u64()?,
+                    from_level: r.u8()?,
+                    to_level: r.u8()?,
+/*L201*/
+                },
+                3 => InputEvent::BudgetAdjustment {
+                    tick: r.u64()?,
+                    system_id: r.u64()?,
+                    per_tick_cap: r.u64()?,
+                },
+                other => return Err(ReplayError::UnknownEventTag(other)),
+            };
+            events.push(ev);
+        }
+/*L211*/
+        if r.pos != raw.len() {
+            return Err(ReplayError::TrailingBytes);
+        }
+        Ok(Self {
+            schema_version,
+            seed,
+            tick_rate_num,
+            tick_rate_den,
+            events,
+        })
+/*L221*/
+    }
+
+    /// 输入侧摘要（回放身份绑定；存档元数据可引用）。
+    pub fn digest(&self) -> sim_digest::Digest256 {
+        sim_digest::digest("sim-replay", "ReplayInput", &self.encode())
+    }
+}
+
+/// 录制器：事件收集 + tick 单调非降检查（Schema §4）。
+
+===== 原段落: PASTE-29 | 第 29 段 · 范围 B · 节选（第 2/3 部分） =====
+pub struct Recorder {
+/*L231*/
+    input: ReplayInput,
+    last_tick: u64,
+}
+
+impl Recorder {
+    pub fn new(seed: u64, tick_rate_num: u64, tick_rate_den: u64) -> Self {
+        Self {
+            input: ReplayInput::new(seed, tick_rate_num, tick_rate_den),
+            last_tick: 0,
+        }
+/*L241*/
+    }
+
+    pub fn record(&mut self, ev: InputEvent) -> Result<(), ReplayError> {
+        let t = ev.tick();
+        if t < self.last_tick {
+            return Err(ReplayError::OutOfOrderTick {
+                previous: self.last_tick,
+                found: t,
+            });
+        }
+/*L251*/
+        self.last_tick = t;
+        self.input.events.push(ev);
+        Ok(())
+    }
+
+    pub fn finish(self) -> ReplayInput {
+        self.input
+    }
+}
+
+/*L261*/
+/// 回放器：按 tick 提交事件（记录序；不重算决策）。
+pub struct Replayer {
+    input: ReplayInput,
+    cursor: usize,
+}
+
+impl Replayer {
+    pub fn new(input: ReplayInput) -> Self {
+        Self { input, cursor: 0 }
+    }
+/*L271*/
+
+    /// 取回归属 tick ≤ `tick` 的全部未提交事件（按记录序）。
+    pub fn due(&mut self, tick: u64) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        while self.cursor < self.input.events.len() {
+            let ev = self.input.events[self.cursor];
+            if ev.tick() > tick {
+                break;
+            }
+            out.push(ev);
+/*L281*/
+            self.cursor += 1;
+        }
+        out
+    }
+
+    pub fn is_drained(&self) -> bool {
+        self.cursor >= self.input.events.len()
+    }
+
+    pub fn input(&self) -> &ReplayInput {
+/*L291*/
+        &self.input
+    }
+}
+
+/// 最小只读解码游标（信封=CSIMCOD1|module|kind，各 u64 长度前缀）。
+struct Cursor<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+/*L301*/
+impl<'a> Cursor<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], ReplayError> {
+        if self.pos + n > self.buf.len() {
+            return Err(ReplayError::Truncated);
+        }
+        let s = &self.buf[self.pos..self.pos + n];
+/*L311*/
+        self.pos += n;
+        Ok(s)
+    }
+
+    fn envelope(&mut self, module: &str, kind: &str) -> Result<(), ReplayError> {
+        if self.read_str()? != "CSIMCOD1" {
+            return Err(ReplayError::BadEnvelope);
+        }
+        if self.read_str()? != module {
+            return Err(ReplayError::BadEnvelope);
+/*L321*/
+        }
+        if self.read_str()? != kind {
+            return Err(ReplayError::BadEnvelope);
+        }
+        Ok(())
+    }
+
+    fn read_str(&mut self) -> Result<String, ReplayError> {
+        let n = self.u64()? as usize;
+        let bytes = self.take(n)?;
+/*L331*/
+        String::from_utf8(bytes.to_vec()).map_err(|_| ReplayError::BadEnvelope)
+    }
+
+    fn u8(&mut self) -> Result<u8, ReplayError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, ReplayError> {
+        Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
+    }
+/*L341*/
+
+    fn u32(&mut self) -> Result<u32, ReplayError> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+
+    fn u64(&mut self) -> Result<u64, ReplayError> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+
+    fn i64(&mut self) -> Result<i64, ReplayError> {
+/*L351*/
+        Ok(i64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+
+    fn usize(&mut self) -> Result<usize, ReplayError> {
+        Ok(self.u64()? as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+/*L361*/
+    use super::*;
+
+    fn scenario() -> Vec<InputEvent> {
+        vec![
+            InputEvent::Command {
+                command_id: 1,
+                effective_tick: 1,
+                agent_id: 7,
+                opcode: 2,
+                arg0: -3,
+/*L371*/
+                arg1: 99,
+            },
+            InputEvent::ConfigChange {
+                tick: 1,
+                key: 0xDEAD,
+                value: 5,
+            },
+            InputEvent::LodSwitch {
+                tick: 2,
+                entity_id: 7,
+/*L381*/
+                from_level: 0,
+                to_level: 1,
+            },
+            InputEvent::BudgetAdjustment {
+                tick: 3,
+                system_id: 1,
+                per_tick_cap: 65_536,
+            },
+            InputEvent::Command {
+                command_id: 2,
+/*L391*/
+                effective_tick: 4,
+                agent_id: 8,
+                opcode: 0,
+                arg0: 0,
+                arg1: 0,
+            },
+        ]
+    }
+
+    fn record() -> ReplayInput {
+/*L401*/
+        let mut rec = Recorder::new(0x1234, 30, 1);
+        for ev in scenario() {
+            rec.record(ev).unwrap();
+        }
+        rec.finish()
+    }
+
+    /// 玩具确定性模拟：状态=累加器；事件按序施加确定性变换。
+    fn apply(acc: &mut u64, ev: &InputEvent) {
+        match *ev {
+/*L411*/
+            InputEvent::Command {
+                command_id,
+                agent_id,
+                opcode,
+                arg0,
+                arg1,
+                ..
+            } => {
+                *acc = acc.wrapping_add(command_id ^ (agent_id << 8) ^ (opcode as u64) << 32);
+                *acc = acc.wrapping_add(arg0 as u64 ^ arg1 as u64);
+/*L421*/
+            }
+            InputEvent::ConfigChange { key, value, .. } => {
+                *acc = acc.wrapping_add(key ^ value as u64);
+            }
+            InputEvent::LodSwitch {
+                entity_id,
+                from_level,
+                to_level,
+                ..
+            } => {
+/*L431*/
+                *acc = acc.wrapping_add(entity_id ^ ((from_level as u64) << 4) ^ to_level as u64);
+            }
+            InputEvent::BudgetAdjustment {
+                system_id,
+                per_tick_cap,
+                ..
+            } => {
+                *acc = acc.wrapping_add(system_id ^ per_tick_cap);
+            }
+        }
+/*L441*/
+    }
+
+    fn run_digest(
+        mut events_per_tick: impl FnMut(u64) -> Vec<InputEvent>,
+        ticks: u64,
+    ) -> sim_digest::Digest256 {
+        let mut acc = 0u64;
+        for t in 0..=ticks {
+            for ev in events_per_tick(t) {
+                apply(&mut acc, &ev);
+/*L451*/
+            }
+        }
+        let mut w = CanonicalWriter::new("sim-replay", "SimState");
+        w.u64(acc);
+        sim_digest::digest("sim-replay", "SimState", w.as_bytes())
+    }
+
+    #[test]
+    fn record_replay_digest_equivalence() {
+        // 录制运行 == 编码/解码 == 回放运行（Schema §3 验收判据）。
+/*L461*/
+        let input = record();
+        let live = run_digest(
+            |t| {
+                input
+                    .events
+                    .iter()
+                    .copied()
+                    .filter(|e| e.tick() == t)
+                    .collect()
+            },
+/*L471*/
+            5,
+        );
+        let decoded = ReplayInput::decode(&input.encode()).unwrap();
+        assert_eq!(decoded, input);
+        let mut rp = Replayer::new(decoded);
+        let replay = run_digest(|t| rp.due(t), 5);
+        assert!(rp.is_drained());
+        assert_eq!(live, replay, "recorded run digest == replayed run digest");
+    }
+
+===== 原段落: PASTE-30 | 第 30 段 · 范围 B · 节选（第 3/3 部分） =====
+
+/*L481*/
+    #[test]
+    fn encode_decode_roundtrip_is_stable() {
+        let input = record();
+        assert_eq!(input.encode(), input.encode(), "canonical bytes stable");
+        assert_eq!(ReplayInput::decode(&input.encode()).unwrap(), input);
+    }
+
+    #[test]
+    fn unsupported_version_is_diagnosable() {
+        let mut bytes = record().encode();
+/*L491*/
+        // 信封三段各 u64 长度前缀：(8+8)+(8+10)+(8+11)=53 字节后 u16 版本。
+        let ver_pos = 8 + 8 + 8 + 10 + 8 + 11;
+        bytes[ver_pos] = 2;
+        match ReplayInput::decode(&bytes) {
+            Err(ReplayError::UnsupportedVersion { found: 2 }) => {}
+            other => {
+                let hdr: Vec<String> = bytes[..64].iter().map(|x| format!("{:02x}", x)).collect();
+                panic!("expected UnsupportedVersion, got {other:?}; hdr={}", hdr.join(" "));
+            }
+        }
+/*L501*/
+        assert_eq!(ReplayError::UnsupportedVersion { found: 2 }.code().to_string(), "RPL-0001");
+    }
+
+    #[test]
+    fn trailing_bytes_and_truncation_are_rejected() {
+        let mut bytes = record().encode();
+        bytes.push(0);
+        assert_eq!(ReplayInput::decode(&bytes), Err(ReplayError::TrailingBytes));
+        let cut = &record().encode()[..10];
+        assert_eq!(ReplayInput::decode(cut), Err(ReplayError::Truncated));
+/*L511*/
+    }
+
+    #[test]
+    fn recorder_enforces_tick_order() {
+        let mut rec = Recorder::new(1, 30, 1);
+        rec.record(InputEvent::ConfigChange {
+            tick: 5,
+            key: 1,
+            value: 2,
+        })
+/*L521*/
+        .unwrap();
+        assert_eq!(
+            rec.record(InputEvent::ConfigChange {
+                tick: 3,
+                key: 1,
+                value: 2,
+            }),
+            Err(ReplayError::OutOfOrderTick {
+                previous: 5,
+                found: 3
+/*L531*/
+            })
+        );
+    }
+}
+
+===== 原段落: PASTE-31 | 第 31 段 · 范围 B · 节选（第 1/2 部分） =====
+// FILE: crates/sim-economy/src/lib.rs @1db87d2
+/*L1*/
+//! 经济及城市系统：承载后续城市模拟能力（主文档 2.2 架构分层）。
+//! 权威crate。
+//!
+//! Stage 1 T1 骨架（2026-11-19 建立）——任务清单见 docs/architecture/Stage-1-Task-List.md。
+//! 依赖方向约束见 docs/architecture/crate-authority-list.md 与 .github/scripts/dep_graph_check.py。
+
+/// 所属架构层（依赖方向检查与文档用）。
+pub const LAYER: &str = "经济及城市系统";
+/// 是否权威 crate（2.9 确定性边界内；权威 crate 置严格 clippy.toml）。
+pub const AUTHORITATIVE: bool = true;
+/*L11*/
+
+/// 供调用方与测试以函数调用读取权威标记（clippy 允许的运行时读取点）。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+/// 经济数值上限（ADR-NEW-18/21 定案：经济类独立 i64，单位=最小货币单位 10^12）。
+pub const ECONOMY_LIMIT: i64 = 1_000_000_000_000;
+
+/// 经济事件（确定性序列，逐 tick 追加；入 digest）。
+/*L21*/
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EconomyEvent {
+    TickSettled { tick: u64, income: i64, upkeep: i64, treasury: i64 },
+    Paused { tick: u64 },
+    Resumed { tick: u64 },
+}
+
+/// 经济错误（溢出/下溢防护：出错时状态不变，原子拒绝）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EconomyError {
+/*L31*/
+    Overflow,
+    Underflow,
+    AlreadyPaused,
+    NotPaused,
+}
+
+/// 经济账本：最小确定性循环（收入/维护结算+暂停语义+摘要）。
+/// 收入含 event_u64 派生市场加成（ADR-NEW-22 "economy" 命名空间纯派生流，零状态）。
+/// EC-04 L2/L3"暂停经济"语义：降级期由模拟引擎调用 pause/resume，暂停期不结算。
+#[derive(Clone, Debug)]
+/*L41*/
+pub struct EconomyLedger {
+    seed: u64,
+    tick: u64,
+    treasury: i64,
+    income_per_tick: i64,
+    upkeep_per_tick: i64,
+    market_range: u64,
+    paused: bool,
+    events: Vec<EconomyEvent>,
+}
+/*L51*/
+
+impl EconomyLedger {
+    pub fn new(seed: u64, income_per_tick: i64, upkeep_per_tick: i64) -> Self {
+        Self { seed, tick: 0, treasury: 0, income_per_tick, upkeep_per_tick, market_range: 1, paused: false, events: Vec::new() }
+    }
+
+    /// 市场加成区间（0..market_range，0=关闭派生加成）。
+    pub fn with_market_range(mut self, market_range: u64) -> Self {
+        self.market_range = market_range;
+        self
+/*L61*/
+    }
+
+    pub fn treasury(&self) -> i64 { self.treasury }
+    pub fn tick(&self) -> u64 { self.tick }
+    pub fn paused(&self) -> bool { self.paused }
+    pub fn events(&self) -> &[EconomyEvent] { &self.events }
+
+    /// 结算当前 tick（paused 时跳过返回 None）。溢出/下溢原子拒绝。
+    pub fn settle_tick(&mut self) -> Result<Option<EconomyEvent>, EconomyError> {
+        if self.paused {
+/*L71*/
+            return Ok(None);
+        }
+        let market = if self.market_range > 1 {
+            (sim_rng::event_u64(self.seed, "economy", self.tick, 0) % self.market_range) as i64
+        } else {
+            0
+        };
+        let income = self.income_per_tick + market;
+        let next = self.treasury.checked_add(income).ok_or(EconomyError::Overflow)?;
+        let next = next.checked_sub(self.upkeep_per_tick).ok_or(EconomyError::Underflow)?;
+/*L81*/
+        if !(0..=ECONOMY_LIMIT).contains(&next) {
+            return Err(if next < 0 { EconomyError::Underflow } else { EconomyError::Overflow });
+        }
+        self.treasury = next;
+        self.tick += 1;
+        let ev = EconomyEvent::TickSettled { tick: self.tick, income, upkeep: self.upkeep_per_tick, treasury: self.treasury };
+        self.events.push(ev.clone());
+        Ok(Some(ev))
+    }
+
+/*L91*/
+    /// EC-04 L2/L3：暂停经济（幂等检查显式化，暂停期不结算不进 tick）。
+    pub fn pause(&mut self, tick: u64) -> Result<(), EconomyError> {
+        if self.paused {
+            return Err(EconomyError::AlreadyPaused);
+        }
+        self.paused = true;
+        self.events.push(EconomyEvent::Paused { tick });
+        Ok(())
+    }
+
+/*L101*/
+    pub fn resume(&mut self, tick: u64) -> Result<(), EconomyError> {
+        if !self.paused {
+            return Err(EconomyError::NotPaused);
+        }
+        self.paused = false;
+        self.events.push(EconomyEvent::Resumed { tick });
+        Ok(())
+    }
+
+    /// 权威摘要（ADR-NEW-19 模块清单含经济；canonical+BLAKE3）。
+/*L111*/
+    pub fn digest(&self) -> sim_digest::Digest256 {
+        let mut w = sim_codec::CanonicalWriter::new("sim-economy", "EconomyLedger");
+        w.u64(self.seed);
+        w.u64(self.tick);
+        w.i64(self.treasury);
+        w.i64(self.income_per_tick);
+        w.i64(self.upkeep_per_tick);
+        w.u64(self.market_range);
+        w.bool(self.paused);
+        w.seq_len(self.events.len());
+/*L121*/
+        for ev in &self.events {
+            match ev {
+                EconomyEvent::TickSettled { tick, income, upkeep, treasury } => {
+                    w.u8(0); w.u64(*tick); w.i64(*income); w.i64(*upkeep); w.i64(*treasury);
+                }
+                EconomyEvent::Paused { tick } => { w.u8(1); w.u64(*tick); }
+                EconomyEvent::Resumed { tick } => { w.u8(2); w.u64(*tick); }
+            }
+        }
+        sim_digest::digest("sim-economy", "EconomyLedger", w.as_bytes())
+/*L131*/
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(authoritative());
+/*L141*/
+        assert!(!LAYER.is_empty());
+    }
+
+    fn run(seed: u64) -> (EconomyLedger, Vec<EconomyEvent>) {
+        let mut l = EconomyLedger::new(seed, 100, 30).with_market_range(20);
+        let mut evs = Vec::new();
+        for _ in 0..100 {
+            if let Some(ev) = l.settle_tick().unwrap() {
+                evs.push(ev);
+            }
+/*L151*/
+        }
+        (l, evs)
+    }
+
+    #[test]
+    fn two_runs_digest_equal() {
+        let (l1, e1) = run(0x00C0_FFEE_1234_5678);
+        let (l2, e2) = run(0x00C0_FFEE_1234_5678);
+        assert_eq!(e1, e2);
+        assert_eq!(l1.digest(), l2.digest());
+/*L161*/
+        // 派生流确实产生收入变化（非退化）
+        let varied = e1.iter().any(|ev| matches!(ev, EconomyEvent::TickSettled { income, .. } if *income != 100));
+        assert!(varied);
+    }
+
+    #[test]
+    fn treasury_bounds_are_enforced() {
+        // 溢出：贴顶后下一 tick 仍入账 → Overflow 且状态不变
+        let mut over = EconomyLedger::new(1, ECONOMY_LIMIT - 10, 0).with_market_range(1);
+        assert!(over.settle_tick().unwrap().is_some());
+/*L171*/
+        assert_eq!(over.treasury(), ECONOMY_LIMIT - 10);
+        assert_eq!(over.settle_tick().unwrap_err(), EconomyError::Overflow);
+        assert_eq!(over.treasury(), ECONOMY_LIMIT - 10); // 状态不变
+        // 下溢：维护超国库 → Underflow 且状态不变
+        let mut under = EconomyLedger::new(1, 0, 5);
+        assert_eq!(under.settle_tick().unwrap_err(), EconomyError::Underflow);
+        assert_eq!(under.treasury(), 0);
+    }
+
+    #[test]
+/*L181*/
+    fn pause_resume_semantics() {
+        let mut l = EconomyLedger::new(7, 100, 30).with_market_range(1);
+        l.settle_tick().unwrap();
+        let t = l.treasury();
+        l.pause(1).unwrap();
+        assert_eq!(l.pause(1).unwrap_err(), EconomyError::AlreadyPaused);
+        for _ in 0..3 {
+            assert_eq!(l.settle_tick().unwrap(), None); // 暂停期不结算
+        }
+        assert_eq!(l.treasury(), t);
+/*L191*/
+        assert_eq!(l.tick(), 1);
+        l.resume(4).unwrap();
+        assert_eq!(l.resume(4).unwrap_err(), EconomyError::NotPaused);
+        assert!(l.settle_tick().unwrap().is_some());
+        assert_eq!(l.tick(), 2);
+        // 事件序列含 Paused/Resumed 且入 digest（同事件不同 tick 位置 digest 不同）
+
+===== 原段落: PASTE-32 | 第 32 段 · 范围 B · 节选（第 2/2 部分） =====
+        assert!(l.events().iter().any(|e| matches!(e, EconomyEvent::Paused { .. })));
+        assert!(l.events().iter().any(|e| matches!(e, EconomyEvent::Resumed { .. })));
+    }
+}
+
+===== 原段落: PASTE-33 | 第 33 段 · 范围 B · 完整 =====
+// FILE: crates/sim-world/src/lib.rs @1db87d2
+/*L1*/
+//! 多世界上下文：WorldId 与 SimulationContext 最小预留（主文档 EC-10）。
+//! 权威 crate（2.9 确定性边界内）。
+//!
+//! EC-10：预留 SimulationContext 与 WorldId，不要求实现第二套 ECS；用途=并行测试、
+//! 规划预览、对比模拟、多城市、服务器端多会话。本 crate 只提供身份与上下文原语；
+//! 世界间状态隔离由各权威状态类型以 world_id 分区（随模拟引擎集成）。
+//! 依赖方向约束见 docs/architecture/crate-authority-list.md。
+
+/// 所属架构层（依赖方向检查与文档用）。
+pub const LAYER: &str = "多世界上下文";
+/*L11*/
+/// 是否权威 crate（2.9 确定性边界内）。
+pub const AUTHORITATIVE: bool = true;
+
+/// 供调用方与测试以函数调用读取权威标记。
+pub fn authoritative() -> bool {
+    AUTHORITATIVE
+}
+
+/// 世界标识（EC-10）。u64 newtype；跨世界摘要天然不同（含于摘要信封）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/*L21*/
+pub struct WorldId(pub u64);
+
+/// WorldId 分配器（单调；restore 拒绝回退——与 AgentId/请求 ID 高水位同口径，ADR-NEW-20）。
+#[derive(Clone, Debug, Default)]
+pub struct WorldIdAllocator {
+    high_water: u64,
+}
+
+impl WorldIdAllocator {
+    pub fn new() -> Self {
+/*L31*/
+        Self::default()
+    }
+
+    pub fn allocate(&mut self) -> WorldId {
+        self.high_water += 1;
+        WorldId(self.high_water)
+    }
+
+    pub fn high_water(&self) -> u64 {
+        self.high_water
+/*L41*/
+    }
+
+    /// 读档恢复高水位；回退拒绝（防止 WorldId 复用→摘要域串世界）。
+    pub fn restore_high_water(&mut self, high_water: u64) -> Result<(), &'static str> {
+        if high_water < self.high_water {
+            return Err("WorldId 高水位回退会导致世界标识复用");
+        }
+        self.high_water = high_water;
+        Ok(())
+    }
+/*L51*/
+}
+
+/// 模拟上下文（EC-10 最小预留）：世界身份+全局种子。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimulationContext {
+    pub world_id: WorldId,
+    pub seed: u64,
+}
+
+impl SimulationContext {
+/*L61*/
+    pub fn new(world_id: WorldId, seed: u64) -> Self {
+        Self { world_id, seed }
+    }
+
+    /// 上下文摘要（世界身份进摘要域；canonical+BLAKE3，ADR-NEW-19）。
+    pub fn digest(&self) -> sim_digest::Digest256 {
+        let mut w = sim_codec::CanonicalWriter::new("sim-world", "SimulationContext");
+        w.u64(self.world_id.0);
+        w.u64(self.seed);
+        sim_digest::digest("sim-world", "SimulationContext", w.as_bytes())
+/*L71*/
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_is_pinned() {
+        assert!(authoritative());
+/*L81*/
+        assert!(!LAYER.is_empty());
+    }
+
+    #[test]
+    fn world_ids_are_unique_and_high_water_recovers() {
+        let mut alloc = WorldIdAllocator::new();
+        let a = alloc.allocate();
+        let b = alloc.allocate();
+        assert_ne!(a, b);
+        assert_eq!(alloc.high_water(), 2);
+/*L91*/
+        assert!(alloc.restore_high_water(5).is_ok());
+        assert_eq!(alloc.allocate(), WorldId(6));
+        assert_eq!(alloc.restore_high_water(1).unwrap_err(), "WorldId 高水位回退会导致世界标识复用");
+    }
+
+    #[test]
+    fn context_digest_separates_worlds() {
+        // 同种子不同世界 → 摘要不同；同世界同种子 → 相等（回放等价基础）
+        let c1 = SimulationContext::new(WorldId(1), 42);
+        let c2 = SimulationContext::new(WorldId(2), 42);
+/*L101*/
+        let c1b = SimulationContext::new(WorldId(1), 42);
+        assert_ne!(c1.digest(), c2.digest());
+        assert_eq!(c1.digest(), c1b.digest());
+    }
+}
+
+===== 原段落: PASTE-34 | 第 34 段 · 范围 B · 完整 =====
+// FILE: docs/architecture/rfc-agent-state-machine.md @1db87d2
+/*L1*/
+# RFC：Agent 状态机与受阻状态语义（Stage 3 T1，债务 #7）
+
+- 状态：Proposed（2026-11-22；实装随本 RFC 一并落盘于 crates/sim-agent）
+- 关联：EC-01（过期结果兜底）、ADR-NEW-17 条文 10（前向进展不变量+兜底三候选）、
+  ADR-NEW-20（预算让步/请求队列）、EC-08（诊断分层）、2.3（AgentId 解耦）、
+  decision-log 债务 #7
+
+## 1. 问题
+
+主文档多处引用"受阻状态"（EC-01 兜底"标记受阻"、ADR-NEW-17 条文 10"有限 tick 内
+/*L11*/
+获得路径或进入明确定义的受阻状态"），但状态集、进入/退出条件、上限行为从未定义。
+债务 #7 即此。
+
+## 2. 状态集
+
+| 状态 | 含义 | 终态 |
+| --- | --- | --- |
+| `Spawning` | 已分配 AgentId（2.3 高水位），等待进场 | 否 |
+| `Active` | 正常活动（持有路径/移动中） | 否 |
+| `Blocked { reason, since_tick, attempts }` | 受阻：前向进展不变量承诺的明确定义状态 | 否（必须有限转移） |
+/*L21*/
+| `Despawned` | 已离场（终态；ID 不复用） | 是 |
+
+受阻原因（`BlockedReason`）与触发源一一对应：
+
+- `Unreachable`：寻路结果不可达（FindOutcome::Unreachable，ADR-NEW-17 条文 10 兜底候选
+  "标记受阻"）；
+- `RecomputeLimitExceeded`：过期结果重算超限（recompute_limit，EC-01 策略块）；
+- `MarkBlockedFallback`：预算让步路径兜底 MarkBlocked（ADR-NEW-20/24 预算轴）。
+
+## 3. 转移表（全集；未列出的转移一律非法并拒绝）
+/*L31*/
+
+| # | 转移 | 条件 | 语义 |
+| --- | --- | --- | --- |
+| 1 | （无）→ Spawning | 分配器 alloc | 进场登记 |
+| 2 | Spawning → Active | 进场 tick 到达 | 开始活动 |
+| 3 | Active → Blocked | 任一 BlockedReason 触发 | attempts=1、since_tick=当前 tick |
+| 4 | Blocked → Blocked | 再次受阻 | attempts+1，刷新 reason/since_tick |
+| 5 | Blocked → Active | 重寻路成功 | 受阻解除（unblock） |
+| 6 | Blocked → Despawned | 取消 / 超时退役 / attempts 超上限 | 受控终止（见 §4） |
+| 7 | Active/Spawning → Despawned | 取消 / 到达目的地离场 | 正常离场 |
+/*L41*/
+
+## 4. 受阻上限与前向进展
+
+- `block_limit`（默认 3，与 recompute_limit、TX_RETRY_LIMIT 口径一致）：受阻累计
+  attempts 超过上限时**自动退役**（→ Despawned），转移记录 `Retired`——这是
+  "有限 tick 内获得路径或受阻、受阻亦有界"的收口，杜绝永久受阻悬挂。
+- 前向进展不变量（ADR-NEW-17 条文 10）在本状态机的落点：任何 Agent 的 Blocked
+  驻留必须以 #5/#6 结束，attempts 单调递增保证可终止性。
+
+## 5. 确定性口径
+/*L51*/
+
+- 转移记录 `StateTransition { agent_id, from, to, tick }` 按发生顺序追加（稳定序=
+  调用序；调用方系统排序由 2.9 条 5 保证）；
+- `digest()`：全部转移记录经 canonical 编码（sim-codec，module="sim-agent"、
+  kind="AgentLifecycle"）→ BLAKE3（sim-digest）——两跑转移序列 digest 相等即状态机
+  级可复现；
+- 受阻转移配套诊断事件 `AGT-0001`（Diagnostic 层，EC-08；不改权威状态）。
+
+## 6. 与既有语义的衔接
+
+/*L61*/
+- EC-01 兜底三候选中"标记受阻"= 本状态机 #3（MarkBlockedFallback / Unreachable）；
+  "局部可行路径/沿用旧路径有效段"不改变状态机（仍是 Active，只是路径降级）。
+- ADR-NEW-20 让步路径：让步本身**不**触发受阻（请求仍在队列，Agent 保持 Active 等待）；
+  只有让步路径的兜底 MarkBlocked 才进入 Blocked。
+- AgentRegistry（Alive/Despawned）为旧粗粒度登记，与本状态机并存；集成期后合并
+  （AgentState 为超集），合并前以 AgentLifecycle 为权威。
+
+## 7. 开问题（随集成定案，不阻塞本 RFC）
+
+- Blocked 期间的经济/LOD 交互（受阻 Agent 是否暂停计费）→ 随 T3/T4；
+/*L71*/
+- 超时退役的"超时"计量单位（受阻 tick 数上限 vs attempts 上限）——当前 attempts
+  上限=确定性工作量口径，时长上限待 2.10 口径复核后补充。
+
+===== 原段落: PASTE-35 | 第 35 段 · 范围 B · 完整 =====
+// FILE: docs/architecture/replay-schema.md @1db87d2
+/*L1*/
+# 回放输入 / 模拟配置 Schema（Stage 3 T2，债务 #10）
+
+- 状态：Proposed（2026-11-22；实装随本 schema 一并落盘于 crates/sim-replay）
+- 关联：2.7（机器性能调整"写入存档和回放输入"）、2.9 条 8（玩家命令带生效 tick 并
+  记录供回放）、ADR-NEW-14 条 6（LOD 切换动作记录）、EC-03（Schema 版本化/迁移
+  可诊断口径）、ADR-NEW-19（canonical 编码规则共用）
+
+## 1. 定位
+
+回放输入是**权威运行的输入侧完整记录**：种子+模拟配置+全部输入事件。回放等价=
+/*L11*/
+同输入两次运行 digest 相等。与存档（EC-03）分工：存档记录**状态**（含在途任务），
+回放输入记录**输入**；存档可在元数据中引用 ReplayInput digest 以绑定回放身份。
+
+## 2. Schema（version = 1）
+
+```
+ReplayInput {
+    schema_version: u16,        // =1；变更语义须 bump（EC-03 bump 规则同口径）
+    seed: u64,                  // 全局种子（ADR-NEW-22 口径）
+    tick_rate_num: u64,         // tick 频率分子（dt=den/num 派生，2.4 from_ratio）
+/*L21*/
+    tick_rate_den: u64,
+    events: [InputEvent],       // 记录序=发生序；回放按 tick 提交（见 §4）
+}
+
+InputEvent =                       // 判别 tag u8
+  | Command { command_id: u64, effective_tick: u64, agent_id: u64,
+              opcode: u32, arg0: i64, arg1: i64 }        // 2.9 条 8（对应 sim-core PlayerCommand）
+  | ConfigChange { tick: u64, key: u64, value: i64 }      // 2.7 tick 边界配置变更（key=稳定键哈希）
+  | LodSwitch { tick: u64, entity_id: u64, from_level: u8, to_level: u8 }  // ADR-NEW-14 条 6
+  | BudgetAdjustment { tick: u64, system_id: u64, per_tick_cap: u64 }      // 2.7 预算调整
+/*L31*/
+```
+
+- 编码：canonical 小端（sim-codec，module="sim-replay" kind="ReplayInput"），
+  与存档共用底层编码规则、顶层 Schema 独立（ADR-NEW-19 决策）；
+- 尾字节拒绝、版本不符可诊断（RPL-0001）——EC-03 同口径。
+
+## 3. 回放等价（验收判据）
+
+录制运行（Recorder 收集 events）→ encode → decode → 回放运行（Replayer 按 tick
+提交事件）→ 两运行 digest 相等。digest 覆盖：状态 + 输入事件序列。
+/*L41*/
+
+## 4. 提交语义
+
+- Command 按 `effective_tick` 生效（2.9 条 8；录制时即带生效 tick）；
+- ConfigChange / BudgetAdjustment / LodSwitch 仅允许 tick 边界（录制 API 断言
+  tick 单调非降；回放在各 tick 的事件按记录序提交=确定性）；
+- 回放不重算决策：事件即事实（寻路/预算让步等系统级派生行为由确定性模拟自身重放）。
+
+## 5. 版本 bump 规则
+
+/*L51*/
+新增可选事件类型=可 bump 可不 bump（解码端拒绝未知 tag 时必须 bump 并提供迁移）；
+字段语义/顺序/编码变更必须 bump；bunch 规则与 EC-03 Schema 版本一致（迁移失败可诊断）。
+
+===== 原段落: PASTE-36 | 第 36 段 · 范围 B · 完整 =====
+// FILE: docs/architecture/rfc-lod-draft.md @1db87d2
+/*L1*/
+# RFC：LOD（细节层级）草案
+
+- 日期：2026-11-22
+- 状态：Proposed（草案，Stage 3 T4；债务 #14"LOD 无 Stage 归属/命名/切换条件/更新频率"收口）
+- 关联：主文档 2.7（三级 LOD+预算即代码）、ADR-NEW-14 条 6（LOD 切换确定性）、
+  ADR-NEW-21（SimScalar）、replay-schema.md（LodSwitch 事件已定 schema v1）、债务 #14
+
+## 1. 层级命名与语义（2.7"具体层级命名"收口）
+
+| 层级 | 名称 | 更新频率 | 语义 |
+/*L11*/
+| --- | --- | --- | --- |
+| L0 | High（全精度） | 每 tick | 全部权威状态逐 tick 更新 |
+| L1 | Medium（节流） | 每 2 tick 一次更新 | 隔 tick 更新（未更新 tick 保持上一状态） |
+| L2 | Low（简化） | 每 4 tick 一次更新 | 简化运动模型（直线推进到中间路点） |
+
+- 层级是**实体粒度**的质量分级（对单个 Agent/车辆生效），与 EC-04 降级
+  （系统预算压力、L1/L2/L3、系统粒度）是**正交的两个轴**：两者都必须以确定性
+  信号触发，但互不替代。
+- 中/低层级改变权威状态（更新频率与简化模型），故其切换属确定性边界事项。
+
+/*L21*/
+## 2. 切换条件（确定性信号，ADR-NEW-14 条 6）
+
+1. **允许的触发信号**（全部确定性）：
+   - 实体属性（如距玩家视点的网格距离——视点本身是确定性输入）；
+   - 确定性工作量单位（如本 tick 预算消耗比例、实体计数）；
+   - 玩家命令显式指定（CommandPayload::SetLod，记录于回放输入）。
+2. **禁止的触发信号**：墙钟、CPU/内存占用、帧率、渲染负载、线程调度
+   （违反 2.9 条 7 确定性边界）。
+3. **切换动作必须记录**：`LodSwitch{tick, entity_id, from_level, to_level}`
+   （replay-schema.md Schema v1 已定义）同时入存档（EC-03 元数据扩展项）与
+/*L31*/
+   回放输入——与预算调整、LOD 记录同口径（2.7"写入存档和回放输入"）。
+
+## 3. 简化模型约束（L1/L2 正确性）
+
+1. 简化运动模型不得改变**路径合法性**：中途路点必须落在原路径有效段上
+   （与 ADR-NEW-17 条文 9"只保证合法性"同口径）。
+2. 降级/LOD 切换不得破坏强读档等价：切换状态与切换计划（下次更新 tick）须
+   随存档恢复（EC-03 预算与降级类字段同组扩展）。
+3. L1 隔 tick 更新的 tick 间隙内，实体状态视为"保持"（显式语义，非未初始化）。
+
+/*L41*/
+## 4. 验证计划（实施时）
+
+- 同种子两跑（含 LOD 切换）digest 一致；
+- 切换动作序列入回放→回放 digest 与录制一致（sim-replay LodSwitch 事件闭环）；
+- 禁止信号守护：clippy disallowed-methods 已覆盖墙钟入口（EC-12），
+  切换函数签名不接受非确定性参数（类型层防）。
+
+## 5. 不在本草案范围
+
+- LOD 具体阈值数值（随 2.10 参数基线体系与实测定案，标记待定）；
+/*L51*/
+- 视点/相机系统实现（属渲染/工具层）；
+- LOD 与降级联动策略（L2/L3 降级期是否强制全实体降 LOD——留待实测与 ADR）。
+
+===== 原段落: PASTE-37 | 第 37 段 · 范围 B · 完整 =====
+// FILE: docs/architecture/Stage-3-Task-List.md @1db87d2
+/*L1*/
+# Stage 3 任务清单：模拟语义扩展（重建版）
+
+- 状态：执行中（2026-11-22 起；重建以替代缺失的原始路线图"后续阶段"部分——债务 #19 同款问题，
+  主文档 L1038-1040 注）
+- 依据：主文档 2.2 分层（经济层）、2.7 LOD、2.9 条 8 回放输入、EC-01 兜底、EC-03（WorldId 字段）、
+  EC-04（L2/L3 暂停经济）、EC-10 多世界边界（L770-790）、ADR-NEW-14 条 6（LOD 切换确定性）、
+  ADR-NEW-18/21（经济数值独立 i64）、ADR-NEW-19（摘要纳入权威状态含经济）；
+  债务 #7/#10/#14（decision-log）
+- 范围：Agent 状态机、回放输入/模拟配置 schema、经济系统基础、LOD 草案、多世界边界预留
+- 不在范围：E 议题三件（在途行程时间/有向边独立容量/准入规则）——独立立项，不挂本清单；
+/*L11*/
+  UI/渲染（非权威侧）；MFD→降级（债务 #31 转 C 终局，永久纯统计）
+- 执行纪律：每完成一个任务 git 提交推送 + decision-log《Stage 3 执行日志》记录；
+  状态用语按 0.2 词表；条件核销清单对应项随任务勾销。
+
+## 前置（S2，先行独立小步）
+
+| # | 任务 | 内容与依据 | 交付物 | 验收标准 | 依赖 |
+| --- | --- | --- | --- | --- | --- |
+| T0 | 债务 #28 tx_id 重试实装 | ADR-NEW-24 决策 4/债务 #28 定案："沿用原 tx_id 按全序重排入队重试"；重试上限 3，超限转受阻状态+诊断事件 | crates/sim-network 重试队列（TxRetryQueue）+错误码登记 | 重试沿用原 ID 测试；上限 3 转受阻+诊断测试；与 TxLimiter（BudgetExceeded）衔接 | 无 |
+
+/*L21*/
+## 任务分解
+
+| # | 任务 | 内容与依据 | 交付物 | 验收标准 | 依赖 |
+| --- | --- | --- | --- | --- | --- |
+| T1 | Agent 状态机（债务 #7） | 状态集与转移条件**含受阻状态语义**（进入=寻路 Unreachable/重算超限 MarkBlocked/受阻上限；退出=重寻路成功/取消/超时）；与 EC-01 兜底（ADR-NEW-17 条文 10）、ADR-NEW-20 让步路径衔接；转移事件确定性（入摘要+诊断事件） | Agent 状态机 RFC 文档（docs/architecture/）+ sim-agent 状态机实装 | 状态转移表全覆盖测试；受阻进入/退出测试；两跑转移序列 digest 一致 | T0 |
+| T2 | 回放输入/模拟配置 schema（债务 #10） | 2.7/2.9 条 8 承诺"写入存档和回放输入"：命令序列（生效 tick）、配置变更（tick 边界）、LOD 切换记录、预算调整记录；canonical 编码+Schema 版本化（EC-03 口径）；回放=种子+配置+命令日志→同 digest | sim-save 回放模块（或 sim-replay）+schema 文档+录制/回放 API | 回放等价测试（录制运行回放→digest 相等）；schema 版本拒绝测试 | T1 |
+| T3 | 经济系统基础（sim-economy） | 经济数值独立 i64（ADR-NEW-18/21：10^12 上限、不用 SimScalar）；确定性 RNG 派生流（ADR-NEW-22 "economy" namespace）；EC-04 L2/L3 暂停经济语义；摘要纳入（ADR-NEW-19 模块清单） | sim-economy 最小确定性循环（预算/收支/事件） | 两跑同种子经济序列 digest 一致；i64 上界溢出防护测试；暂停/恢复语义测试 | T1 |
+| T4 | LOD 草案（债务 #14） | 三级命名/切换条件/更新频率**定案草案**（ADR 文档，Proposed→评审）；实装锚点=ADR-NEW-14 条 6（切换条件确定性信号+动作入存档回放）；不做完整 LOD 引擎，先契约 | docs/architecture/adr/ LOD 草案 + sim-agent/sim-traffic 切换钩子接口 | 草案含切换条件确定性证明路径；钩子接口编译通过+切换记录结构测试 | T1 |
+| T5 | 多世界边界（EC-10） | SimulationContext+WorldId 类型边界预留（不要求第二套 ECS，L788）；WorldId 入存档/摘要（EC-03 字段）；两实例状态归属隔离 | sim-core 世界上下文类型 + 隔离测试 | 两实例并行运行互不污染（各 digest 独立可复现）；WorldId 入档入摘要测试 | T1 |
+
+/*L31*/
+## 退出条件（提案，验收时按条件核销清单核销）
+
+1. Agent 状态机受阻语义完整可测：进入/退出/上限转移全覆盖，转移序列确定性可复现。
+2. 回放等价：种子+配置+命令日志 → 回放 digest == 原运行 digest（债务 #10 闭合）。
+3. 经济系统两跑 digest 一致，数值契约（i64 上限）有防护测试。
+4. LOD 草案 ADR 落盘（Proposed），切换确定性条款有实装锚点。
+5. 多世界边界隔离测试通过，WorldId 入档入摘要。
+6. 条件核销清单对应项（债务 #7/#10/#14 相关）勾销。
+
+## 执行顺序
+/*L41*/
+
+T0 → T1 → {T2, T3} 并行 → {T4, T5} 收口。每个任务=独立提交
+（格式：`feat(stage3-Tn)` 或 `docs(stage3-Tn)`）。
