@@ -174,6 +174,15 @@ impl CommandLog {
     }
 
     /// 读档/回放重建入口：从已记录命令与 ID 高水位重建日志（EC-03 保存并恢复）。
+    /// 回放/录制输入直插（W1 实接）：保留原 command_id 不重排，高水位随之推进。
+    /// 重复 ID 由引擎 applied_command_ids 去重保护。
+    pub fn insert_recorded(&mut self, cmd: PlayerCommand) {
+        if cmd.command_id >= self.id_high_water() {
+            self.alloc.restore(cmd.command_id + 1);
+        }
+        self.commands.push(cmd);
+    }
+
     pub fn from_parts(commands: Vec<PlayerCommand>, id_high_water: u64) -> Self {
         Self {
             commands,

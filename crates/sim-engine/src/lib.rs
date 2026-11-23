@@ -28,6 +28,9 @@ pub const SYSTEM_PATHFINDING: u32 = 1;
 pub const SYSTEM_TRAFFIC: u32 = 2;
 pub const SYSTEM_NETWORK: u32 = 3;
 
+/// L2 降级寻路配额封顶（候选值，随 ADR-NEW-14 阈值定案回填；确定性常量）。
+pub const DEGRADATION_L2_QUOTA_CAP: u64 = TICK_QUOTA / 4;
+
 /// 引擎构造配置。
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
@@ -76,6 +79,15 @@ pub struct Engine {
     pub tick_cmd_payloads: Vec<Vec<u8>>,
     pub tick_path_payloads: Vec<Vec<u8>>,
     pub tick_tx_ids: Vec<u64>,
+    /// 输入事件收件箱（W1）：键=(生效 tick, 提交序) 全序。
+    pub event_inbox: BTreeMap<(u64, u64), InputEvent>,
+    pub event_seq: u64,
+    /// 本 tick 新增的寻路请求 ID（L1 降级=新请求延迟；tick 末清空）。
+    pub new_this_tick: BTreeSet<u64>,
+    /// Agent LOD 级别（W2：0=L0 全精度/1=L1/2=L2；入摘要入档）。
+    pub lod_levels: BTreeMap<u64, u8>,
+    /// 配置变更记录（ConfigChange 事件；(tick, key_id, value) 追加序）。
+    pub config_changes: Vec<(u64, u64, i64)>,
 }
 
 fn budget_decls() -> Vec<BudgetDecl> {
@@ -136,6 +148,49 @@ impl Engine {
             tick_cmd_payloads: Vec::new(),
             tick_path_payloads: Vec::new(),
             tick_tx_ids: Vec::new(),
+            event_inbox: BTreeMap::new(),
+            event_seq: 0,
+            new_this_tick: BTreeSet::new(),
+            lod_levels: BTreeMap::new(),
+            config_changes: Vec::new(),
+        }
+    }
+
+    /// 提交输入事件（W1）：Command 保留原 command_id 直插命令日志；
+    /// ConfigChange/BudgetAdjustment/LodSwitch 入事件收件箱按 (tick, 提交序) 生效。
+    pub fn submit_input_event(&mut self, ev: InputEvent) {
+        // 录制（回放等价判据源）：Command 按提交序、其余按 tick 边界语义。
+        let _ = self.recorder.record(ev);
+        match ev {
+            InputEvent::Command {
+                command_id,
+                effective_tick,
+                agent_id,
+                opcode,
+                arg0,
+                arg1,
+            } => {
+                let payload = match opcode {
+                    0 => CommandPayload::MoveTo { x: arg0, y: arg1 },
+                    1 => CommandPayload::SetDestination {
+                        node: arg0.max(0) as u64,
+                    },
+                    _ => CommandPayload::CancelRequest {
+                        request_id: arg0.max(0) as u64,
+                    },
+                };
+                self.command_log.insert_recorded(sim_core::PlayerCommand {
+                    command_id,
+                    effective_tick,
+                    agent_id,
+                    payload,
+                });
+            }
+            ev => {
+                let seq = self.event_seq;
+                self.event_seq += 1;
+                self.event_inbox.insert((ev.tick(), seq), ev);
+            }
         }
     }
 
@@ -183,6 +238,17 @@ impl Engine {
     /// 执行一个 tick（顺序契约=integration-design.md §1，不得漂移）。
     pub fn run_tick(&mut self) {
         let tick = self.clock.tick();
+        // 降级等级取本 tick 起点值（由上一 tick end_tick 评估；工作量单位确定性，ADR-NEW-14）。
+        let level = self.budget.level();
+        let degrade_l1 = matches!(
+            level,
+            sim_core::budget::DegradationLevel::L1 | sim_core::budget::DegradationLevel::L2
+        );
+        let degrade_l3 = matches!(level, sim_core::budget::DegradationLevel::L3);
+        let degrade_l2_plus = matches!(
+            level,
+            sim_core::budget::DegradationLevel::L2 | sim_core::budget::DegradationLevel::L3
+        );
 
         // 1. 命令生效：(effective_tick, command_id) 全序。
         for cmd in self.command_log.due_commands(tick) {
@@ -190,11 +256,34 @@ impl Engine {
                 self.apply_command(cmd);
             }
         }
+        // 1b. 输入事件（W1 实接）：(生效 tick, 提交序) 全序即时生效。
+        //     ConfigChange→配置记录；BudgetAdjustment→预算上限调整；LodSwitch→LOD 级别。
+        let due: Vec<_> = self
+            .event_inbox
+            .range(..=(tick, u64::MAX))
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        for (k, ev) in due {
+            self.event_inbox.remove(&k);
+            self.apply_input_event(ev, tick);
+        }
+        // L3=仅维护已有状态：新命令刚产生的请求进 new_this_tick 集，L1 延迟、L3 全延。
+        let new_this_tick = std::mem::take(&mut self.new_this_tick);
 
         // 2. 寻路：请求 ID 稳定序 + 全局每 tick 配额（TickBudget 每 tick 重建=重置）。
-        let mut tb = TickBudget::new(TICK_QUOTA);
+        //    L1=新请求延迟入队（本轮只处理既存请求）；L3=全部延迟。
+        let quota = if degrade_l2_plus {
+            DEGRADATION_L2_QUOTA_CAP
+        } else {
+            TICK_QUOTA
+        };
+        let mut tb = TickBudget::new(quota);
         let queue = std::mem::take(&mut self.path_queue);
         for (rid, (agent, start, goal)) in queue {
+            if degrade_l3 || (degrade_l1 && new_this_tick.contains(&rid)) {
+                self.path_queue.insert(rid, (agent, start, goal));
+                continue;
+            }
             let out = self
                 .finder
                 .request_with_budget(&self.net, &self.coords, start, goal, &mut tb);
@@ -214,29 +303,39 @@ impl Engine {
         }
 
         // 3. 路网事务：重试批次先行（tx_id 全序）→ 新事务；被拒进重试队列。
-        let mut batch = self.retry.due();
-        batch.append(&mut std::mem::take(&mut self.tx_inbox));
-        batch.sort_by_key(|t| t.id);
-        for tx in batch {
-            let id = tx.id;
-            if self.limiter.admit(&tx, &self.net).is_ok() {
-                if self.net.publish(tx).is_ok() {
-                    self.applied_txs += 1;
-                    self.budget.spend(SYSTEM_NETWORK, 1);
-                    self.tick_tx_ids.push(id);
+        //    L3=仅维护已有状态：新事务与重试均延后。
+        if !degrade_l3 {
+            let mut batch = self.retry.due();
+            batch.append(&mut std::mem::take(&mut self.tx_inbox));
+            batch.sort_by_key(|t| t.id);
+            for tx in batch {
+                let id = tx.id;
+                if self.limiter.admit(&tx, &self.net).is_ok() {
+                    if self.net.publish(tx).is_ok() {
+                        self.applied_txs += 1;
+                        self.budget.spend(SYSTEM_NETWORK, 1);
+                        self.tick_tx_ids.push(id);
+                    }
+                } else {
+                    self.retry.offer(tx);
                 }
-            } else {
-                self.retry.offer(tx);
             }
+            self.limiter.reset();
         }
-        self.limiter.reset();
 
         // 4. 交通步进（确定性 id 序；fold_digest 含 last_step_population 等全字段）。
         self.traffic.step();
         self.budget
             .spend(SYSTEM_TRAFFIC, self.traffic.active_count());
 
-        // 5. 经济结算（EC-04 L2/L3 暂停语义由调用方 pause/resume 驱动）。
+        // 5. 经济结算（EC-04 L2/L3 暂停语义由降级等级驱动：进入 L2+ 暂停、回到 L1- 恢复）。
+        if degrade_l2_plus {
+            if !self.economy.paused() {
+                let _ = self.economy.pause(tick);
+            }
+        } else if self.economy.paused() {
+            let _ = self.economy.resume(tick);
+        }
         let _ = self.economy.settle_tick();
 
         // 6. 预算/降级评估（确定性工作量单位，ADR-NEW-14；需求通道默认冻结）。
@@ -249,6 +348,30 @@ impl Engine {
         self.clock.advance();
     }
 
+    /// 输入事件处理（W1）：三类非 Command 事件即时生效（确定性白名单）。
+    fn apply_input_event(&mut self, ev: InputEvent, tick: u64) {
+        match ev {
+            InputEvent::Command { .. } => {
+                // Command 走 command_log 全序通道，此处不重复处理。
+            }
+            InputEvent::ConfigChange { key, value, .. } => {
+                self.config_changes.push((tick, key, value));
+            }
+            InputEvent::BudgetAdjustment {
+                system_id, per_tick_cap, ..
+            } => {
+                let _ = self.budget.set_per_tick_cap(system_id as u32, per_tick_cap);
+            }
+            InputEvent::LodSwitch {
+                entity_id,
+                to_level,
+                ..
+            } => {
+                self.lod_levels.insert(entity_id, to_level);
+            }
+        }
+    }
+
     fn apply_command(&mut self, cmd: sim_core::PlayerCommand) {
         self.applied_commands += 1;
         match cmd.payload {
@@ -256,6 +379,7 @@ impl Engine {
                 if (node as usize) < self.coords.len() {
                     let rid = self.next_request_id;
                     self.next_request_id += 1;
+                    self.new_this_tick.insert(rid);
                     self.path_queue
                         .insert(rid, (cmd.agent_id, 0, node));
                 }
@@ -319,6 +443,24 @@ impl Engine {
         self.budget.encode_state(&mut cw);
         let b = cw.into_bytes();
         g.record("sim-engine", "BudgetState", &b);
+        // LOD 级别（W2）与配置变更（W1）：键序确定性（BTreeMap/追加序）。
+        let mut lw = sim_codec::CanonicalWriter::new("sim-engine", "LodState");
+        lw.u64(self.lod_levels.len() as u64);
+        for (agent, lvl) in &self.lod_levels {
+            lw.u64(*agent);
+            lw.u8(*lvl);
+        }
+        let l = lw.into_bytes();
+        g.record("sim-engine", "LodState", &l);
+        let mut kw = sim_codec::CanonicalWriter::new("sim-engine", "ConfigChanges");
+        kw.u64(self.config_changes.len() as u64);
+        for (t, key, value) in &self.config_changes {
+            kw.u64(*t);
+            kw.u64(*key);
+            kw.i64(*value);
+        }
+        let k = kw.into_bytes();
+        g.record("sim-engine", "ConfigChanges", &k);
         let d = g.finalize();
         self.tick_digests.push(d);
         let mut chain_in = Vec::new();
@@ -359,6 +501,10 @@ impl Engine {
             finder_quota_yield_count: self.finder.quota_yield_count,
             tick_digests: self.tick_digests.clone(),
             chain: self.chain,
+            event_inbox: self.event_inbox.clone(),
+            event_seq: self.event_seq,
+            lod_levels: self.lod_levels.clone(),
+            config_changes: self.config_changes.clone(),
         }
     }
 
@@ -395,6 +541,10 @@ impl Engine {
         e.finder.quota_yield_count = s.finder_quota_yield_count;
         e.tick_digests = s.tick_digests;
         e.chain = s.chain;
+        e.event_inbox = s.event_inbox;
+        e.event_seq = s.event_seq;
+        e.lod_levels = s.lod_levels;
+        e.config_changes = s.config_changes;
         e
     }
 }
@@ -426,6 +576,10 @@ pub struct EngineState {
     pub finder_quota_yield_count: u64,
     pub tick_digests: Vec<sim_digest::Digest256>,
     pub chain: sim_digest::Digest256,
+    pub event_inbox: BTreeMap<(u64, u64), InputEvent>,
+    pub event_seq: u64,
+    pub lod_levels: BTreeMap<u64, u8>,
+    pub config_changes: Vec<(u64, u64, i64)>,
 }
 
 #[cfg(test)]
@@ -713,5 +867,130 @@ mod tests {
         // tick2：MoveTo 生效。
         assert_eq!(e.applied_commands, 4);
         assert_eq!(e.clock.tick(), 3);
+    }
+
+    /// W1：三类输入事件即时生效且确定性（ConfigChange 记录/BudgetAdjustment 调 cap/LodSwitch 入状态）。
+    #[test]
+    fn input_events_apply_deterministically() {
+        let run = |seed: u64| {
+            let mut e = scenario(seed);
+            e.submit_input_event(InputEvent::ConfigChange {
+                tick: 1,
+                key: 7,
+                value: 42,
+            });
+            e.submit_input_event(InputEvent::LodSwitch {
+                tick: 2,
+                entity_id: 1,
+                from_level: 0,
+                to_level: 2,
+            });
+            e.submit_input_event(InputEvent::BudgetAdjustment {
+                tick: 1,
+                system_id: SYSTEM_PATHFINDING as u64,
+                per_tick_cap: 1_000,
+            });
+            for _ in 0..10 {
+                e.run_tick();
+            }
+            e
+        };
+        let a = run(0xABCD);
+        let b = run(0xABCD);
+        assert_eq!(a.digest(), b.digest(), "events must be deterministic");
+        assert_eq!(a.config_changes, vec![(1, 7, 42)]);
+        assert_eq!(a.lod_levels.get(&1), Some(&2));
+        assert_eq!(a.applied_commands, b.applied_commands);
+    }
+
+    /// W1：回放等价含四类事件（Command 保号直插；submit 即录制；spawn 为环境设置由两侧同序执行）。
+    #[test]
+    fn replay_equivalence_with_all_event_kinds() {
+        let setup = |seed: u64| {
+            let mut e = Engine::new(config(seed));
+            for _ in 0..3 {
+                e.spawn_agent();
+            }
+            e
+        };
+        let mut a = setup(0x77);
+        // 命令也走 submit_input_event（保号+录制）。
+        a.submit_input_event(InputEvent::Command {
+            command_id: 0,
+            effective_tick: 1,
+            agent_id: 1,
+            opcode: 1,
+            arg0: 3,
+            arg1: 0,
+        });
+        a.submit_input_event(InputEvent::ConfigChange {
+            tick: 1,
+            key: 3,
+            value: 9,
+        });
+        a.submit_input_event(InputEvent::LodSwitch {
+            tick: 1,
+            entity_id: 2,
+            from_level: 0,
+            to_level: 1,
+        });
+        a.submit_input_event(InputEvent::BudgetAdjustment {
+            tick: 2,
+            system_id: SYSTEM_NETWORK as u64,
+            per_tick_cap: 2_048,
+        });
+        for _ in 0..12 {
+            a.run_tick();
+        }
+        // 重放引擎只喂录制输入（spawn 环境同序复刻）。
+        let mut b = setup(0x77);
+        for ev in a.recorder.events() {
+            b.submit_input_event(ev);
+        }
+        for _ in 0..12 {
+            b.run_tick();
+        }
+        assert_eq!(a.tick_digests, b.tick_digests, "replay must reproduce");
+    }
+
+    /// W1：降级分支确定性（L1 延迟新请求/L2 暂停经济），两跑摘要一致。
+    #[test]
+    fn degradation_branches_are_deterministic() {
+        let run = |seed: u64| {
+            let mut e = Engine::new(config(seed));
+            for i in 0..4 {
+                let a = e.spawn_agent();
+                let _ = e.submit_command(
+                    a,
+                    1 + (i % 3),
+                    CommandPayload::SetDestination { node: 3 },
+                );
+            }
+            // 压缩寻路上限至 1（每次搜索展开 2-3 个即 200-300% ≥90%）→
+            // 连续 tick 后触 L2（EC-04：L2+ 暂停经济）。语义按预算比例实算。
+            e.submit_input_event(InputEvent::BudgetAdjustment {
+                tick: 0,
+                system_id: SYSTEM_PATHFINDING as u64,
+                per_tick_cap: 1,
+            });
+            let mut paused_seen = false;
+            let mut l2_plus_seen = false;
+            for _ in 0..10 {
+                e.run_tick();
+                paused_seen |= e.economy.paused();
+                l2_plus_seen |= e.budget.level() != sim_core::budget::DegradationLevel::Normal;
+            }
+            (e, paused_seen, l2_plus_seen)
+        };
+        let (a, a_pause, a_lvl) = run(0xD00D);
+        let (b, b_pause, b_lvl) = run(0xD00D);
+        assert_eq!(a.digest(), b.digest(), "degradation must be deterministic");
+        assert_eq!(a_lvl, b_lvl);
+        assert_eq!(a_pause, b_pause);
+        assert!(a_lvl, "L2+ must be reached under cap=1 workload");
+        assert!(
+            a_pause,
+            "L2+ must pause economy within the run (EC-04 mapping；恢复后自动 resume）"
+        );
     }
 }

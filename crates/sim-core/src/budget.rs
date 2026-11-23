@@ -135,6 +135,18 @@ impl BudgetRegistry {
     }
 
     /// 记录实耗；返回是否超该系统每 tick 上限。
+    /// 调整计量单位声明的每 tick 上限（BudgetAdjustment 输入事件接口，W1 实接）。
+    /// 确定性：只改声明值，spent/等级逻辑不变；未知 system_id 返回 false 状态不变。
+    pub fn set_per_tick_cap(&mut self, system_id: u32, per_tick_cap: u64) -> bool {
+        match self.decls.iter_mut().find(|d| d.system_id == system_id) {
+            Some(d) => {
+                d.per_tick_cap = per_tick_cap;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn spend(&mut self, system_id: u32, amount: u64) -> bool {
         let idx = self
             .decls
