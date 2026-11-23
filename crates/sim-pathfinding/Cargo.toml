@@ -14,3 +14,9 @@ sim-digest = { path = "../sim-digest" }
 sim-codec = { path = "../sim-codec" }
 sim-rng = { path = "../sim-rng" }
 sim-test-support = { path = "../sim-test-support" }
+criterion = "0.5"
+proptest = "1"
+
+[[bench]]
+name = "astar_bench"
+harness = false

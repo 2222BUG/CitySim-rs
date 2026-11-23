@@ -575,6 +575,17 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 | I3 | 端到端等价（强读档=save/load 后续跑 digest 一致；回放=录制-重放 digest 一致） | 已完成（2026-11-23）| feat(stage3): I3——端到端等价（附真 bug 修复：Recorder 按 effective_tick 单调校验静默丢命令，Command 改按提交序记录豁免单调；GlobalDigest 同键覆盖致事件逐条 record 互覆，改每 tick 聚合记录） |
 | I4 | R2 缩小场景端到端+integration-exit 记录+遗留核对 | 已完成（2026-11-23）| feat(stage3): I4——R2 缩小场景端到端 + integration-exit（9/9 含往返无损回归；测试口径错修正=三引擎同节奏比链） |
 
+## 开源采纳执行日志（O1–O4，2026-11-23）
+
+| 步骤 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| O1 | dev-deps 三件套：criterion 正式基准（astar_bench 基线 248µs/70µs 入 docs/benchmarks/criterion-baseline-2026-11-23.md）+proptest 属性测试（发布原子性/过期合法性/预算上界，regressions 回放） | 进行中 | - |
+| O2 | sim-view 最小 Demo（bevy_ecs_tilemap+egui_plot+inspector，非权威，只读对接 Engine snapshot） | 待开始 | - |
+| O3 | puffin 遥测+cargo-fuzz 解码目标 | 待开始 | - |
+| O4 | 对接验证（MSRV 1.89 全绿/dep 自测/CI/采纳登记/终验） | 待开始 | - |
+
+采纳与对接登记：docs/architecture/open-source-adoptions.md（选型五核对线+红线=确定性内核协议不替换）。
+
 ## 变更历史
 
 | 日期 | 事件 |
