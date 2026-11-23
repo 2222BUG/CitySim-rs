@@ -593,7 +593,7 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 | W1 | 降级实接：run_tick 按 BudgetRegistry.level() 行为分支（L1 新请求延迟入队/L2 配额封顶 DEGRADATION_L2_QUOTA_CAP+经济暂停/L3 仅维护：寻路全延+事务延后）、三类输入事件实接（BudgetAdjustment→set_per_tick_cap、ConfigChange→记录入摘要、LodSwitch→lod_levels 入摘要入档）、CommandLog::insert_recorded 保号直插、submit_input_event 即录制；3 新测试（四类事件确定性/回放等价含四类/降级分支确定性含 EC-04 暂停映射） | 已完成（2026-11-23）| feat(mainline): W1——降级行为分支 + 三类输入事件实接 |
 | W2 | LOD 实接：交通按 LOD 分频步进（L0 全精度/L1 每 2 tick/L2 每 4 tick，GridTraffic::step_with_lod 确定性分频；run_tick 步骤 4 接 lod_levels；LodSwitch 事件实接测试=同种子一致+非恒等） | 已完成（2026-11-23）| feat(mainline): W2——LOD 分频实接 |
 | W3 | 经济联动：income/upkeep=active_count×费率 确定性派生（AgentLifecycle::active_count→EconomyLedger::set_income_upkeep，费率入 EngineState 快照）；端到端测试=两跑一致+空载零收支+despawn 中途变化 | 已完成（2026-11-23）| feat(mainline): W3——经济联动 |
-| W4 | 退出记录+integration-design 同步+收口 | 待开始 | - |
+| W4 | 收口：integration-design.md 增量节（W1–W3 tick 契约增量）+docs/benchmarks/mainline-exit.md 退出记录+全量回归 | 已完成（2026-11-23）| feat(mainline): W4——主干实接收口 |
 
 ## 变更历史
 

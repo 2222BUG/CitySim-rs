@@ -73,3 +73,14 @@ rolling/level/需求冻结态）；AgentLifecycle digest（含 block_attempts）
 
 并行执行（2.9 条 6 的 run_parallel 接入留待 Stage 2B 集成级）；LOD 切换实装
 （rfc-lod-draft 阈值未定）；MFD→降级（#31 转 C 终局）。
+
+## 2026-11-23 主干实接（W1–W3）增量
+
+- 步骤 1b 输入事件：BudgetAdjustment→BudgetRegistry::set_per_tick_cap、ConfigChange 入摘要、
+  LodSwitch→lod_levels 入摘要入档；submit_input_event 即录制（回放等价四类全覆盖）。
+- 步骤 2 寻路：按降级等级分支——L1 新请求延迟入队、L2 配额封顶（DEGRADATION_L2_QUOTA_CAP）+
+  经济自动暂停/恢复（EC-04 映射）、L3 仅维护已有状态（寻路全延+事务延后）。
+- 步骤 4 交通：GridTraffic::step_with_lod 按 lod_levels 分频移动（L0 每 tick/L1 每 2/L2 每 4）。
+- 步骤 5 经济：income/upkeep=active_count×费率 确定性派生；settle_tick 在 L2+ 自动暂停
+  范围内（EC-04），恢复后自动 resume。
+- 退出记录见 docs/benchmarks/mainline-exit.md。
