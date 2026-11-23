@@ -124,6 +124,33 @@ impl AgentRegistry {
     }
 }
 
+/// 引擎集成状态导出/恢复（integration-design.md §2）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentLifecycleState {
+    pub states: BTreeMap<u64, AgentState>,
+    pub log: Vec<StateTransition>,
+    pub block_limit: u32,
+    pub block_attempts: BTreeMap<u64, u32>,
+}
+
+impl AgentLifecycle {
+    pub fn export_state(&self) -> AgentLifecycleState {
+        AgentLifecycleState {
+            states: self.states.clone(),
+            log: self.log.clone(),
+            block_limit: self.block_limit,
+            block_attempts: self.block_attempts.clone(),
+        }
+    }
+
+    pub fn restore_state(&mut self, s: AgentLifecycleState) {
+        self.states = s.states;
+        self.log = s.log;
+        self.block_limit = s.block_limit;
+        self.block_attempts = s.block_attempts;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

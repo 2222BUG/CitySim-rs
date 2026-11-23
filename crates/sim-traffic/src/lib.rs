@@ -692,6 +692,51 @@ pub fn fit_triangle(samples: &[MfdSample]) -> TriangleFit {
     }
 }
 
+/// 引擎集成状态导出/恢复（integration-design.md §2）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GridTrafficState {
+    pub w: u32,
+    pub h: u32,
+    pub cap_per_edge_per_tick: u64,
+    pub tick: u64,
+    pub pending: Vec<Vehicle>,
+    pub vehicles: Vec<Vehicle>,
+    pub next_id: u64,
+    pub flow_this_tick: u64,
+    pub last_step_population: u64,
+    pub seed: u64,
+}
+
+impl GridTraffic {
+    pub fn export_state(&self) -> GridTrafficState {
+        GridTrafficState {
+            w: self.w,
+            h: self.h,
+            cap_per_edge_per_tick: self.cap_per_edge_per_tick,
+            tick: self.tick,
+            pending: self.pending.clone(),
+            vehicles: self.vehicles.clone(),
+            next_id: self.next_id,
+            flow_this_tick: self.flow_this_tick,
+            last_step_population: self.last_step_population,
+            seed: self.seed,
+        }
+    }
+
+    pub fn restore_state(&mut self, s: GridTrafficState) {
+        self.w = s.w;
+        self.h = s.h;
+        self.cap_per_edge_per_tick = s.cap_per_edge_per_tick;
+        self.tick = s.tick;
+        self.pending = s.pending;
+        self.vehicles = s.vehicles;
+        self.next_id = s.next_id;
+        self.flow_this_tick = s.flow_this_tick;
+        self.last_step_population = s.last_step_population;
+        self.seed = s.seed;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

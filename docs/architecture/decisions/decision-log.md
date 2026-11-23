@@ -572,7 +572,7 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 | --- | --- | --- | --- |
 | I1 | integration-design.md（tick 顺序契约/接线表/GlobalDigest 纳入清单/存档回放接线）+ crates/sim-engine 骨架（权威，注册 CI 双矩阵/authority list/dep fail-closed 名单） | 已完成（2026-11-23） | docs+feat(stage3): I1+I2——sim-engine 主循环集成 |
 | I2 | run_tick 八步契约实装+确定性测试（同种子两跑 digest 相等/种子区分/命令生效顺序）；**发现并修复真 bug：due_commands 纯查询无应用游标→命令逐 tick 重复生效（applied_command_ids 去重）** | 已完成（2026-11-23） | 同上 |
-| I3 | 端到端等价（强读档=save/load 后续跑 digest 一致；回放=录制-重放 digest 一致） | 待开始 | - |
+| I3 | 端到端等价（强读档=save/load 后续跑 digest 一致；回放=录制-重放 digest 一致） | 已完成（2026-11-23）| feat(stage3): I3——端到端等价（附真 bug 修复：Recorder 按 effective_tick 单调校验静默丢命令，Command 改按提交序记录豁免单调；GlobalDigest 同键覆盖致事件逐条 record 互覆，改每 tick 聚合记录） |
 | I4 | R2 缩小场景端到端+integration-exit 记录+遗留核对 | 待开始 | - |
 
 ## 变更历史

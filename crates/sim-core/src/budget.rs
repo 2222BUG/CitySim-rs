@@ -290,6 +290,53 @@ impl BudgetRegistry {
     }
 }
 
+/// 引擎集成状态导出/恢复（integration-design.md §2；强读档等价用）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BudgetState {
+    pub spent: Vec<u64>,
+    pub rolling_used_bp: u32,
+    pub over_streak: u32,
+    pub under_streak: u32,
+    pub demand_bp: u32,
+    pub demand_streak: u32,
+    pub last_demand_bp: u32,
+    pub demand_channel_frozen: bool,
+    pub level: DegradationLevel,
+}
+
+impl BudgetRegistry {
+    pub fn export_state(&self) -> BudgetState {
+        BudgetState {
+            spent: self.spent.clone(),
+            rolling_used_bp: self.rolling_used_bp,
+            over_streak: self.over_streak,
+            under_streak: self.under_streak,
+            demand_bp: self.demand_bp,
+            demand_streak: self.demand_streak,
+            last_demand_bp: self.last_demand_bp,
+            demand_channel_frozen: self.demand_channel_frozen,
+            level: self.level,
+        }
+    }
+
+    pub fn restore_state(&mut self, s: BudgetState) {
+        assert_eq!(
+            s.spent.len(),
+            self.decls.len(),
+            "BudgetState 形状与 decls 不一致"
+        );
+        self.spent = s.spent;
+        self.rolling_used_bp = s.rolling_used_bp;
+        self.over_streak = s.over_streak;
+        self.under_streak = s.under_streak;
+        self.demand_bp = s.demand_bp;
+        self.demand_streak = s.demand_streak;
+        self.last_demand_bp = s.last_demand_bp;
+        self.demand_channel_frozen = s.demand_channel_frozen;
+        self.level = s.level;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

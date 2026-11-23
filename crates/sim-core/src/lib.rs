@@ -41,6 +41,11 @@ impl SimClock {
     pub fn advance(&mut self) {
         self.tick = self.tick.wrapping_add(1);
     }
+
+    /// 读档恢复当前 tick（u64 时间戳，非墙钟；integration-design §2）。
+    pub fn restore_tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
 }
 
 /// 命令 ID 分配器：u64 单调递增，高水位入存档（ADR-NEW-20）。
@@ -161,6 +166,11 @@ impl CommandLog {
     /// 命令 ID 高水位（入存档字段）。
     pub const fn id_high_water(&self) -> u64 {
         self.alloc.high_water
+    }
+
+    /// 引擎集成状态导出（integration-design.md §2）。
+    pub fn export_commands(&self) -> Vec<PlayerCommand> {
+        self.commands.clone()
     }
 
     /// 读档/回放重建入口：从已记录命令与 ID 高水位重建日志（EC-03 保存并恢复）。

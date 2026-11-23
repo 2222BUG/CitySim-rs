@@ -43,7 +43,8 @@ InputEvent =                       // 判别 tag u8
 
 - Command 按 `effective_tick` 生效（2.9 条 8；录制时即带生效 tick）；
 - ConfigChange / BudgetAdjustment / LodSwitch 仅允许 tick 边界（录制 API 断言
-  tick 单调非降；回放在各 tick 的事件按记录序提交=确定性）；
+  tick 单调非降（Command 事件豁免：按提交序记录、生效 tick 可倒序，全序由
+  (effective_tick, command_id) 在回放期重排保证——2026-11-23 I3 集成修订）；回放在各 tick 的事件按记录序提交=确定性）；
 - 回放不重算决策：事件即事实（寻路/预算让步等系统级派生行为由确定性模拟自身重放）。
 
 ## 5. 版本 bump 规则

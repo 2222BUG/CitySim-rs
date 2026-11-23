@@ -240,6 +240,11 @@ pub struct Recorder {
 }
 
 impl Recorder {
+    /// 引擎集成状态导出（integration-design.md §2）。
+    pub fn events(&self) -> Vec<InputEvent> {
+        self.input.events.clone()
+    }
+
     pub fn new(seed: u64, tick_rate_num: u64, tick_rate_den: u64) -> Self {
         Self {
             input: ReplayInput::new(seed, tick_rate_num, tick_rate_den),
@@ -248,6 +253,13 @@ impl Recorder {
     }
 
     pub fn record(&mut self, ev: InputEvent) -> Result<(), ReplayError> {
+        // Command 事件按提交序记录（生效 tick 可倒序，全序由 (effective_tick, command_id)
+        // 在回放期重排保证——integration 测试发现按 effective_tick 单调校验会静默丢命令）；
+        // 单调约束仅适用 tick 边界事件（ConfigChange/LodSwitch/BudgetAdjustment）。
+        if matches!(ev, InputEvent::Command { .. }) {
+            self.input.events.push(ev);
+            return Ok(());
+        }
         let t = ev.tick();
         if t < self.last_tick {
             return Err(ReplayError::OutOfOrderTick {

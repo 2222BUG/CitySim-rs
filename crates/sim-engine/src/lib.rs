@@ -56,7 +56,6 @@ pub struct Engine {
     pub economy: EconomyLedger,
     pub budget: BudgetRegistry,
     pub recorder: Recorder,
-    pub global: GlobalDigest,
     pub coords: Vec<(i64, i64)>,
     /// 在途寻路请求（请求 ID 稳定序=BTreeMap 全序）：(agent_id, start, goal)。
     pub path_queue: BTreeMap<u64, (u64, u64, u64)>,
@@ -69,6 +68,14 @@ pub struct Engine {
     pub applied_commands: u64,
     pub applied_paths: u64,
     pub applied_txs: u64,
+    /// 逐 tick 摘要序列（强读档等价判据：逐 tick 对比，不用累积态）。
+    pub tick_digests: Vec<sim_digest::Digest256>,
+    /// 滚动摘要链（避免 GlobalDigest 同键覆盖语义吞历史——审计3 D 发现）。
+    pub chain: sim_digest::Digest256,
+    /// tick 内事件缓冲（fold_tick 聚合成单条记录；同键 record 会覆盖，逐条须并集）。
+    pub tick_cmd_payloads: Vec<Vec<u8>>,
+    pub tick_path_payloads: Vec<Vec<u8>>,
+    pub tick_tx_ids: Vec<u64>,
 }
 
 fn budget_decls() -> Vec<BudgetDecl> {
@@ -116,7 +123,6 @@ impl Engine {
             economy: EconomyLedger::new(cfg.seed, cfg.income_per_tick, cfg.upkeep_per_tick),
             budget: BudgetRegistry::new(budget_decls(), DegradationThresholds::default()),
             recorder: Recorder::new(cfg.seed, 1, 30),
-            global: GlobalDigest::new(),
             coords: cfg.coords,
             path_queue: BTreeMap::new(),
             next_request_id: 1,
@@ -125,6 +131,11 @@ impl Engine {
             applied_commands: 0,
             applied_paths: 0,
             applied_txs: 0,
+            tick_digests: Vec::new(),
+            chain: sim_digest::digest("sim-engine", "TickChain", b"init"),
+            tick_cmd_payloads: Vec::new(),
+            tick_path_payloads: Vec::new(),
+            tick_tx_ids: Vec::new(),
         }
     }
 
@@ -199,7 +210,7 @@ impl Engine {
             payload.extend_from_slice(&agent.to_le_bytes());
             payload.push(class);
             payload.extend_from_slice(&out.expanded().to_le_bytes());
-            self.global.record("sim-engine", "PathOutcome", &payload);
+            self.tick_path_payloads.push(payload);
         }
 
         // 3. 路网事务：重试批次先行（tx_id 全序）→ 新事务；被拒进重试队列。
@@ -212,8 +223,7 @@ impl Engine {
                 if self.net.publish(tx).is_ok() {
                     self.applied_txs += 1;
                     self.budget.spend(SYSTEM_NETWORK, 1);
-                    self.global
-                        .record("sim-engine", "TxApplied", &id.to_le_bytes());
+                    self.tick_tx_ids.push(id);
                 }
             } else {
                 self.retry.offer(tx);
@@ -259,14 +269,16 @@ impl Engine {
         payload.extend_from_slice(&cmd.command_id.to_le_bytes());
         payload.extend_from_slice(&cmd.effective_tick.to_le_bytes());
         payload.extend_from_slice(&cmd.agent_id.to_le_bytes());
-        self.global.record("sim-engine", "CommandApplied", &payload);
+        self.tick_cmd_payloads.push(payload);
     }
 
-    /// 逐 tick 权威状态折叠（GlobalDigest 纳入清单=设计 §3）。
+    /// 逐 tick 权威状态折叠（GlobalDigest 纳入清单=设计 §3）。每 tick 新建
+    /// GlobalDigest：同键 record 覆盖语义不能吞历史（审计3 D 发现）——tick 内
+    /// 多事件聚合成单条记录后入档，逐 tick 摘要进 tick_digests 并滚动进 chain。
     fn fold_tick(&mut self, tick: u64) {
-        self.global
-            .record("sim-engine", "Tick", &tick.to_le_bytes());
-        self.global.record(
+        let mut g = GlobalDigest::new();
+        g.record("sim-engine", "Tick", &tick.to_le_bytes());
+        g.record(
             "sim-engine",
             "Counters",
             &[
@@ -277,23 +289,143 @@ impl Engine {
             ]
             .concat(),
         );
-        self.traffic.fold_digest(&mut self.global);
+        g.record(
+            "sim-engine",
+            "CommandAppliedSet",
+            &self.tick_cmd_payloads.concat(),
+        );
+        g.record(
+            "sim-engine",
+            "PathOutcomeSet",
+            &self.tick_path_payloads.concat(),
+        );
+        let txs: Vec<u8> = self
+            .tick_tx_ids
+            .iter()
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        g.record("sim-engine", "TxAppliedSet", &txs);
+        self.tick_cmd_payloads.clear();
+        self.tick_path_payloads.clear();
+        self.tick_tx_ids.clear();
+        self.traffic.fold_digest(&mut g);
         let e = self.economy.digest().hex();
-        self.global.record("sim-engine", "EconomyDigest", e.as_bytes());
+        g.record("sim-engine", "EconomyDigest", e.as_bytes());
         let w = self.lifecycle.digest().hex();
-        self.global.record("sim-engine", "LifecycleDigest", w.as_bytes());
+        g.record("sim-engine", "LifecycleDigest", w.as_bytes());
         let n = self.net.digest().hex();
-        self.global.record("sim-engine", "NetworkDigest", n.as_bytes());
+        g.record("sim-engine", "NetworkDigest", n.as_bytes());
         let mut cw = sim_codec::CanonicalWriter::new("sim-engine", "Budget");
         self.budget.encode_state(&mut cw);
         let b = cw.into_bytes();
-        self.global.record("sim-engine", "BudgetState", &b);
+        g.record("sim-engine", "BudgetState", &b);
+        let d = g.finalize();
+        self.tick_digests.push(d);
+        let mut chain_in = Vec::new();
+        chain_in.extend_from_slice(&self.chain.0);
+        chain_in.extend_from_slice(&d.0);
+        self.chain = sim_digest::digest("sim-engine", "TickChain", &chain_in);
     }
 
-    /// 当前全局摘要（确定性判据用）。
+    /// 滚动摘要链（两跑逐 tick tick_digests 相等则 chain 相等）。
     pub fn digest(&self) -> sim_digest::Digest256 {
-        self.global.finalize()
+        self.chain
     }
+
+    /// 引擎全状态快照（EC-03 最小集引擎侧；纯数据，可序列化）。
+    pub fn snapshot(&self) -> EngineState {
+        EngineState {
+            seed: self.ctx.seed,
+            coords: self.coords.clone(),
+            clock_tick: self.clock.tick(),
+            commands: self.command_log.export_commands(),
+            cmd_high_water: self.command_log.id_high_water(),
+            applied_ids: self.applied_command_ids.clone(),
+            agent_high_water: self.agent_alloc.clone().high_water(),
+            lifecycle: self.lifecycle.export_state(),
+            net: self.net.export_state(),
+            retry: self.retry.export_state(),
+            budget: self.budget.export_state(),
+            traffic: self.traffic.export_state(),
+            economy: self.economy.export_state(),
+            recorder_events: self.recorder.events(),
+            path_queue: self.path_queue.clone(),
+            next_request_id: self.next_request_id,
+            tx_inbox: self.tx_inbox.clone(),
+            applied_commands: self.applied_commands,
+            applied_paths: self.applied_paths,
+            applied_txs: self.applied_txs,
+            finder_budget_yield_count: self.finder.budget_yield_count,
+            finder_quota_yield_count: self.finder.quota_yield_count,
+            tick_digests: self.tick_digests.clone(),
+            chain: self.chain,
+        }
+    }
+
+    /// 从快照恢复（强读档等价"保存并恢复"语义——EC-03/ADR-NEW-16）。
+    pub fn restore(s: EngineState) -> Self {
+        let mut e = Engine::new(EngineConfig {
+            seed: s.seed,
+            coords: s.coords.clone(),
+            traffic_w: s.traffic.w,
+            traffic_h: s.traffic.h,
+            income_per_tick: s.economy.income_per_tick,
+            upkeep_per_tick: s.economy.upkeep_per_tick,
+        });
+        e.clock.restore_tick(s.clock_tick);
+        e.command_log = CommandLog::from_parts(s.commands, s.cmd_high_water);
+        e.applied_command_ids = s.applied_ids;
+        e.agent_alloc.restore(s.agent_high_water);
+        e.lifecycle.restore_state(s.lifecycle);
+        e.net.restore_state(s.net);
+        e.retry.restore_state(s.retry);
+        e.budget.restore_state(s.budget);
+        e.traffic.restore_state(s.traffic);
+        e.economy.restore_state(s.economy);
+        for ev in s.recorder_events {
+            let _ = e.recorder.record(ev);
+        }
+        e.path_queue = s.path_queue;
+        e.next_request_id = s.next_request_id;
+        e.tx_inbox = s.tx_inbox;
+        e.applied_commands = s.applied_commands;
+        e.applied_paths = s.applied_paths;
+        e.applied_txs = s.applied_txs;
+        e.finder.budget_yield_count = s.finder_budget_yield_count;
+        e.finder.quota_yield_count = s.finder_quota_yield_count;
+        e.tick_digests = s.tick_digests;
+        e.chain = s.chain;
+        e
+    }
+}
+
+/// 引擎全状态快照（纯数据；save() 字节格式在 I4 以 canonical+BLAKE3 封装）。
+#[derive(Clone, Debug)]
+pub struct EngineState {
+    pub seed: u64,
+    pub coords: Vec<(i64, i64)>,
+    pub clock_tick: u64,
+    pub commands: Vec<sim_core::PlayerCommand>,
+    pub cmd_high_water: u64,
+    pub applied_ids: BTreeSet<u64>,
+    pub agent_high_water: u64,
+    pub lifecycle: sim_agent::AgentLifecycleState,
+    pub net: sim_network::NetworkState,
+    pub retry: sim_network::RetryState,
+    pub budget: sim_core::budget::BudgetState,
+    pub traffic: sim_traffic::GridTrafficState,
+    pub economy: sim_economy::EconomyState,
+    pub recorder_events: Vec<InputEvent>,
+    pub path_queue: BTreeMap<u64, (u64, u64, u64)>,
+    pub next_request_id: u64,
+    pub tx_inbox: Vec<Tx>,
+    pub applied_commands: u64,
+    pub applied_paths: u64,
+    pub applied_txs: u64,
+    pub finder_budget_yield_count: u64,
+    pub finder_quota_yield_count: u64,
+    pub tick_digests: Vec<sim_digest::Digest256>,
+    pub chain: sim_digest::Digest256,
 }
 
 #[cfg(test)]
@@ -344,6 +476,132 @@ mod tests {
             b.run_tick();
         }
         assert_ne!(a.digest(), b.digest(), "seed must enter the digest domain");
+    }
+
+    #[test]
+    fn strong_readback_equivalence_via_snapshot() {
+        // EC-11 强形式：run 至 N → snapshot → restore → 双方跑至 M，
+        // 逐 tick 摘要必须一致（"保存并恢复"语义，ADR-NEW-16 定案）。
+        let mut direct = scenario(0xC0FFEE);
+        for _ in 0..10 {
+            direct.run_tick();
+        }
+        let mut restored = Engine::restore(direct.snapshot());
+        for _ in 0..15 {
+            direct.run_tick();
+            restored.run_tick();
+        }
+        assert_eq!(direct.tick_digests, restored.tick_digests);
+        assert_eq!(direct.digest(), restored.digest());
+        assert_eq!(direct.applied_commands, restored.applied_commands);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_counters() {
+        let mut e = scenario(0xABCD);
+        for _ in 0..5 {
+            e.run_tick();
+        }
+        let s = e.snapshot();
+        let r = Engine::restore(s.clone());
+        assert_eq!(r.applied_commands, e.applied_commands);
+        assert_eq!(r.applied_paths, e.applied_paths);
+        assert_eq!(r.clock.tick(), e.clock.tick());
+        assert_eq!(r.tick_digests, e.tick_digests);
+    }
+
+    /// 回归：Recorder 对 Command 事件按提交序记录不丢事件（生效 tick 可倒序）——
+    /// 2026-11-23 I3 集成发现按 effective_tick 单调校验会静默丢命令致回放分歧。
+    #[test]
+    fn replay_recorder_keeps_out_of_order_commands() {
+        let mut a = Engine::new(config(0x7777));
+        let ids: Vec<u64> = (0..3).map(|_| a.spawn_agent()).collect();
+        for (k, id) in ids.iter().enumerate() {
+            a.submit_command(*id, 1, CommandPayload::SetDestination { node: 3 }).unwrap();
+            a.submit_command(*id, 2, CommandPayload::MoveTo { x: k as i64, y: 0 }).unwrap();
+        }
+        let events = a.recorder.events();
+        let mut b = Engine::new(config(0x7777));
+        for _ in 0..3 {
+            b.spawn_agent();
+        }
+        for ev in &events {
+            match *ev {
+                InputEvent::Command { agent_id, opcode, arg0, arg1, .. } => {
+                    let p = match opcode {
+                        0 => CommandPayload::MoveTo { x: arg0, y: arg1 },
+                        1 => CommandPayload::SetDestination { node: arg0 as u64 },
+                        _ => CommandPayload::CancelRequest { request_id: arg0 as u64 },
+                    };
+                    b.submit_command(agent_id, ev.tick(), p).unwrap();
+                }
+                _ => panic!(),
+            }
+        }
+        a.run_tick();
+        b.run_tick();
+        assert_eq!(
+            format!("{:?}", a.snapshot()),
+            format!("{:?}", b.snapshot()),
+            "snapshot diff at tick 1"
+        );
+    }
+
+    #[test]
+    fn replay_equivalence_via_recorded_commands() {
+        // 回放等价（replay-schema 口径）：录制的命令输入驱动第二引擎重放，
+        // 逐 tick 摘要必须与原运行一致。
+        fn payload_of(ev: &InputEvent) -> (u64, CommandPayload) {
+            match *ev {
+                InputEvent::Command {
+                    agent_id,
+                    opcode,
+                    arg0,
+                    arg1,
+                    ..
+                } => {
+                    let p = match opcode {
+                        0 => CommandPayload::MoveTo { x: arg0, y: arg1 },
+                        1 => CommandPayload::SetDestination {
+                            node: arg0 as u64,
+                        },
+                        _ => CommandPayload::CancelRequest {
+                            request_id: arg0 as u64,
+                        },
+                    };
+                    (agent_id, p)
+                }
+                _ => panic!("scenario 只录制 Command 事件"),
+            }
+        }
+
+        let mut a = Engine::new(config(0x7777));
+        let ids: Vec<u64> = (0..3).map(|_| a.spawn_agent()).collect();
+        for (k, id) in ids.iter().enumerate() {
+            a.submit_command(*id, 1, CommandPayload::SetDestination { node: 3 })
+                .unwrap();
+            a.submit_command(*id, 2, CommandPayload::MoveTo { x: k as i64, y: 0 })
+                .unwrap();
+        }
+        let events = a.recorder.events();
+        for _ in 0..12 {
+            a.run_tick();
+        }
+
+        let mut b = Engine::new(config(0x7777));
+        for _ in 0..3 {
+            b.spawn_agent();
+        }
+        for ev in &events {
+            let (agent_id, p) = payload_of(ev);
+            let eff = ev.tick();
+            b.submit_command(agent_id, eff, p).unwrap();
+        }
+        for _ in 0..12 {
+            b.run_tick();
+        }
+        assert_eq!(a.tick_digests, b.tick_digests, "replay must reproduce");
+        assert_eq!(a.digest(), b.digest());
     }
 
     #[test]

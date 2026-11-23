@@ -656,6 +656,57 @@ impl Network {
 
 // ---------------- 测试 ----------------
 
+/// 引擎集成状态导出/恢复（integration-design.md §2；Network 恢复时整表重建 CSR）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkState {
+    pub version: u64,
+    pub edges: BTreeMap<u64, Edge>,
+    pub tx_log: Vec<TxRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetryState {
+    pub pending: BTreeMap<u64, Tx>,
+    pub counts: BTreeMap<u64, u32>,
+    pub blocked: Vec<u64>,
+    pub emitted: std::collections::BTreeSet<u64>,
+}
+
+impl Network {
+    pub fn export_state(&self) -> NetworkState {
+        NetworkState {
+            version: self.version,
+            edges: self.edges.clone(),
+            tx_log: self.tx_log.clone(),
+        }
+    }
+
+    pub fn restore_state(&mut self, s: NetworkState) {
+        self.version = s.version;
+        self.edges = s.edges;
+        self.tx_log = s.tx_log;
+        self.rebuild_csr();
+    }
+}
+
+impl TxRetryQueue {
+    pub fn export_state(&self) -> RetryState {
+        RetryState {
+            pending: self.pending.clone(),
+            counts: self.counts.clone(),
+            blocked: self.blocked.clone(),
+            emitted: self.emitted.clone(),
+        }
+    }
+
+    pub fn restore_state(&mut self, s: RetryState) {
+        self.pending = s.pending;
+        self.counts = s.counts;
+        self.blocked = s.blocked;
+        self.emitted = s.emitted;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

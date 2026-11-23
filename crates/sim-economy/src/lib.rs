@@ -131,6 +131,45 @@ impl EconomyLedger {
     }
 }
 
+/// 引擎集成状态导出/恢复（integration-design.md §2）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EconomyState {
+    pub seed: u64,
+    pub tick: u64,
+    pub treasury: i64,
+    pub income_per_tick: i64,
+    pub upkeep_per_tick: i64,
+    pub market_range: u64,
+    pub paused: bool,
+    pub events: Vec<EconomyEvent>,
+}
+
+impl EconomyLedger {
+    pub fn export_state(&self) -> EconomyState {
+        EconomyState {
+            seed: self.seed,
+            tick: self.tick,
+            treasury: self.treasury,
+            income_per_tick: self.income_per_tick,
+            upkeep_per_tick: self.upkeep_per_tick,
+            market_range: self.market_range,
+            paused: self.paused,
+            events: self.events.clone(),
+        }
+    }
+
+    pub fn restore_state(&mut self, s: EconomyState) {
+        self.seed = s.seed;
+        self.tick = s.tick;
+        self.treasury = s.treasury;
+        self.income_per_tick = s.income_per_tick;
+        self.upkeep_per_tick = s.upkeep_per_tick;
+        self.market_range = s.market_range;
+        self.paused = s.paused;
+        self.events = s.events;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
