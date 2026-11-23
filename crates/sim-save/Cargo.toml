@@ -12,4 +12,5 @@ sim-rng = { path = "../sim-rng" }
 sim-error = { path = "../sim-error" }
 
 [dev-dependencies]
+proptest = "1.12.0"
 sim-test-support = { path = "../sim-test-support" }

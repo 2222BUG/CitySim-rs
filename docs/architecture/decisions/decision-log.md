@@ -581,7 +581,7 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 | --- | --- | --- | --- |
 | O1 | dev-deps 三件套：criterion 正式基准（astar_bench 基线 248µs/70µs 入 docs/benchmarks/criterion-baseline-2026-11-23.md）+proptest 属性测试（发布原子性/过期合法性/预算上界，regressions 回放） | 已完成（2026-11-23）| feat(adopt): O1——criterion 正式基准 + proptest 属性测试 |
 | O2 | sim-view 最小 Demo（bevy_ecs_tilemap+egui_plot，非权威，只读对接 Engine snapshot；examples/demo.rs，编译+6s 冒烟验证） | 已完成（2026-11-23）| feat(adopt): O2——sim-view 最小 Demo |
-| O3 | puffin 遥测+cargo-fuzz 解码目标 | 待开始 | - |
+| O3 | puffin 0.20/puffin_http 0.17 遥测（demo 内 profile_scope+viewer 服务，墙钟仅遥测）+cargo-fuzz 布局（save_load/replay_decode 解码拒绝路径，nightly 专项）+proptest 字节汤 fuzz-lite 日常回归 | 已完成（2026-11-23）| feat(adopt): O3——puffin 遥测 + 解码 fuzz 目标 |
 | O4 | 对接验证（MSRV 1.89 全绿/dep 自测/CI/采纳登记/终验） | 待开始 | - |
 
 采纳与对接登记：docs/architecture/open-source-adoptions.md（选型五核对线+红线=确定性内核协议不替换）。

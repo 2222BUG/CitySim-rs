@@ -185,6 +185,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1727,6 +1733,15 @@ dependencies = [
  "web-sys",
  "wgpu-types",
  "winit",
+]
+
+[[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -3727,6 +3742,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "lz4_flex"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a027efd2ad3c4dbb4123b5c018e3efbe7f6236da7c7612f122dad030f5d2de5"
+
+[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4797,6 +4818,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "puffin"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84b514d95a258be801fde8a1ff1c974f4a4841d9750f5d1d6690fc07a5ad4049"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "byteorder",
+ "cfg-if",
+ "itertools 0.14.0",
+ "lz4_flex",
+ "parking_lot",
+ "serde",
+]
+
+[[package]]
+name = "puffin_http"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f912991aab1adae69d2be9455e8db0f41e5ad3da87706ab2de64908678c2c76"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "log",
+ "parking_lot",
+ "puffin",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5440,6 +5490,7 @@ dependencies = [
 name = "sim-replay"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "sim-codec",
  "sim-digest",
  "sim-error",
@@ -5453,6 +5504,7 @@ version = "0.1.0"
 name = "sim-save"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "sim-codec",
  "sim-digest",
  "sim-error",
@@ -5483,6 +5535,8 @@ dependencies = [
  "bevy_ecs_tilemap",
  "bevy_egui",
  "egui_plot",
+ "puffin",
+ "puffin_http",
  "sim-core",
  "sim-engine",
  "sim-test-support",

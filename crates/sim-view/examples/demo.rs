@@ -34,6 +34,11 @@ struct TileMap {
 }
 
 fn main() {
+    // 遥测（开源采纳 O3）：puffin scope + 本地 viewer 服务（puffin_viewer 连接）。
+    // 墙钟采样仅遥测（2.9 豁免登记口径：不进权威判定）。
+    let _server =
+        puffin_http::Server::new(&format!("127.0.0.1:{}", puffin_http::DEFAULT_PORT)).ok();
+    puffin::set_scopes_on(true);
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -150,6 +155,7 @@ fn step_sim(
     mut hist: ResMut<History>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
+        puffin::profile_scope!("sim_step");
         sim.0.run_tick();
         let s = sim.0.snapshot();
         hist.treasury.push(s.economy.treasury as f64);
@@ -163,6 +169,7 @@ fn step_sim(
 
 /// 只读渲染：底色复位 → Agent 位置（1mm→格）着色。
 fn sync_tiles(sim: Res<Sim>, map: Res<TileMap>, mut tiles_q: Query<&mut TileColor>) {
+    puffin::profile_scope!("sync_tiles");
     let s = sim.0.snapshot();
     for e in map.tiles.iter() {
         if let Ok(mut color) = tiles_q.get_mut(*e) {

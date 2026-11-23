@@ -22,8 +22,8 @@
 | bevy_ecs_tilemap 0.18.1 | sim-view（非权威） | 渲染网格+Agent 状态，只读对接 Engine::snapshot | O2 ✅ 2026-11-23（编译+6s 冒烟） |
 | egui_plot 0.34 / bevy_egui 0.39 | sim-view | 曲线面板（treasury/agents）；egui_plot 0.34↔egui 0.33 版本对齐（0.33 会锁双 egui） | O2 ✅ 2026-11-23 |
 | bevy-inspector-egui | sim-view | 调试检查器（暂缓：版本对齐待核，不阻塞 Demo） | O2 可选 |
-| puffin / bevy_puffin | 遥测（非权威） | 墙钟仅遥测，豁免登记口径 | O3 |
-| cargo-fuzz | 工具链 | sim-save/sim-replay 解码拒绝路径 | O3 |
+| puffin 0.20 / puffin_http 0.17 | sim-view demo（非权威遥测） | profile_scope 采样+本地 viewer 服务；墙钟仅遥测豁免口径 | O3 ✅ 2026-11-23 |
+| cargo-fuzz（libfuzzer-sys 0.4） | fuzz/（独立布局，workspace exclude） | save_load/replay_decode 解码拒绝路径；nightly 专项，CI 不跑，字节汤日常回归=proptest fuzz_decode.rs | O3 ✅ 2026-11-23 |
 | osm2streets | 离线管线 | OSM→中间路网，产物过确定性校验（稳定 ID+CSR 重建+digest）后准入 | 内容阶段 |
 | criterion（扩展） | sim-engine | run_tick 吞吐基准 | 随 O1 扩展 |
 

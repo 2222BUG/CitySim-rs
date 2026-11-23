@@ -1,0 +1,40 @@
+# CitySim-rs cargo-fuzz 布局（开源采纳 O3）
+#
+# 深度模糊测试目标：sim-save / sim-replay 解码拒绝路径（任意字节只许 Err/Ok，不 panic）。
+# 稳定工具链日常覆盖见各 crate tests/fuzz_decode.rs（proptest 字节汤）；本目录为
+# libFuzzer 深度专项，需 nightly + cargo-fuzz：
+#
+#   rustup toolchain install nightly
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run save_load
+#   cargo +nightly fuzz run replay_decode
+#
+# CI 不运行本目录（nightly 不入基线）；发现的输入可转 proptest-regressions 长期回归。
+
+[package]
+name = "citysim-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sim-save = { path = "../crates/sim-save" }
+sim-replay = { path = "../crates/sim-replay" }
+
+[[bin]]
+name = "save_load"
+path = "fuzz_targets/save_load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "replay_decode"
+path = "fuzz_targets/replay_decode.rs"
+test = false
+doc = false
+bench = false

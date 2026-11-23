@@ -4,6 +4,8 @@
 # 依赖方向由 .github/scripts/dep_graph_check.py 强制。
 [workspace]
 resolver = "2"
+# fuzz/ 为 cargo-fuzz 独立布局（nightly 专项，见 fuzz/Cargo.toml 头注），不入 workspace。
+exclude = ["fuzz"]
 members = [
     "spikes/simscalar-spike",
     "spikes/rng-spike",

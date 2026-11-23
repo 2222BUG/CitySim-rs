@@ -9,3 +9,6 @@ publish = false
 sim-codec = { path = "../sim-codec" }
 sim-digest = { path = "../sim-digest" }
 sim-error = { path = "../sim-error" }
+
+[dev-dependencies]
+proptest = "1.12.0"
