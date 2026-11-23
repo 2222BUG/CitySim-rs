@@ -6,3 +6,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
+
+# 可视化 Demo 依赖全部走 dev-deps（examples/demo.rs）：非权威展示层不进运行时依赖面。
+[dev-dependencies]
+sim-engine = { path = "../sim-engine" }
+sim-core = { path = "../sim-core" }
+sim-test-support = { path = "../sim-test-support" }
+bevy = "0.18"
+bevy_ecs_tilemap = "0.18"
+bevy_egui = "0.39"
+egui_plot = "0.34"

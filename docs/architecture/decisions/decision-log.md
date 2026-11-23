@@ -579,8 +579,8 @@ MiniMax/豆包逐点复算与归档数值全部吻合（证据忠实性双确认
 
 | 步骤 | 内容 | 状态 | 提交 |
 | --- | --- | --- | --- |
-| O1 | dev-deps 三件套：criterion 正式基准（astar_bench 基线 248µs/70µs 入 docs/benchmarks/criterion-baseline-2026-11-23.md）+proptest 属性测试（发布原子性/过期合法性/预算上界，regressions 回放） | 进行中 | - |
-| O2 | sim-view 最小 Demo（bevy_ecs_tilemap+egui_plot+inspector，非权威，只读对接 Engine snapshot） | 待开始 | - |
+| O1 | dev-deps 三件套：criterion 正式基准（astar_bench 基线 248µs/70µs 入 docs/benchmarks/criterion-baseline-2026-11-23.md）+proptest 属性测试（发布原子性/过期合法性/预算上界，regressions 回放） | 已完成（2026-11-23）| feat(adopt): O1——criterion 正式基准 + proptest 属性测试 |
+| O2 | sim-view 最小 Demo（bevy_ecs_tilemap+egui_plot，非权威，只读对接 Engine snapshot；examples/demo.rs，编译+6s 冒烟验证） | 已完成（2026-11-23）| feat(adopt): O2——sim-view 最小 Demo |
 | O3 | puffin 遥测+cargo-fuzz 解码目标 | 待开始 | - |
 | O4 | 对接验证（MSRV 1.89 全绿/dep 自测/CI/采纳登记/终验） | 待开始 | - |
 
