@@ -66,6 +66,13 @@ impl EconomyLedger {
     pub fn events(&self) -> &[EconomyEvent] { &self.events }
 
     /// 结算当前 tick（paused 时跳过返回 None）。溢出/下溢原子拒绝。
+    /// 每 tick 收支派生接口（W3 经济联动）：由调用方按 active agent 数确定性
+    /// 计算后写入；入档入摘要（EconomyState 含两字段）。
+    pub fn set_income_upkeep(&mut self, income: i64, upkeep: i64) {
+        self.income_per_tick = income;
+        self.upkeep_per_tick = upkeep;
+    }
+
     pub fn settle_tick(&mut self) -> Result<Option<EconomyEvent>, EconomyError> {
         if self.paused {
             return Ok(None);

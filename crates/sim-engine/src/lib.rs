@@ -88,6 +88,9 @@ pub struct Engine {
     pub lod_levels: BTreeMap<u64, u8>,
     /// 配置变更记录（ConfigChange 事件；(tick, key_id, value) 追加序）。
     pub config_changes: Vec<(u64, u64, i64)>,
+    /// 每 agent 收支费率（W3：income/upkeep=active_count×费率 确定性派生）。
+    pub income_per_agent: i64,
+    pub upkeep_per_agent: i64,
 }
 
 fn budget_decls() -> Vec<BudgetDecl> {
@@ -153,6 +156,8 @@ impl Engine {
             new_this_tick: BTreeSet::new(),
             lod_levels: BTreeMap::new(),
             config_changes: Vec::new(),
+            income_per_agent: cfg.income_per_tick,
+            upkeep_per_agent: cfg.upkeep_per_tick,
         }
     }
 
@@ -338,6 +343,12 @@ impl Engine {
         } else if self.economy.paused() {
             let _ = self.economy.resume(tick);
         }
+        // 5) 经济：收支随 active agent 数确定性派生（W3，EC-02 派生流口径）
+        let active = self.lifecycle.active_count() as i64;
+        self.economy.set_income_upkeep(
+            active.saturating_mul(self.income_per_agent),
+            active.saturating_mul(self.upkeep_per_agent),
+        );
         let _ = self.economy.settle_tick();
 
         // 6. 预算/降级评估（确定性工作量单位，ADR-NEW-14；需求通道默认冻结）。
@@ -507,6 +518,8 @@ impl Engine {
             event_seq: self.event_seq,
             lod_levels: self.lod_levels.clone(),
             config_changes: self.config_changes.clone(),
+            income_per_agent: self.income_per_agent,
+            upkeep_per_agent: self.upkeep_per_agent,
         }
     }
 
@@ -517,8 +530,8 @@ impl Engine {
             coords: s.coords.clone(),
             traffic_w: s.traffic.w,
             traffic_h: s.traffic.h,
-            income_per_tick: s.economy.income_per_tick,
-            upkeep_per_tick: s.economy.upkeep_per_tick,
+            income_per_tick: s.income_per_agent,
+            upkeep_per_tick: s.upkeep_per_agent,
         });
         e.clock.restore_tick(s.clock_tick);
         e.command_log = CommandLog::from_parts(s.commands, s.cmd_high_water);
@@ -578,6 +591,8 @@ pub struct EngineState {
     pub finder_quota_yield_count: u64,
     pub tick_digests: Vec<sim_digest::Digest256>,
     pub chain: sim_digest::Digest256,
+    pub income_per_agent: i64,
+    pub upkeep_per_agent: i64,
     pub event_inbox: BTreeMap<(u64, u64), InputEvent>,
     pub event_seq: u64,
     pub lod_levels: BTreeMap<u64, u8>,
@@ -1013,7 +1028,7 @@ mod tests {
             e.traffic.inject(6); // 车辆 id 1..=6（next_id 分配器）
             for i in 0..6u64 {
                 let a = e.spawn_agent();
-                e.submit_command(a, 1 + (i % 3), CommandPayload::MoveTo { x: 7, y: 7 });
+                let _ = e.submit_command(a, 1 + (i % 3), CommandPayload::MoveTo { x: 7, y: 7 });
             }
             if with_lod {
                 // tick 2 起车辆实体 L2（每 4 tick 才移动更新）
@@ -1036,5 +1051,48 @@ mod tests {
         let b = run(false);
         assert_eq!(a1, a2, "lod switches must be deterministic");
         assert_ne!(a1, b, "lod gating must actually alter evolution (non-degenerate)");
+    }
+
+    /// W3：经济联动——income/upkeep=active_count×费率 确定性派生；两跑一致
+    /// 且相对空载运行产生差异（联动真实生效）。
+    #[test]
+    fn economy_follows_active_agents_deterministically() {
+        let config = EngineConfig {
+            seed: 0xE0,
+            coords: (0..64).map(|i| ((i % 8) as i64, (i / 8) as i64)).collect(),
+            traffic_w: 8,
+            traffic_h: 8,
+            income_per_tick: 2,
+            upkeep_per_tick: 1,
+        };
+        let run = |agents: u64| {
+            let mut e = Engine::new(config.clone());
+            let mut ids = Vec::new();
+            for _ in 0..agents {
+                ids.push(e.spawn_agent());
+            }
+            for _ in 0..8 {
+                e.run_tick();
+            }
+            // 半程 despawn 一半（若无 agent 则跳过）：收支随活跃数变化
+            if agents >= 2 {
+                let mid = ids.len() / 2;
+                for a in ids.drain(..mid) {
+                    let _ = e.lifecycle.despawn(a, e.clock.tick());
+                }
+                for _ in 0..4 {
+                    e.run_tick();
+                }
+            }
+            (e.digest(), e.economy.export_state().treasury)
+        };
+        let (a1, t1) = run(4);
+        let (a2, t2) = run(4);
+        let (b, tb) = run(0);
+        assert_eq!(a1, a2);
+        assert_eq!(t1, t2);
+        assert!(t1 > 0, "active agents must generate net income (2-1 per agent)");
+        assert_eq!(tb, 0, "no agents -> no income and no upkeep");
+        assert_ne!(a1, b, "agent-driven economy must alter evolution");
     }
 }

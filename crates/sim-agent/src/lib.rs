@@ -393,6 +393,14 @@ impl AgentLifecycle {
     }
 
     /// 任意非终态 → Despawned（取消/正常离场/超时退役）。
+    /// 活跃（Active）实体数——经济联动确定性派生源（W3）。
+    pub fn active_count(&self) -> u64 {
+        self.states
+            .values()
+            .filter(|s| matches!(s, AgentState::Active))
+            .count() as u64
+    }
+
     pub fn despawn(&mut self, agent_id: u64, tick: u64) -> Result<AgentState, IllegalTransition> {
         let from = self.ok_state(agent_id)?;
         if from == AgentState::Despawned {
