@@ -496,6 +496,100 @@ mod tests {
         assert_eq!(direct.applied_commands, restored.applied_commands);
     }
 
+    /// 回归：snapshot→restore→snapshot 纯往返无损（逐字段 Debug 相等）。
+    #[test]
+    fn snapshot_roundtrip_is_lossless() {
+        let f = sim_test_support::fixtures::Fixture::smoke();
+        let mut coords = Vec::new();
+        for gy in 0..f.grid_nodes_y {
+            for gx in 0..f.grid_nodes_x {
+                coords.push((gx as i64 * f.spacing_mm as i64, gy as i64 * f.spacing_mm as i64));
+            }
+        }
+        let nodes = coords.len() as u64;
+        let mut cfg = config(f.seed);
+        cfg.coords = coords;
+        let mut e = Engine::new(cfg.clone());
+        let agents: Vec<u64> = (0..10u64).map(|_| e.spawn_agent()).collect();
+        for (i, id) in agents.iter().enumerate() {
+            let goal = ((i as u64).wrapping_mul(0x9E37) + 13) % nodes;
+            e.submit_command(*id, 1, CommandPayload::SetDestination { node: goal }).unwrap();
+        }
+        e.submit_tx(sim_network::Tx { id: 100, ops: vec![sim_network::Op::AddEdge(sim_network::Edge { id: 1, a: 0, b: 1, cost: 1000, geom: vec![(0, 0), (1000, 0)] })] });
+        e.traffic.inject(1);
+        for _ in 0..3 {
+            e.run_tick();
+        }
+        let s1 = e.snapshot();
+        let s2 = Engine::restore(s1.clone()).snapshot();
+        assert_eq!(format!("{:?}", s1), format!("{:?}", s2), "snapshot roundtrip must be lossless");
+    }
+
+    /// I4：R2 fixture 缩小场景端到端（smoke 档）——确定性 + 强读档等价在场景级成立。
+    /// 全循环驱动：命令注入、寻路、事务、交通、经济、降级、摘要。
+    #[test]
+    fn r2_smoke_scenario_end_to_end() {
+        let f = sim_test_support::fixtures::Fixture::smoke();
+        let mut coords = Vec::new();
+        for gy in 0..f.grid_nodes_y {
+            for gx in 0..f.grid_nodes_x {
+                coords.push((gx as i64 * f.spacing_mm as i64, gy as i64 * f.spacing_mm as i64));
+            }
+        }
+        let nodes = coords.len() as u64;
+        let mut cfg = config(f.seed);
+        cfg.coords = coords;
+
+        let build = |cfg: &EngineConfig| {
+            let mut e = Engine::new(cfg.clone());
+            let agents: Vec<u64> = (0..f.agent_count.min(100)).map(|_| e.spawn_agent()).collect();
+            for (i, id) in agents.iter().enumerate() {
+                let goal = ((i as u64).wrapping_mul(0x9E37) + 13) % nodes;
+                e.submit_command(*id, 1, CommandPayload::SetDestination { node: goal }).unwrap();
+                e.submit_command(*id, 3, CommandPayload::MoveTo { x: (i % 7) as i64, y: 0 }).unwrap();
+            }
+            for k in 0..3u64 {
+                let edge = sim_network::Edge {
+                    id: k + 1,
+                    a: k,
+                    b: k + 1,
+                    cost: 1000,
+                    geom: vec![(0, 0), (1000, 0)],
+                };
+                e.submit_tx(sim_network::Tx {
+                    id: 100 + k,
+                    ops: vec![sim_network::Op::AddEdge(edge)],
+                });
+            }
+            for t in 0..2u64 {
+                e.traffic.inject(t + 1);
+            }
+            e
+        };
+
+        let ticks = f.tick_count.min(30);
+        let mut a = build(&cfg);
+        let mut b = build(&cfg);
+        let mut c = build(&cfg);
+        // 三引擎同节奏跑到中途；c 在此 snapshot/restore（强读档等价，场景级）
+        let mid = ticks / 2;
+        for _ in 0..mid {
+            a.run_tick();
+            b.run_tick();
+            c.run_tick();
+        }
+        let restored = Engine::restore(c.snapshot());
+        let mut c = restored;
+
+        for _ in 0..(ticks - mid) {
+            a.run_tick();
+            b.run_tick();
+            c.run_tick();
+        }
+        assert_eq!(a.digest(), b.digest(), "two-run determinism at fixture scale");
+        assert_eq!(a.digest(), c.digest(), "strong readback at fixture scale");
+    }
+
     #[test]
     fn snapshot_roundtrip_preserves_counters() {
         let mut e = scenario(0xABCD);

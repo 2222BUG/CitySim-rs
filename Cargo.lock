@@ -5049,6 +5049,7 @@ dependencies = [
  "sim-network",
  "sim-pathfinding",
  "sim-replay",
+ "sim-test-support",
  "sim-traffic",
  "sim-world",
 ]

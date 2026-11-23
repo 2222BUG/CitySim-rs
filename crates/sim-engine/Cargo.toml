@@ -18,3 +18,6 @@ sim-replay = { path = "../sim-replay" }
 sim-world = { path = "../sim-world" }
 sim-digest = { path = "../sim-digest" }
 sim-codec = { path = "../sim-codec" }
+
+[dev-dependencies]
+sim-test-support = { path = "../sim-test-support" }
