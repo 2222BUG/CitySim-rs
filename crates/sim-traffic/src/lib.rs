@@ -101,6 +101,13 @@ impl GridTraffic {
     /// 推进一个 tick：注入进网、车辆沿曼哈顿路径前进一步（容量让行）。
     /// 全序：车辆按 id 升序处理；同位置同 tick 内先到先行（id 序）。
     pub fn step(&mut self) {
+        self.step_with_lod(|_| 0);
+    }
+
+    /// LOD 分频步进（rfc-lod-draft 语义）：lod_of(id)∈{0,1,2}，仅移动更新按
+    /// 2^lod 分频（L0 每 tick、L1 每 2 tick、L2 每 4 tick，取 tick 的低位对齐——
+    /// 确定性信号，禁墙钟）；注入/到达出网照常（非移动更新）。
+    pub fn step_with_lod(&mut self, lod_of: impl Fn(u64) -> u8) {
         self.tick += 1;
         self.flow_this_tick = 0;
         // 注入进网（pending 已按 id 序）
@@ -115,6 +122,10 @@ impl GridTraffic {
         for v in self.vehicles.iter_mut() {
             if v.arrived() {
                 continue;
+            }
+            let lod = lod_of(v.id).min(2);
+            if lod > 0 && (self.tick & ((1u64 << lod) - 1)) != 0 {
+                continue; // 本 tick 该实体在低精度层，跳过移动更新
             }
             let (nx, ny) = if v.x != v.goal_x {
                 (if v.x < v.goal_x { v.x + 1 } else { v.x - 1 }, v.y)

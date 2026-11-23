@@ -324,7 +324,9 @@ impl Engine {
         }
 
         // 4. 交通步进（确定性 id 序；fold_digest 含 last_step_population 等全字段）。
-        self.traffic.step();
+        // 4) 交通：LOD 分频移动（lod_levels 实接 rfc-lod-draft；L0 全精度/L1 每 2/L2 每 4 tick）
+        let lod = self.lod_levels.clone();
+        self.traffic.step_with_lod(|id| lod.get(&id).copied().unwrap_or(0));
         self.budget
             .spend(SYSTEM_TRAFFIC, self.traffic.active_count());
 
@@ -992,5 +994,47 @@ mod tests {
             a_pause,
             "L2+ must pause economy within the run (EC-04 mapping；恢复后自动 resume）"
         );
+    }
+
+    /// W2：LodSwitch 事件实接交通分频——同种子同事件两跑一致，且相对无切换
+    /// 运行产生差异（分频真实生效，非恒等通过）。
+    #[test]
+    fn lod_switch_gates_traffic_deterministically() {
+        let config = EngineConfig {
+            seed: 0x10D,
+            coords: (0..64).map(|i| ((i % 8) as i64, (i / 8) as i64)).collect(),
+            traffic_w: 8,
+            traffic_h: 8,
+            income_per_tick: 1,
+            upkeep_per_tick: 1,
+        };
+        let run = |with_lod: bool| {
+            let mut e = Engine::new(config.clone());
+            e.traffic.inject(6); // 车辆 id 1..=6（next_id 分配器）
+            for i in 0..6u64 {
+                let a = e.spawn_agent();
+                e.submit_command(a, 1 + (i % 3), CommandPayload::MoveTo { x: 7, y: 7 });
+            }
+            if with_lod {
+                // tick 2 起车辆实体 L2（每 4 tick 才移动更新）
+                for id in 1..=6u64 {
+                    e.submit_input_event(InputEvent::LodSwitch {
+                        tick: 2,
+                        entity_id: id,
+                        from_level: 0,
+                        to_level: 2,
+                    });
+                }
+            }
+            for _ in 0..12 {
+                e.run_tick();
+            }
+            e.digest()
+        };
+        let a1 = run(true);
+        let a2 = run(true);
+        let b = run(false);
+        assert_eq!(a1, a2, "lod switches must be deterministic");
+        assert_ne!(a1, b, "lod gating must actually alter evolution (non-degenerate)");
     }
 }
