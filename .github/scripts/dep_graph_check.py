@@ -19,7 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 AUTHORITATIVE = {'sim-core', 'sim-agent', 'sim-network', 'sim-pathfinding',
                  'sim-traffic', 'sim-economy', 'sim-error', 'sim-codec',
                  'sim-digest', 'sim-rng', 'simscalar', 'sim-save',
-                 'sim-parallel', 'sim-replay', 'sim-world'}
+                 'sim-parallel', 'sim-replay', 'sim-world', 'sim-engine'}
 NON_AUTHORITATIVE = {'sim-view', 'sim-test-support', 'dep-verify'}
 SPIKES = {'simscalar-spike', 'rng-spike', 'network-tx-spike', 'save-restore-spike'}
 KNOWN = AUTHORITATIVE | NON_AUTHORITATIVE | SPIKES

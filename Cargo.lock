@@ -5038,6 +5038,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-engine"
+version = "0.1.0"
+dependencies = [
+ "sim-agent",
+ "sim-codec",
+ "sim-core",
+ "sim-digest",
+ "sim-economy",
+ "sim-network",
+ "sim-pathfinding",
+ "sim-replay",
+ "sim-traffic",
+ "sim-world",
+]
+
+[[package]]
 name = "sim-error"
 version = "0.1.0"
 

@@ -1,0 +1,3 @@
+# 权威 crate 严格口径（同 sim-core 等；EC-12 按 crate 分层，clippy-layering-REPORT）
+disallowed-types = ["std::collections::HashMap", "std::collections::HashSet", "f32", "f64"]
+disallowed-methods = ["std::time::Instant::now", "std::time::SystemTime::now"]

@@ -1,0 +1,20 @@
+# 与 workspace 同版式；权威 crate（crate-authority-list 登记）
+[package]
+name = "sim-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# 权威主循环集成层：只依赖权威 crate（依赖方向规则 1-5，dep_graph_check 校验）。
+[dependencies]
+sim-core = { path = "../sim-core" }
+sim-agent = { path = "../sim-agent" }
+sim-network = { path = "../sim-network" }
+sim-pathfinding = { path = "../sim-pathfinding" }
+sim-traffic = { path = "../sim-traffic" }
+sim-economy = { path = "../sim-economy" }
+sim-replay = { path = "../sim-replay" }
+sim-world = { path = "../sim-world" }
+sim-digest = { path = "../sim-digest" }
+sim-codec = { path = "../sim-codec" }
